@@ -97,6 +97,7 @@ dependencies = [
  "rsa",
  "ruzstd 0.9.0",
  "serde_json",
+ "sha1",
  "sha2 0.11.0",
  "tar",
  "zip",

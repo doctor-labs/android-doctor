@@ -8,30 +8,154 @@
 //! hashes every `hash_block_size`-byte block of the level below, using the descriptor salt and
 //! digest algorithm; the tree is stored big-endian, padded to a whole block at each level,
 //! until a single root digest remains.
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
+use std::io::{Read, Seek, SeekFrom};
 
 /// Refuse absurd allocations driven by descriptor fields.
 const MAX_TREE_BYTES: u64 = 4 << 30;
 
-/// Hash `data` with `salt`, per the AVB hashtree digest rule.
-fn digest(alg: &str, salt: &[u8], data: &[u8]) -> Result<Vec<u8>> {
-    use sha2::Digest as _;
-    // sha1 is not in the dependency set; AVB devices in the field use sha256, and an
-    // unsupported algorithm is reported rather than silently treated as sha256.
-    let mut h = sha2::Sha256::new();
-    ensure!(alg == "sha256", "unsupported digest algorithm {alg:?}");
-    h.update(salt);
-    h.update(data);
-    Ok(h.finalize().to_vec())
+#[derive(Clone, Copy, PartialEq)]
+enum Alg {
+    Sha1,
+    Sha256,
+    Sha512,
 }
 
-/// Digest size in bytes.
-fn digest_len(alg: &str) -> Result<usize> {
-    Ok(match alg {
-        "sha256" => 32,
-        "sha1" => 20,
-        other => anyhow::bail!("unsupported digest algorithm {other:?}"),
-    })
+impl Alg {
+    fn parse(name: &str) -> Result<Alg> {
+        Ok(match name {
+            "sha1" => Alg::Sha1,
+            "sha256" => Alg::Sha256,
+            "sha512" => Alg::Sha512,
+            other => anyhow::bail!("unsupported digest algorithm {other:?}"),
+        })
+    }
+
+    fn len(self) -> usize {
+        match self {
+            Alg::Sha1 => 20,
+            Alg::Sha256 => 32,
+            Alg::Sha512 => 64,
+        }
+    }
+
+    /// `hash(salt || data)`, per the AVB hashtree digest rule.
+    fn digest(self, salt: &[u8], data: &[u8]) -> Vec<u8> {
+        use sha2::Digest as _;
+        match self {
+            Alg::Sha1 => sha1::Sha1::new()
+                .chain_update(salt)
+                .chain_update(data)
+                .finalize()
+                .to_vec(),
+            Alg::Sha256 => sha2::Sha256::new()
+                .chain_update(salt)
+                .chain_update(data)
+                .finalize()
+                .to_vec(),
+            Alg::Sha512 => sha2::Sha512::new()
+                .chain_update(salt)
+                .chain_update(data)
+                .finalize()
+                .to_vec(),
+        }
+    }
+}
+
+/// Level offsets inside the tree and the tree size, as avbtool's `calc_hash_level_offsets`: levels
+/// are stored top first, so level 0 (the digests of the data) is the last and largest.
+fn level_layout(
+    image_size: u64,
+    data_block: u64,
+    hash_block: u64,
+    stored_digest: u64,
+) -> Result<(Vec<u64>, u64)> {
+    let (mut sizes, mut size) = (Vec::new(), image_size);
+    let mut tree_size = 0u64;
+    let mut block = data_block;
+    while size > block {
+        let n = size.div_ceil(block);
+        let level = (n * stored_digest).div_ceil(hash_block) * hash_block;
+        sizes.push(level);
+        tree_size = tree_size
+            .checked_add(level)
+            .context("tree size overflows")?;
+        ensure!(
+            tree_size <= MAX_TREE_BYTES,
+            "hashtree: tree would be over {MAX_TREE_BYTES} bytes, refusing"
+        );
+        size = level;
+        block = hash_block;
+    }
+    let offsets = (0..sizes.len())
+        .map(|n| sizes[n + 1..].iter().sum())
+        .collect();
+    Ok((offsets, tree_size))
+}
+
+/// The root digest and the stored tree of `image_size` bytes read from `r`, for descriptor `d`.
+/// Digests are stored padded with zeros to a power of two (a sha1 digest takes 32 bytes), levels
+/// top first, each padded to whole hash blocks: byte for byte what `avbtool add_hashtree_footer`
+/// writes and `verify_image` recomputes.
+pub fn build<R: Read + Seek>(
+    r: &mut R,
+    image_size: u64,
+    d: &crate::avb::HashtreeDescriptor,
+) -> Result<(Vec<u8>, Vec<u8>)> {
+    ensure!(d.data_block_size > 0, "hashtree: data_block_size is zero");
+    ensure!(d.hash_block_size > 0, "hashtree: hash_block_size is zero");
+    let (data_block, hash_block) = (u64::from(d.data_block_size), u64::from(d.hash_block_size));
+    ensure!(
+        data_block <= 1 << 20 && hash_block <= 1 << 20,
+        "hashtree: block sizes over 1 MiB are refused"
+    );
+    let alg = Alg::parse(&d.algorithm)?;
+    let dlen = alg.len() as u64;
+    ensure!(
+        hash_block >= dlen,
+        "hashtree: hash_block_size {hash_block} is smaller than a {dlen}-byte digest"
+    );
+    ensure!(
+        image_size > data_block,
+        "hashtree: the image is not larger than one block, so there is no tree"
+    );
+    let stored = dlen.next_power_of_two();
+    let (offsets, tree_size) = level_layout(image_size, data_block, hash_block, stored)?;
+    let mut tree = vec![0u8; tree_size as usize];
+    let pad = vec![0u8; (stored - dlen) as usize];
+    let mut buf = vec![0u8; data_block as usize];
+    let (mut src_size, mut level_out) = (image_size, Vec::new());
+    for (n, &off) in offsets.iter().enumerate() {
+        level_out = Vec::new();
+        let mut remaining = src_size;
+        let block = if n == 0 { data_block } else { hash_block };
+        let mut at = 0u64;
+        while remaining > 0 {
+            let take = remaining.min(block) as usize;
+            let mut chunk = vec![0u8; block as usize];
+            if n == 0 {
+                r.seek(SeekFrom::Start(at))?;
+                r.read_exact(&mut buf[..take])
+                    .context("reading the image")?;
+                chunk[..take].copy_from_slice(&buf[..take]);
+            } else {
+                let from = (offsets[n - 1] + at) as usize;
+                chunk[..take].copy_from_slice(&tree[from..from + take]);
+            }
+            level_out.extend(alg.digest(&d.salt, &chunk));
+            level_out.extend(&pad);
+            remaining -= take as u64;
+            at += take as u64;
+        }
+        level_out.resize(
+            level_out.len().div_ceil(hash_block as usize) * hash_block as usize,
+            0,
+        );
+        tree[off as usize..off as usize + level_out.len()].copy_from_slice(&level_out);
+        src_size = level_out.len() as u64;
+    }
+    let root = alg.digest(&d.salt, &level_out);
+    Ok((root, tree))
 }
 
 /// Compute the dm-verity hash tree for `image` described by `d`.
@@ -39,65 +163,78 @@ fn digest_len(alg: &str) -> Result<usize> {
 /// Returns the tree bytes ready to sit at `d.tree_offset`. The computed root digest is checked
 /// against the descriptor, so a mismatch is an error rather than a silently unverifiable image.
 pub fn hash_tree(image: &[u8], d: &crate::avb::HashtreeDescriptor) -> Result<Vec<u8>> {
-    ensure!(d.data_block_size > 0, "hashtree: data_block_size is zero");
-    ensure!(d.hash_block_size > 0, "hashtree: hash_block_size is zero");
-    let data_block = d.data_block_size as usize;
-    let hash_block = d.hash_block_size as usize;
-    let dlen = digest_len(&d.algorithm)?;
-    ensure!(
-        hash_block >= dlen,
-        "hashtree: hash_block_size {hash_block} is smaller than a {dlen}-byte digest"
-    );
-
-    // Level 0: hash every data block, NUL-padding the final partial block.
-    let n_data = image.len().div_ceil(data_block);
-    let mut level: Vec<u8> = Vec::with_capacity(n_data.max(1) * dlen);
-    for i in 0..n_data {
-        let start = i * data_block;
-        let end = (start + data_block).min(image.len());
-        let mut block = vec![0u8; data_block];
-        block[..end - start].copy_from_slice(&image[start..end]);
-        level.extend_from_slice(&digest(&d.algorithm, &d.salt, &block)?);
-    }
-
-    // Each level hashes hash_block-sized chunks of the level below until one digest is left.
-    let mut tree: Vec<u8> = Vec::new();
-    loop {
-        let per_block = hash_block / dlen;
-        let n = level.len() / dlen;
-        if n <= 1 {
-            break;
-        }
-
-        // A level is stored padded up to a whole hash block.
-        let blocks = n.div_ceil(per_block);
-        level.resize(blocks * hash_block, 0);
-        tree.extend_from_slice(&level);
-
-        let mut next: Vec<u8> = Vec::with_capacity(blocks * dlen);
-        for b in 0..blocks {
-            next.extend_from_slice(&digest(
-                &d.algorithm,
-                &d.salt,
-                &level[b * hash_block..(b + 1) * hash_block],
-            )?);
-        }
-        level = next;
-    }
-
-    let root = digest(&d.algorithm, &d.salt, &level)?;
+    let (root, tree) = build(&mut std::io::Cursor::new(image), image.len() as u64, d)?;
     ensure!(
         root == d.root_digest,
         "hashtree: computed root {} does not match the descriptor root {}",
         hex(&root),
         hex(&d.root_digest)
     );
-    ensure!(
-        tree.len() as u64 <= MAX_TREE_BYTES,
-        "hashtree: tree would be {} bytes, refusing",
-        tree.len()
-    );
     Ok(tree)
+}
+
+/// What recomputing a hashtree descriptor against an image file found.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TreeCheck {
+    /// The data hashes to the root digest and the stored tree is the one the data produces.
+    Ok,
+    /// The data hashes to the root digest, but the stored tree is zeroed (`ZeRoHaSH`, or empty):
+    /// the tree must be regenerated before the device can verify the partition.
+    Zeroed,
+    /// The data does not hash to the descriptor's root digest.
+    RootMismatch,
+    /// The root digest matches but the stored tree differs (or lies outside the file).
+    TreeMismatch,
+    Unsupported(String),
+}
+
+/// Recompute the tree of the image file at `path` for `d` and compare the root digest and the
+/// stored tree, as avbtool's `HashtreeDescriptor.verify` does. The FEC data is not checked.
+pub fn verify_file(
+    path: &std::path::Path,
+    d: &crate::avb::HashtreeDescriptor,
+) -> Result<TreeCheck> {
+    crate::detect::refuse_blocking_file(path)?;
+    let mut f = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let len = f.metadata()?.len();
+    if d.data_block_size != d.hash_block_size {
+        return Ok(TreeCheck::Unsupported(
+            "data and hash block sizes differ".into(),
+        ));
+    }
+    if let Err(e) = Alg::parse(&d.algorithm) {
+        return Ok(TreeCheck::Unsupported(format!("{e}")));
+    }
+    if d.image_size > len {
+        return Ok(TreeCheck::RootMismatch);
+    }
+    let (root, tree) = match build(&mut f, d.image_size, d) {
+        Ok(v) => v,
+        Err(e) if e.to_string().contains("no tree") => {
+            return Ok(TreeCheck::Unsupported(format!("{e}")));
+        }
+        Err(e) => return Err(e),
+    };
+    if !d.root_digest.is_empty() && root != d.root_digest {
+        return Ok(TreeCheck::RootMismatch);
+    }
+    let end = d.tree_offset.checked_add(d.tree_size);
+    if d.tree_size == 0 {
+        return Ok(TreeCheck::Zeroed);
+    }
+    if end.is_none_or(|e| e > len) || d.tree_size > MAX_TREE_BYTES {
+        return Ok(TreeCheck::TreeMismatch);
+    }
+    f.seek(SeekFrom::Start(d.tree_offset))?;
+    let mut ondisk = vec![0u8; d.tree_size as usize];
+    f.read_exact(&mut ondisk)?;
+    Ok(if ondisk == tree {
+        TreeCheck::Ok
+    } else if ondisk.starts_with(b"ZeRoHaSH") {
+        TreeCheck::Zeroed
+    } else {
+        TreeCheck::TreeMismatch
+    })
 }
 
 fn hex(b: &[u8]) -> String {
@@ -137,34 +274,29 @@ mod tests {
         (0..8192u32).map(|i| ((i * 7 + 3) % 256) as u8).collect()
     }
 
-    /// The expected values here were produced by an INDEPENDENT implementation of the AVB
-    /// hashtree algorithm, not by this code. If the two agree, the algorithm is right.
+    /// The expected roots come from avbtool itself (see the cases), not from this code. The
+    /// multi-level and sha1/sha512 layouts are checked against avbtool-made images in avb.rs.
     #[test]
     fn a_tree_matches_an_independent_implementation_of_the_avb_spec() {
         let img = image();
+        // roots from avbtool 1.3.0's own generate_hash_tree (sha256, salt 0..32, 8192 bytes)
         let cases = [
             (
                 4096,
                 4096,
-                "2d2d970f10c3cd4f07c5b87429e795834b3ed51698220bc6a297a3c490fe2049",
+                "f90b2b23f4f78e4d2b702a66d59f80bedcc4fcbe42c87a6fa95ab37f18bbade2",
                 4096,
             ),
             (
                 1024,
-                4096,
-                "03f28c9d8535889b91542c602cef4bdad753293456124c81b026b6537e4c0872",
-                4096,
-            ),
-            (
-                4096,
                 1024,
-                "67956ab42407fb4e374ae3a627eb7345515d7b48aa4d972e00f19447d928213b",
+                "518fd01721a742c5f14573ae582506f0c00e12bed28ade0ae6c2b0a24574a53d",
                 1024,
             ),
             (
                 512,
                 512,
-                "875e979a639114298341d6d0640197600423529321a30ea4df8b60d827558551",
+                "5f2f4054f5e6080fb67f9cd1862eab00a587c3316545b777a09bd9994db3921d",
                 512,
             ),
         ];
@@ -204,7 +336,7 @@ mod tests {
     #[test]
     fn an_unsupported_algorithm_is_reported_not_treated_as_sha256() {
         let mut d = desc(4096, 4096, "00");
-        d.algorithm = "sha512".into();
+        d.algorithm = "md5".into();
         let e = hash_tree(&image(), &d).unwrap_err().to_string();
         assert!(e.contains("unsupported"), "{e}");
     }
@@ -217,7 +349,7 @@ mod tests {
         let d = desc(
             4096,
             4096,
-            "2d2d970f10c3cd4f07c5b87429e795834b3ed51698220bc6a297a3c490fe2049",
+            "f90b2b23f4f78e4d2b702a66d59f80bedcc4fcbe42c87a6fa95ab37f18bbade2",
         );
         // The root WILL differ from the 8192-byte case; what matters is that it does not
         // panic and does not reuse the previous root.
