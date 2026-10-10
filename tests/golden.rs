@@ -593,6 +593,35 @@ fn shell_browses_the_firmware() {
     golden("shell-tree.out", &acc);
 }
 
+/// `android-doctor audit ... | head -c0`: a closed stdout is exit 2 with one line on stderr, never
+/// a panic (101) and never a silent success (doctor-kit 0.2.2).
+#[test]
+fn a_closed_stdout_exits_2() {
+    let t = firmware("closed-stdout");
+    let (sys, fw) = (t.p("fw/system.img"), t.p("fw"));
+    let runs: Vec<Vec<&dyn AsRef<std::ffi::OsStr>>> = vec![
+        vec![&"audit", &sys, &"--json"],
+        vec![&"audit", &sys],
+        vec![&"audit", &sys, &"--score"],
+        vec![&"doctor", &"scan", &fw, &"--json"],
+        vec![&"doctor", &"scan", &fw],
+    ];
+    for (i, args) in runs.into_iter().enumerate() {
+        let mut child = Command::new(bin())
+            .args(args.iter().map(|a| a.as_ref()))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        drop(child.stdout.take()); // the reader goes away before the report is written
+        let out = child.wait_with_output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "run {i}: {err}");
+        assert!(err.contains("cannot write to stdout"), "run {i}: {err}");
+        assert!(!err.contains("panicked"), "{err}");
+    }
+}
+
 #[test]
 fn help_texts() {
     let t = Scratch::new("help");

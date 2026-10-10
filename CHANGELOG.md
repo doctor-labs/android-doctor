@@ -3,6 +3,16 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.5.1]
+
+### Fixed (contract)
+
+- A closed stdout (`android-doctor audit img | head -c0`) is exit 2 with `error: cannot write to stdout`, no longer a panic; a failed `--sarif` write now reports `exit_code` 2 in the envelope it prints; `explore` without a terminal is a clear error; the MCP server answers a request with neither `id` nor `method` with -32600 (all doctor-kit 0.2.2).
+
+### Changed
+
+- doctor-kit 0.2.2. The human report gains the kit's `INCOMPLETE` banner when coverage gaps exist. Machine output is unchanged (all goldens pass untouched).
+
 ## [0.5.0]
 
 ### Fixed (contract)

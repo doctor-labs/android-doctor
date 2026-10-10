@@ -869,6 +869,7 @@ cannot read baseline <TMP>/meta/nope.json
 
 === doctor-scan human-all-known (exit 0)
 --- stdout
+WARNING: INCOMPLETE: 8 coverage gap(s); findings may be missing
 android-doctor <VERSION>  score 78/100 needs work
 info      avb_signature          vbmeta.img     no vbmeta.img found; AVB signature not checked
 info      debug_leftovers        boot.img       cannot evaluate debug_leftovers: failed to read image (too short to be an ext filesystem)
