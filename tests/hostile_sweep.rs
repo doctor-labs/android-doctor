@@ -129,6 +129,19 @@ fn invocations(d: &Path) -> Vec<Vec<String>> {
         ],
         vec!["partitions".into(), ota.display().to_string()],
         vec!["dt".into(), img.display().to_string()],
+        vec![
+            "fec".into(),
+            "verify".into(),
+            img.display().to_string(),
+            img.display().to_string(),
+        ],
+        vec![
+            "fec".into(),
+            "generate".into(),
+            img.display().to_string(),
+            "-o".into(),
+            d.join("x.fec").display().to_string(),
+        ],
         vec!["vbmeta".into(), img.display().to_string()],
         vec![
             "vbmeta".into(),

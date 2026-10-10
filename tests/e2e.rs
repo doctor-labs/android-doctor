@@ -206,3 +206,43 @@ fn ci_install_print_writes_nothing_and_bad_flags_fail() {
     let out = ci_install(&["--dir", d, "--fail-on", "bogus"]);
     assert_eq!(out.status.code(), Some(2));
 }
+
+#[test]
+fn fec_generate_verify_repair_round_trip() {
+    let d = Scratch::new("fec-e2e");
+    let data: Vec<u8> = (0..4096u32 * 12)
+        .map(|i| (i.wrapping_mul(2654435761) >> 11) as u8)
+        .collect();
+    let (inp, fec, fixed) = (d.join("in.bin"), d.join("in.fec"), d.join("fixed.bin"));
+    std::fs::write(&inp, &data).unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+            .arg("fec")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let p = |x: &std::path::Path| x.to_str().unwrap().to_string();
+    assert!(
+        run(&["generate", &p(&inp), "-o", &p(&fec)])
+            .status
+            .success()
+    );
+    // refuses to overwrite without --force
+    assert!(
+        !run(&["generate", &p(&inp), "-o", &p(&fec)])
+            .status
+            .success()
+    );
+    assert!(run(&["verify", &p(&inp), &p(&fec)]).status.success());
+    let mut bad = data.clone();
+    bad[5000] ^= 0xff;
+    std::fs::write(&inp, &bad).unwrap();
+    let v = run(&["verify", &p(&inp), &p(&fec), "--json"]);
+    assert_eq!(v.status.code(), Some(1), "damage is exit 1");
+    assert!(String::from_utf8_lossy(&v.stdout).contains("\"ok\": false"));
+    let r = run(&["repair", &p(&inp), &p(&fec), "-o", &p(&fixed)]);
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    assert_eq!(std::fs::read(&fixed).unwrap(), data);
+    assert!(!d.join("fixed.bin.part").exists());
+}
