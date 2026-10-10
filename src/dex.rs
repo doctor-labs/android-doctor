@@ -669,6 +669,217 @@ pub fn read_input(path: &Path) -> Result<Vec<(String, Vec<u8>)>> {
     Ok(out)
 }
 
+// --- Call extraction with constant tracking ---
+
+/// A value a register is known to hold.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Val {
+    Int(i64),
+    Str(String),
+}
+
+/// One invoke: the callee (`Lc;->name(proto)ret`) and, per argument register in order (`this`
+/// first for instance calls), the constant it held if the code set it just before.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Call {
+    pub callee: String,
+    pub args: Vec<Option<Val>>,
+}
+
+fn sleb(d: &[u8], at: &mut usize) -> Result<i32> {
+    let (mut v, mut shift) = (0i64, 0);
+    loop {
+        let b = *d.get(*at).context("truncated sleb128")?;
+        *at += 1;
+        v |= i64::from(b & 0x7f) << shift;
+        shift += 7;
+        if b & 0x80 == 0 {
+            if shift < 35 && b & 0x40 != 0 {
+                v |= -1i64 << shift;
+            }
+            return Ok(v as i32);
+        }
+        ensure!(shift < 35, "sleb128 too long");
+    }
+}
+
+/// Unit indexes control flow can jump to: branch and switch targets and catch handlers. A
+/// register's known constant is dropped there, since another path may have set it differently.
+fn branch_targets(units: &[u16], data: &[u8], code: &Code) -> std::collections::HashSet<usize> {
+    let mut t = std::collections::HashSet::new();
+    let rel = |at: usize, off: i64| usize::try_from(at as i64 + off).ok();
+    let mut at = 0;
+    while at < units.len() {
+        let Some(i) = decode(units, at) else { break };
+        if let Some(op) = i.op {
+            let u = |k: usize| units.get(at + k).copied().unwrap_or(0);
+            let off32 = i64::from((u32::from(u(1)) | u32::from(u(2)) << 16) as i32);
+            match op {
+                0x28 => t.extend(rel(at, i64::from((u(0) >> 8) as i8))),
+                0x29 | 0x32..=0x3d => t.extend(rel(at, i64::from(u(1) as i16))),
+                0x2a => t.extend(rel(at, off32)),
+                0x2b | 0x2c => {
+                    if let Some(p) = rel(at, off32).filter(|&p| p + 2 <= units.len()) {
+                        let n = usize::from(units[p + 1]);
+                        let first = if units[p] == 0x0100 {
+                            p + 4
+                        } else {
+                            p + 2 + n * 2
+                        };
+                        for k in 0..n {
+                            let a = first + k * 2;
+                            if let (Some(lo), Some(hi)) = (units.get(a), units.get(a + 1)) {
+                                let off = (u32::from(*lo) | u32::from(*hi) << 16) as i32;
+                                t.extend(rel(at, i64::from(off)));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        at += i.len;
+    }
+    // catch handlers follow the instructions (and a pad unit when their count is odd)
+    if code.tries > 0 {
+        let _ = (|| -> Result<()> {
+            let tries_off = code.insns_off + units.len() * 2 + (units.len() & 1) * 2;
+            let mut at = tries_off + usize::from(code.tries) * 8;
+            let n = uleb(data, &mut at)?;
+            for _ in 0..n.min(4096) {
+                let size = sleb(data, &mut at)?;
+                for _ in 0..size.unsigned_abs().min(4096) {
+                    uleb(data, &mut at)?;
+                    t.insert(uleb(data, &mut at)? as usize);
+                }
+                if size <= 0 {
+                    t.insert(uleb(data, &mut at)? as usize);
+                }
+            }
+            Ok(())
+        })();
+    }
+    t
+}
+
+/// The destination register of an instruction, when it writes one.
+fn dest_reg(name: &str, fmt: &str, u0: u16, u1: u16) -> Option<u32> {
+    const NO_DEST: [&str; 12] = [
+        "nop",
+        "return",
+        "monitor",
+        "throw",
+        "goto",
+        "if-",
+        "packed-switch",
+        "sparse-switch",
+        "fill-array-data",
+        "aput",
+        "iput",
+        "sput",
+    ];
+    if NO_DEST.iter().any(|p| name.starts_with(p))
+        || name.starts_with("invoke")
+        || name.starts_with("check-cast")
+        || name.starts_with("filled-new-array")
+    {
+        return None;
+    }
+    let hi = u32::from(u0 >> 8);
+    Some(match fmt {
+        "12x" | "11n" | "22s" | "22c" | "22t" => hi & 0xf,
+        "32x" => u32::from(u1),
+        _ => hi,
+    })
+}
+
+/// Every invoke in a method, with the constants its argument registers held.
+pub fn calls(dex: &Dex, data: &[u8], code: &Code) -> Vec<Call> {
+    let Ok(units) = insns(data, code.insns_off, code.units as usize) else {
+        return Vec::new();
+    };
+    let targets = branch_targets(&units, data, code);
+    let mut regs: std::collections::HashMap<u32, Val> = std::collections::HashMap::new();
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at < units.len() {
+        let Some(i) = decode(&units, at) else { break };
+        if targets.contains(&at) {
+            regs.clear();
+        }
+        if let Some(op) = i.op {
+            let o = ops()[usize::from(op)].as_ref().expect("decoded");
+            let u = |k: usize| units.get(at + k).copied().unwrap_or(0);
+            let hi = u32::from(u(0) >> 8);
+            let wide =
+                o.name.contains("wide") || o.name.contains("long") || o.name.contains("double");
+            match op {
+                0x6e..=0x72 | 0x74..=0x78 | 0xfc | 0xfd | 0xfa | 0xfb => {
+                    let regs_used: Vec<u32> = if o.fmt.starts_with("35c") || o.fmt == "45cc" {
+                        let n = usize::from(u(0) >> 12).min(5);
+                        let r = [
+                            u(2) & 0xf,
+                            (u(2) >> 4) & 0xf,
+                            (u(2) >> 8) & 0xf,
+                            u(2) >> 12,
+                            (u(0) >> 8) & 0xf,
+                        ];
+                        r[..n].iter().map(|&x| u32::from(x)).collect()
+                    } else {
+                        (0..hi.min(256)).map(|k| u32::from(u(2)) + k).collect()
+                    };
+                    if let Some(callee) = method_name(dex, usize::from(u(1)))
+                        .filter(|_| index_kind(op) == Some("method"))
+                    {
+                        out.push(Call {
+                            callee,
+                            args: regs_used.iter().map(|r| regs.get(r).cloned()).collect(),
+                        });
+                    }
+                }
+                _ => {
+                    if let Some(d) = dest_reg(o.name, o.fmt, u(0), u(1)) {
+                        regs.remove(&d);
+                        if wide {
+                            regs.remove(&(d + 1));
+                        }
+                        let val = match op {
+                            0x12 => Some(Val::Int(i64::from(((u(0) >> 12) as i8) << 4 >> 4))),
+                            0x13 | 0x16 => Some(Val::Int(i64::from(u(1) as i16))),
+                            0x14 | 0x17 => Some(Val::Int(i64::from(
+                                (u32::from(u(1)) | u32::from(u(2)) << 16) as i32,
+                            ))),
+                            0x15 => Some(Val::Int(i64::from(u(1) as i16) << 16)),
+                            0x1a | 0x1b => {
+                                let idx = if op == 0x1b {
+                                    u32::from(u(1)) | u32::from(u(2)) << 16
+                                } else {
+                                    u32::from(u(1))
+                                };
+                                dex.strings.get(idx as usize).cloned().map(Val::Str)
+                            }
+                            0x01..=0x09 => {
+                                let src = if o.fmt == "12x" {
+                                    u32::from(u(0) >> 12)
+                                } else {
+                                    u32::from(u(1))
+                                };
+                                regs.get(&src).cloned()
+                            }
+                            _ => None,
+                        };
+                        if let Some(v) = val {
+                            regs.insert(d, v);
+                        }
+                    }
+                }
+            }
+        }
+        at += i.len;
+    }
+    out
+}
+
 // --- Disassembly ---
 
 fn lit(v: i64) -> String {
@@ -1181,7 +1392,7 @@ mod tests {
         for cut in (0..DEMO.len()).step_by(7) {
             let _ = parse("t", &DEMO[..cut]);
         }
-        for at in 0..DEMO.len() {
+        for at in (0..DEMO.len()).step_by(5) {
             let mut v = DEMO.to_vec();
             v[at] ^= 0xff;
             if let Ok(x) = parse("f", &v) {

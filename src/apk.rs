@@ -14,6 +14,7 @@ use zip::ZipArchive;
 
 pub(crate) mod verify;
 pub use verify::{SchemeCheck, Verdict, v4_detected, verify_apk};
+mod rules;
 
 /// AOSP public test-key certificate subject CNs (Apache-2.0, AOSP test keys).
 const AOSP_TEST_KEY_SUBJECTS: &[&str] =
@@ -56,12 +57,16 @@ pub struct ApkInfo {
     pub verification: Vec<SchemeCheck>,
     /// Security-relevant manifest attributes (see `ManifestAttrs`).
     pub manifest: ManifestAttrs,
+    /// Findings from the code rules over the DEX (see `rules`).
+    pub code_issues: Vec<ManifestIssue>,
 }
 
 impl ApkInfo {
     /// Manifest hardening problems, derived from real manifest attributes only.
     pub fn issues(&self) -> Vec<ManifestIssue> {
-        manifest_issues(&self.manifest)
+        let mut v = manifest_issues(&self.manifest);
+        v.extend(self.code_issues.iter().cloned());
+        v
     }
 
     pub fn has_test_key(&self) -> bool {
@@ -1076,6 +1081,10 @@ pub fn audit_apk_bytes(path: &Path, bytes: &[u8]) -> ApkAudit {
             }
         }
         signers.extend(v2_signers(bytes));
+        let activities = attrs.as_ref().map_or(0, |a| {
+            a.components.iter().filter(|c| c.kind == "activity").count()
+        });
+        let code_issues = code_issues(&mut zip, activities);
         Ok(ApkInfo {
             path: path.display().to_string(),
             package_name: attrs
@@ -1087,6 +1096,7 @@ pub fn audit_apk_bytes(path: &Path, bytes: &[u8]) -> ApkAudit {
             signers,
             verification: verify_apk(bytes),
             manifest: attrs.unwrap_or_default(),
+            code_issues,
         })
     })();
     match r {
@@ -1099,6 +1109,52 @@ pub fn audit_apk_bytes(path: &Path, bytes: &[u8]) -> ApkAudit {
             error: Some(format!("{e:#}")),
         },
     }
+}
+
+/// Largest dex and total dex bytes the code rules will parse out of one APK.
+const MAX_DEX_ENTRY: u64 = 32 * 1024 * 1024;
+const MAX_DEX_TOTAL: u64 = 64 * 1024 * 1024;
+
+/// Run the code rules over the APK's `classes*.dex`. A dex that cannot be read or parsed is said
+/// so (`apk-code-unscanned`), never skipped as if it were clean.
+fn code_issues(zip: &mut ZipArchive<Cursor<&[u8]>>, activities: usize) -> Vec<ManifestIssue> {
+    let mut names: Vec<String> = zip
+        .file_names()
+        .filter(|n| {
+            n.strip_prefix("classes")
+                .and_then(|r| r.strip_suffix(".dex"))
+                .is_some_and(|d| d.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .map(String::from)
+        .collect();
+    names.sort();
+    let (mut dexes, mut failed, mut total) = (Vec::new(), Vec::new(), 0u64);
+    for n in names {
+        let bytes = zip.by_name(&n).ok().and_then(|f| {
+            total += f.size();
+            (f.size() <= MAX_DEX_ENTRY && total <= MAX_DEX_TOTAL).then(|| {
+                let mut v = Vec::new();
+                f.take(MAX_DEX_ENTRY).read_to_end(&mut v).ok().map(|_| v)
+            })?
+        });
+        match bytes.map(|b| (crate::dex::parse(&n, &b), b)) {
+            Some((Ok(d), b)) => dexes.push((d, b)),
+            Some((Err(e), _)) => failed.push(format!("{n}: {e:#}")),
+            None => failed.push(format!("{n}: too large or unreadable")),
+        }
+    }
+    if dexes.is_empty() && failed.is_empty() {
+        return Vec::new(); // no dex (a native-only APK): nothing to judge
+    }
+    let mut out = rules::scan(&dexes, activities);
+    if !failed.is_empty() {
+        out.push(ManifestIssue {
+            rule: "apk-code-unscanned",
+            severity: Severity::Info,
+            detail: format!("code rules did not run on {}", failed.join("; ")),
+        });
+    }
+    out
 }
 
 /// Read one entry out of the archive, refusing anything over the per-entry limit.
@@ -1304,6 +1360,39 @@ mod tests {
         assert!(
             info.signers.is_empty(),
             "garbage DER must not become a signer"
+        );
+    }
+
+    fn apk_with_dex(dex: &[u8]) -> Vec<u8> {
+        let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let opt = zip::write::SimpleFileOptions::default();
+        w.start_file("classes.dex", opt).unwrap();
+        w.write_all(dex).unwrap();
+        w.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn code_rules_run_on_the_dex_of_an_apk_and_a_bad_dex_is_said_not_skipped() {
+        let risky = include_bytes!("../tests/fixtures/dex/risky.dex");
+        let a = audit_apk_bytes(Path::new("/x.apk"), &apk_with_dex(risky));
+        let rules: Vec<_> = a.info.unwrap().issues().iter().map(|i| i.rule).collect();
+        assert!(rules.contains(&"apk-code-ssl-trust"), "{rules:?}");
+        assert!(!rules.contains(&"apk-code-unscanned"));
+        let a = audit_apk_bytes(Path::new("/x.apk"), &apk_with_dex(b"dex\n035\0 truncated"));
+        let issues = a.info.unwrap().issues();
+        let un = issues
+            .iter()
+            .find(|i| i.rule == "apk-code-unscanned")
+            .expect("unscanned");
+        assert!(un.detail.contains("classes.dex"), "{}", un.detail);
+        // no dex at all (a native-only APK) is not reported as unscanned
+        let a = audit_apk_bytes(Path::new("/x.apk"), &apk_bytes(true));
+        assert!(
+            a.info
+                .unwrap()
+                .issues()
+                .iter()
+                .all(|i| !i.rule.starts_with("apk-code"))
         );
     }
 
