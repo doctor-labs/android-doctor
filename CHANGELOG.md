@@ -15,11 +15,14 @@ All notable changes to this project are documented here. The format follows
 - APK signature verification (#201, PR #239): v1 (MANIFEST.MF, .SF and PKCS#7 signature), v2, v3 and v3.1 (content digests and signatures; RSA PKCS#1 and PSS, ECDSA P-256, DSA), v3 SDK ranges, and v4 `.idsig` detection, in `audit` as `apk-signature-invalid` / `apk-signature-unverified` and under `apks[].verification`. New dependencies: `p256` (ECDSA) and `sha1`. The SARIF rules table gains two rules, so its goldens change (rule indexes shift).
 - `dex` command and DEX parser (#204, PR #240): header with checksum/signature checks, string/type/proto/field/method tables, classes with their fields and methods, per-method references (methods, fields, strings, types) and a disassembler, over a `.dex` or every `classes*.dex` of an APK. Validated against `dexdump -d` on a 1 MB dex (82,896 instructions, identical).
 - APK code rules over the DEX (#205, PR #241): 14 `apk-code-*` rules (WebView, crypto, random, logging, world-accessible files, external storage, SSL trust, dynamic loading, raw SQL, command execution, tapjacking, screenshot, root/emulator/frida markers, plus `apk-code-unscanned`), judged from constant arguments with a small register tracker (`dex::calls`). They appear in `audit` findings and `apks[].issues`. Built on the DEX parser of #204. The SARIF rules tables gain the new rule ids (goldens updated).
+- Incremental payload operations MOVE, BSDIFF and BROTLI_BSDIFF (#169, PR #PR) with `--base`, applied against the old image like payload-dumper-go; BSDF2 patches (bzip2/brotli/none per stream) are read.
 
 ### Fixed
 
 - `hash-tree` computed the wrong root digest (it hashed the last tree level a second time) and stored the levels leaf-first; both now match `avbtool` byte for byte. The old unit test expected the wrong roots. sha1 and sha512 descriptors were refused and are now supported.
 - The v3 signing block id was wrong (`0x7109871b`; it is `0xf05368c0`), so v3-only signers were never listed.
+- Incremental extraction with `--base` never worked: the base directory was opened as if it were the image (now `<base>/<partition>.img`), the block size was fixed at 4096 (now the manifest's), and a bsdiff op wrongly required equal source and destination sizes.
+- bsdiff control values and header lengths are sign-magnitude (`offtin`), not two's complement, so patches with backward seeks failed. Checked against a patch made by the real `bsdiff4` and Apple `bspatch`.
 
 ## [0.5.1]
 
