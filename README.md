@@ -172,6 +172,8 @@ signatures it already reads:
 | `apk-debug-signing-cert` | high on a production-looking build, medium when `ro.build.type` is `eng`/`userdebug` | a signer is the Android debug certificate (`CN=Android Debug`) or a known AOSP test/platform key |
 | `apk-cert-expired` | medium | a signing certificate's notAfter is before now |
 | `apk-cert-not-yet-valid` | medium | a signing certificate's notBefore is after now |
+| `apk-signature-invalid` | medium | a v1, v2, v3 or v3.1 signature does not verify: a digest or signature mismatch (the APK changed after signing), a missing entry, or a stripped signing block. Same checks as `apksigner verify`; the platform trusts `/system` apps without re-checking, so this is a tamper signal |
+| `apk-signature-unverified` | info | a signature uses an algorithm or curve this tool cannot check (not a pass); a `.idsig` (v4) sidecar is reported as detected, not verified, in the `apks[].verification` data |
 
 Firmware has no trusted clock, so the two date rules compare against the clock of the machine
 running `audit` and say so in the finding ("expired 2021-01-01 (as of 2026-10-06, host clock)").
@@ -310,7 +312,7 @@ android-doctor doctor scan fw --json
 | Boot chain | AVB flags, rollback index, chained vbmeta, unsigned images, RSA signature and partition hash checks |
 | Secrets and apps | Hardcoded credentials in file contents (private keys of every PEM flavour and PGP, AWS key ids, and `provider_tokens`: API keys and access tokens of about 40 token formats from GitHub, GitLab, Slack incl. webhooks, Stripe, SendGrid, npm, Google, Twilio, Mailgun, Shopify, Square, PyPI, DigitalOcean, Hugging Face, OpenAI, Anthropic, Docker Hub, Databricks, Postman, Azure storage keys and more, plus JWTs as medium; a hit shows the provider and a redacted prefix, never the token), APK package names and signing certificates, APK manifest posture (below) |
 | Secrets and apps | Hardcoded credentials in file contents, APK package names and signing certificates |
-| APK signing posture | `apk-v1-only-signing`, `apk-debug-signing-cert`, `apk-cert-expired`, `apk-cert-not-yet-valid` |
+| APK signing posture | `apk-v1-only-signing`, `apk-debug-signing-cert`, `apk-cert-expired`, `apk-cert-not-yet-valid`, `apk-signature-invalid`, `apk-signature-unverified` |
 | Quality | Missing partitions, duplicate properties, SELinux label gaps, mode anomalies, init service hygiene, debug leftovers |
 | Staleness | Security patch level age from OTA metadata: `ok`, `stale` (over 90 days), `very stale` (over 365) |
 

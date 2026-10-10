@@ -438,6 +438,16 @@ pub fn help(rule: &str) -> Option<Help> {
             "Re-sign with a certificate that is valid, or confirm the platform ignores expiry",
             Medium,
         ),
+        "apk-signature-invalid" => (
+            "An APK signature does not verify (digest or signature mismatch)",
+            "Re-sign the APK; a mismatch means it changed after it was signed or the signature is forged",
+            Medium,
+        ),
+        "apk-signature-unverified" => (
+            "An APK signature could not be verified (unsupported algorithm or curve)",
+            "Check the signature with apksigner verify",
+            Info,
+        ),
         "apk-cert-not-yet-valid" => (
             "An APK signing certificate is not yet valid (host clock)",
             "Check the certificate dates and the host clock",
@@ -687,6 +697,8 @@ const KNOWN_RULES: &[&str] = &[
     "apk-debug-signing-cert",
     "apk-cert-expired",
     "apk-cert-not-yet-valid",
+    "apk-signature-invalid",
+    "apk-signature-unverified",
     "partition_coverage",
     "unhandled_input",
     "avb_signature",

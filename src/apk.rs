@@ -12,6 +12,9 @@ use std::io::{Cursor, Read};
 use std::path::Path;
 use zip::ZipArchive;
 
+mod verify;
+pub use verify::{SchemeCheck, Verdict, v4_detected, verify_apk};
+
 /// AOSP public test-key certificate subject CNs (Apache-2.0, AOSP test keys).
 const AOSP_TEST_KEY_SUBJECTS: &[&str] =
     &["Android", "platform", "shared", "testkey", "media", "root"];
@@ -49,6 +52,8 @@ pub struct ApkInfo {
     pub version_code: Option<String>,
     pub version_name: Option<String>,
     pub signers: Vec<Signer>,
+    /// Signature verification per scheme (v1, v2, v3, v3.1, v4); empty when unsigned.
+    pub verification: Vec<SchemeCheck>,
     /// Security-relevant manifest attributes (see `ManifestAttrs`).
     pub manifest: ManifestAttrs,
 }
@@ -106,6 +111,19 @@ impl ApkInfo {
                         ymd(now)
                     ),
                 ));
+            }
+        }
+        for c in &self.verification {
+            match c.verdict {
+                Verdict::Invalid => out.push((
+                    "apk-signature-invalid",
+                    format!("{} signature does not verify: {}", c.scheme, c.detail),
+                )),
+                Verdict::NotChecked if c.scheme != "v4" => out.push((
+                    "apk-signature-unverified",
+                    format!("{} signature not verified: {}", c.scheme, c.detail),
+                )),
+                _ => {}
             }
         }
         // The same cert usually signs both v1 and v2: report each finding once.
@@ -1006,10 +1024,10 @@ fn extract_pkcs7_certs(p7_der: &[u8]) -> Result<Vec<P7Cert>> {
 // EOCD and again as the "header" at the start of the block) plus uint64 block-size
 // fields. Inside are length-prefixed entries tagged by their 32-bit ID:
 //   0x7109871a == APK Signature Scheme v2 block
-//   0x7109871b == APK Signature Scheme v3 block
+//   0xf05368c0 == APK Signature Scheme v3 block (0x1b93ad61 is v3.1)
 // (AOSP, Apache-2.0.)
 const V2_BLOCK_ID: u32 = 0x7109871a;
-const V3_BLOCK_ID: u32 = 0x7109871b;
+const V3_BLOCK_ID: u32 = 0xf05368c0;
 /// The zip End Of Central Directory record signature (AOSP, Apache-2.0).
 const EOCD_SIG: u32 = 0x06054b50;
 const EOCD_MIN_SIZE: usize = 22;
@@ -1067,6 +1085,7 @@ pub fn audit_apk_bytes(path: &Path, bytes: &[u8]) -> ApkAudit {
             version_code: attrs.as_ref().and_then(|a| a.version_code.clone()),
             version_name: attrs.as_ref().and_then(|a| a.version_name.clone()),
             signers,
+            verification: verify_apk(bytes),
             manifest: attrs.unwrap_or_default(),
         })
     })();
@@ -1123,6 +1142,19 @@ fn v2_signers(bytes: &[u8]) -> Vec<Signer> {
 
 /// The signing block pairs: (block id, value bytes).
 fn signing_block(bytes: &[u8]) -> Option<Vec<(u32, &[u8])>> {
+    locate_block(bytes).map(|b| b.pairs)
+}
+
+/// Where the signing block sits, and its pairs.
+struct Block<'a> {
+    /// Offset of the block's leading size field (the end of the signed entries).
+    start: usize,
+    cd_off: usize,
+    eocd: usize,
+    pairs: Vec<(u32, &'a [u8])>,
+}
+
+fn locate_block(bytes: &[u8]) -> Option<Block<'_>> {
     if bytes.len() < EOCD_MIN_SIZE + 2 * 8 + MAGIC_LEN {
         return None;
     }
@@ -1162,7 +1194,12 @@ fn signing_block(bytes: &[u8]) -> Option<Vec<(u32, &[u8])>> {
         out.push((id, &bytes[vstart..vend]));
         at += 8 + len;
     }
-    Some(out)
+    Some(Block {
+        start: block_start,
+        cd_off,
+        eocd,
+        pairs: out,
+    })
 }
 
 /// Extract signers from one v2/v3 block value: a length-prefixed sequence of length-prefixed
@@ -2001,7 +2038,14 @@ mod tests {
     fn rules_for(bytes: &[u8]) -> Vec<&'static str> {
         let a = audit_apk_bytes(Path::new("/system/app/X.apk"), bytes);
         assert!(a.error.is_none(), "{:?}", a.error);
-        a.info.unwrap().posture(NOW).iter().map(|p| p.0).collect()
+        // The synthetic fixtures carry fake signatures; the cert posture is what these test.
+        a.info
+            .unwrap()
+            .posture(NOW)
+            .iter()
+            .map(|p| p.0)
+            .filter(|r| !r.starts_with("apk-signature"))
+            .collect()
     }
 
     const OK_NB: &str = "200101000000Z";
@@ -2067,7 +2111,11 @@ mod tests {
         assert!(detail.contains("as of 2027-01-15"), "{detail}");
         assert!(detail.contains("no trusted clock"), "{detail}");
         // Before expiry the same APK is clean.
-        assert!(info.posture(1_600_000_000).is_empty());
+        assert!(
+            info.posture(1_600_000_000)
+                .iter()
+                .all(|p| p.0.starts_with("apk-signature"))
+        );
     }
 
     #[test]

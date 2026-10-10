@@ -45,6 +45,7 @@ zip = "8.6.0"
 tar = "0.4"
 md-5 = "0.11"
 rsa = { version = "0.9.10", default-features = false, features = ["std", "u64_digit", "getrandom", "pem"] }
+p256 = { version = "0.14", default-features = false, features = ["ecdsa"] }
 sha1 = "0.11"
 
 [dev-dependencies]
