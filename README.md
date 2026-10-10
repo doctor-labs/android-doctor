@@ -687,6 +687,7 @@ Every subcommand takes `--help`. `--no-color` (or `NO_COLOR`) disables colour.
 | `unsparse <file>... -o out.img` | Android sparse images to a raw image |
 | `identify <path>... [--json]` | What is this file, by magic bytes |
 | `info <ota> [--json]` / `report <ota> [--json]` | Build metadata / staleness verdict |
+| `verify-ota <ota.zip\|payload.bin\|dir> [--cert FILE] [--json]` | Checks the signapk whole-file zip signature and the payload's metadata and payload signatures (RSA PKCS#1 v1.5 SHA-256). Without `--cert` the package's own `otacert` is the key, which proves integrity only; with it, a signature by another key is `invalid`. Exit 1 if any signature is invalid |
 | `dt <file> [--json]` | Device tree, dtbo table or container header |
 | `amlogic <file>` | Describe an Amlogic image container |
 | `partitions <dir> [--json] [--sector-size N]` | Qualcomm `rawprogram*.xml` / MediaTek `scatter.txt` flash manifest |
@@ -772,6 +773,7 @@ Status: **verified** = checked against an independent reference tool on real fir
 | AVB / vbmeta inspection | verified | RSA signature verification over the header + auxiliary block, matching `avbtool verify_image` |
 | Oppo/Realme `.ozip` (AES-128-ECB encrypted zip) | synthetic | Decrypts to the inner zip using a per-model key table (adapted from B. Kerler's `oppo_ozip_decrypt`, MIT); tested with generated fixtures, not yet verified on real firmware |
 | Qualcomm `rawprogram*.xml` and MediaTek `scatter.txt` flash manifests | synthetic | Parsed and checked against the image files present (`partitions` command); tested with generated fixtures |
+| OTA signatures (`verify-ota`) | verified | The zip footer signature (made by `openssl cms`) and RSA payload signatures (made by python-cryptography) in `tests/fixtures/ota/make.py` verify; any changed byte, or a different trusted cert, is `invalid`. RSA keys only for payload signatures (EC keys are `not-checked`); no certificate chain or revocation check |
 | Device tree / dtbo tables (`dt`) | synthetic | Parses and displays the device tree blob and dtbo table headers; tested on AOSP `mkdtboimg` output |
 | Other vendor containers (Amlogic, ...) | planned | Without real samples these will be marked unverified |
 | Spreadtrum/MediaTek `.pac` containers | synthetic | Parser and extractor (adapted from SR Labs PacHandler, Apache-2.0); tested with generated fixtures, not yet verified on real firmware |

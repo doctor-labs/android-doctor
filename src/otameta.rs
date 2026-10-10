@@ -3,7 +3,7 @@
 //! (`META-INF/com/android/otacert`, PEM or DER X.509).
 //!
 //! The certificate is read with a small bounds-checked DER reader (ITU-T X.690, RFC 5280); the
-//! signature itself is not verified. Everything read is size-capped and nothing is executed.
+//! signature itself is checked by `verify-ota` (src/otaverify.rs), not here. Everything read is size-capped and nothing is executed.
 use crate::detect::refuse_blocking_file;
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
@@ -568,6 +568,23 @@ fn base64(s: &str) -> Result<Vec<u8>> {
         }
     }
     Ok(out)
+}
+
+/// The DER of a PEM block (any label: certificate or public key), or the input itself when it is
+/// not PEM.
+pub fn pem_to_der(bytes: &[u8]) -> Result<Vec<u8>> {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return Ok(bytes.to_vec());
+    };
+    let Some(start) = text.find("-----BEGIN ") else {
+        return Ok(bytes.to_vec());
+    };
+    let body = &text[start + 11..];
+    let after = body.find("-----").context("malformed PEM header")? + 5;
+    let end = body
+        .find("-----END ")
+        .context("the PEM block has no end line")?;
+    base64(&body[after..end])
 }
 
 /// PEM (`-----BEGIN CERTIFICATE-----`) or raw DER.
