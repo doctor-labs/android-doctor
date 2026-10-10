@@ -246,3 +246,31 @@ fn fec_generate_verify_repair_round_trip() {
     assert_eq!(std::fs::read(&fixed).unwrap(), data);
     assert!(!d.join("fixed.bin.part").exists());
 }
+
+#[test]
+fn dex_command_lists_tables_as_json_and_text() {
+    let dex = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/dex/demo.dex");
+    let run = |args: &[&str]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+            .arg("dex")
+            .arg(dex)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8(o.stdout).unwrap()
+    };
+    let j: serde_json::Value = serde_json::from_str(&run(&[
+        "--json",
+        "--classes",
+        "--refs",
+        "--grep",
+        "forName",
+    ]))
+    .unwrap();
+    assert_eq!(j[0]["header"]["checksum_ok"], true);
+    assert_eq!(j[0]["counts"]["classes"], 3);
+    assert_eq!(j[0]["references"].as_array().unwrap().len(), 1);
+    assert!(run(&["--methods", "--grep=->sw("]).contains("Ldemo/Main;->sw(I)I"));
+    assert!(run(&["--code", "demo.Main"]).contains("sparse-switch"));
+}
