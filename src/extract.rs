@@ -220,6 +220,51 @@ impl Read for ChunkReader {
     }
 }
 
+/// Most bytes of `<part>.patch.dat` read into memory.
+const MAX_PATCH_DAT: u64 = 2 << 30;
+
+/// For an incremental partition: its patch data and the old image it starts from. Without
+/// `--base` this fails before anything is written.
+fn read_patch_data(
+    src: &mut Source,
+    names: &[String],
+    part: &str,
+    base: Option<&Path>,
+) -> Result<(Vec<u8>, PathBuf)> {
+    let Some(base) = base else {
+        bail!(
+            "{part} is an incremental block OTA update (move/bsdiff/imgdiff commands); it needs the previous build: pass --base <dir> holding {part}.img"
+        );
+    };
+    let image = base.join(format!("{part}.img"));
+    ensure!(
+        image.is_file(),
+        "the base image {} does not exist",
+        image.display()
+    );
+    let (name, compressed) = [
+        (format!("{part}.patch.dat"), false),
+        (format!("{part}.patch.dat.br"), true),
+    ]
+    .into_iter()
+    .find(|(n, _)| names.contains(n))
+    .with_context(|| format!("{part}.patch.dat is missing from the OTA"))?;
+    let mut raw = Vec::new();
+    let reader = src.open_file(&name)?;
+    if compressed {
+        sdat::brotli_reader(reader)
+            .take(MAX_PATCH_DAT + 1)
+            .read_to_end(&mut raw)?;
+    } else {
+        reader.take(MAX_PATCH_DAT + 1).read_to_end(&mut raw)?;
+    }
+    ensure!(
+        raw.len() as u64 <= MAX_PATCH_DAT,
+        "{name} is larger than {MAX_PATCH_DAT} bytes"
+    );
+    Ok((raw, image))
+}
+
 /// Build `<part>.img` in `out_dir`. The image is written under a temporary name and renamed
 /// when complete, so a failed extraction never leaves a plausible-looking partial image.
 fn extract_partition(
@@ -228,9 +273,15 @@ fn extract_partition(
     names: &[String],
     part: &str,
     out_dir: &Path,
+    base: Option<&Path>,
     bar: &ProgressBar,
 ) -> Result<PathBuf> {
     let list = read_list(src, part)?;
+    let patches = if list.is_incremental() {
+        Some(read_patch_data(src, names, part, base)?)
+    } else {
+        None
+    };
     let (data_names, compressed) = data_files(names, part)?;
     let mut total = 0;
     for name in &data_names {
@@ -252,6 +303,20 @@ fn extract_partition(
             Box::new(ChunkReader::new(rx))
         };
         let data = BufReader::new(bar.wrap_read(reader));
+        if let Some((patches, base_image)) = &patches {
+            // incremental: start from a copy of the old image and run the commands in place
+            let mut image = create_part(&tmp_path)?;
+            let mut old = File::open(base_image)
+                .with_context(|| format!("opening the base image {}", base_image.display()))?;
+            std::io::copy(&mut old, &mut image)?;
+            if compressed {
+                sdat::apply_incremental(&list, sdat::brotli_reader(data), patches, &mut image)?;
+            } else {
+                sdat::apply_incremental(&list, data, patches, &mut image)?;
+            }
+            image.set_len(sdat::image_size(&list)?)?;
+            return Ok(());
+        }
         let mut out = BufWriter::new(create_part(&tmp_path)?);
         if compressed {
             sdat::apply(&list, sdat::brotli_reader(data), &mut out)?;
@@ -665,7 +730,15 @@ pub(crate) fn extract_all_tracked(
                 scope.spawn(move || {
                     // each thread needs its own handle: a zip reader is not shareable
                     let mut src = Source::open(input)?;
-                    let result = extract_partition(input, &mut src, names, part, out_dir, &bar);
+                    let result = extract_partition(
+                        input,
+                        &mut src,
+                        names,
+                        part,
+                        out_dir,
+                        opts.base.as_deref(),
+                        &bar,
+                    );
                     bar.finish_and_clear();
                     result
                 })
@@ -2531,5 +2604,37 @@ mod tests {
         };
         extract_all_tracked(&ota, &out, &opts).unwrap();
         check_sample_output(&out);
+    }
+
+    /// An incremental block OTA (tests/fixtures/blockota) extracted with `--base`: the directory
+    /// and the zip give the reference image; without the old image nothing is written.
+    #[test]
+    fn an_incremental_block_ota_needs_and_uses_the_base_image() {
+        let fx = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/blockota");
+        let d = crate::testutil::Scratch::new("incr-extract");
+        let ota = d.join("ota");
+        std::fs::create_dir_all(&ota).unwrap();
+        for f in ["system.transfer.list", "system.new.dat", "system.patch.dat"] {
+            std::fs::copy(fx.join(f), ota.join(f)).unwrap();
+        }
+        let base = d.join("base");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::copy(fx.join("old.img"), base.join("system.img")).unwrap();
+        let out = d.join("out");
+        let e = extract_all(&ota, &out, &ExtractOptions::default()).unwrap_err();
+        assert!(format!("{e:#}").contains("--base"), "{e:#}");
+        assert!(!out.join("system.img").exists());
+        let opts = ExtractOptions {
+            base: Some(base.clone()),
+            ..Default::default()
+        };
+        extract_all(&ota, &out, &opts).unwrap();
+        assert_eq!(
+            std::fs::read(out.join("system.img")).unwrap(),
+            std::fs::read(fx.join("expected.img")).unwrap()
+        );
+        // --list needs no base: the size comes from the transfer list
+        let l = list_images(&ota, &ExtractOptions::default()).unwrap();
+        assert_eq!(l, [("system.img".to_string(), 11 * 4096)]);
     }
 }
