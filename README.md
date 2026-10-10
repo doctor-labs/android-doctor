@@ -308,7 +308,7 @@ android-doctor doctor scan fw --json
 | Privilege | `su` binaries, setuid/setgid files, file capabilities, world-writable files |
 | Native code hardening | ELF objects without PIE, RELRO, a stack canary or FORTIFY, or with an executable stack |
 | Boot chain | AVB flags, rollback index, chained vbmeta, unsigned images, RSA signature and partition hash checks |
-| Secrets and apps | Hardcoded credentials in file contents, APK package names and signing certificates, APK manifest posture (below) |
+| Secrets and apps | Hardcoded credentials in file contents (private keys of every PEM flavour and PGP, AWS key ids, and `provider_tokens`: API keys and access tokens of about 40 token formats from GitHub, GitLab, Slack incl. webhooks, Stripe, SendGrid, npm, Google, Twilio, Mailgun, Shopify, Square, PyPI, DigitalOcean, Hugging Face, OpenAI, Anthropic, Docker Hub, Databricks, Postman, Azure storage keys and more, plus JWTs as medium; a hit shows the provider and a redacted prefix, never the token), APK package names and signing certificates, APK manifest posture (below) |
 | Secrets and apps | Hardcoded credentials in file contents, APK package names and signing certificates |
 | APK signing posture | `apk-v1-only-signing`, `apk-debug-signing-cert`, `apk-cert-expired`, `apk-cert-not-yet-valid` |
 | Quality | Missing partitions, duplicate properties, SELinux label gaps, mode anomalies, init service hygiene, debug leftovers |

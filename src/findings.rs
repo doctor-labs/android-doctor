@@ -154,6 +154,7 @@ impl Finding {
 const CONTENT_RULES: &[&str] = &[
     "hardcoded_credentials",
     "cloud_credentials",
+    "provider_tokens",
     "debug_endpoints",
     "content-indicator",
 ];
@@ -405,6 +406,11 @@ pub fn help(rule: &str) -> Option<Help> {
         "cloud_credentials" => (
             "A cloud access key is embedded in the image",
             "Remove the credential from the image and revoke it",
+            High,
+        ),
+        "provider_tokens" => (
+            "A service API key or access token (GitHub, Slack, Stripe, ...) is embedded in the image",
+            "Remove the token from the image and revoke it at the provider",
             High,
         ),
         "debug_endpoints" => (
@@ -675,6 +681,7 @@ const KNOWN_RULES: &[&str] = &[
     "apk-test-only",
     "hardcoded_credentials",
     "cloud_credentials",
+    "provider_tokens",
     "debug_endpoints",
     "apk-v1-only-signing",
     "apk-debug-signing-cert",
