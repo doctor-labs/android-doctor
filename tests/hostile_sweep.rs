@@ -253,12 +253,15 @@ fn extract_does_not_follow_a_symlink_out_of_its_output_directory() {
 fn oem_firmware_containers_survive_garbage() {
     let d = fixture("oem");
     let mut cases: Vec<(String, Vec<u8>)> = Vec::new();
-    let magics: [(&str, &[u8]); 5] = [
+    let magics: [(&str, &[u8]); 8] = [
         ("app", &[0x55, 0xAA, 0x5A, 0xA5]),
         ("kdz", &[0x24, 0x05, 0x00, 0x00, 0x38, 0x31, 0x25, 0x80]),
         ("kdz", &[0x28, 0x05, 0x00, 0x00, 0x34, 0x31, 0x25, 0x80]),
         ("dz", &[0x32, 0x96, 0x18, 0x74]),
         ("sin", &[0x03, b'S', b'I', b'N']),
+        ("img", b"RKFW"),
+        ("img", b"RKAF"),
+        ("img", b"SSFW"),
     ];
     for (i, (ext, magic)) in magics.iter().enumerate() {
         // the bare magic, the magic then 0xFF (huge sizes everywhere), then 0x00 padding

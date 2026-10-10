@@ -173,6 +173,12 @@ pub fn sniff(head: &[u8]) -> Option<Identified> {
         Some(Kind::LgDz)
     } else if at0(&crate::sonysin::MAGIC) {
         Some(Kind::SonySin)
+    } else if at0(&crate::rockchip::RKFW_MAGIC) {
+        Some(Kind::RockchipRkfw)
+    } else if at0(&crate::rockchip::RKAF_MAGIC) {
+        Some(Kind::RockchipRkaf)
+    } else if at0(&crate::rockchip::SSFW_MAGIC) {
+        Some(Kind::RockchipSsfw)
     } else {
         None
     };

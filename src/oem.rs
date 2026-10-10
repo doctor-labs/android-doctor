@@ -26,6 +26,9 @@ pub enum Kind {
     SonySin,
     CoolpadCpb,
     NokiaNb0,
+    RockchipRkfw,
+    RockchipRkaf,
+    RockchipSsfw,
 }
 
 impl Kind {
@@ -37,6 +40,9 @@ impl Kind {
             Kind::SonySin => "sony-sin",
             Kind::CoolpadCpb => "coolpad-cpb",
             Kind::NokiaNb0 => "nokia-nb0",
+            Kind::RockchipRkfw => "rockchip-rkfw",
+            Kind::RockchipRkaf => "rockchip-rkaf",
+            Kind::RockchipSsfw => "rockchip-ssfw",
         }
     }
 
@@ -50,6 +56,9 @@ impl Kind {
                 "Coolpad .cpb firmware container (recognized but unsupported, often encrypted)"
             }
             Kind::NokiaNb0 => "Nokia NB0 firmware container",
+            Kind::RockchipRkfw => "Rockchip RKFW firmware (loader + RKAF update image)",
+            Kind::RockchipRkaf => "Rockchip RKAF update.img",
+            Kind::RockchipSsfw => "Rockchip SSFW firmware (table of child images)",
         }
     }
 
@@ -62,6 +71,9 @@ impl Kind {
             Kind::SonySin,
             Kind::CoolpadCpb,
             Kind::NokiaNb0,
+            Kind::RockchipRkfw,
+            Kind::RockchipRkaf,
+            Kind::RockchipSsfw,
         ]
         .into_iter()
         .find(|k| k.id() == id)
@@ -188,6 +200,9 @@ fn parse(kind: Kind, path: &Path) -> Result<Vec<Item>> {
             ));
         }
         Kind::NokiaNb0 => crate::nokianb0::parse(&mut f, len)?,
+        Kind::RockchipRkfw => crate::rockchip::parse_rkfw(&mut f, len)?,
+        Kind::RockchipRkaf => crate::rockchip::parse_rkaf(&mut f, len)?,
+        Kind::RockchipSsfw => crate::rockchip::parse_ssfw(&mut f, len)?,
     };
     let mut seen = std::collections::HashSet::new();
     for it in &items {
