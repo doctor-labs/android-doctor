@@ -89,6 +89,7 @@ dependencies = [
  "flate2",
  "generic-array",
  "indicatif",
+ "libz-sys",
  "lz4_flex 0.14.0",
  "lzma-rust2 0.21.0",
  "md-5",
