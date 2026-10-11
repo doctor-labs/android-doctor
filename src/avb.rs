@@ -260,9 +260,24 @@ pub fn check_coverage(top: &Vbmeta, part: &Vbmeta, path: &Path) -> Result<Covera
                 },
             }
         }
-        Descriptor::Hashtree(_) => Coverage::Unchecked {
-            partition,
-            why: "it is covered by a dm-verity hashtree descriptor, and the tree is not recomputed here".into(),
+        Descriptor::Hashtree(h) => match hashtree_file(path, h)? {
+            c @ (Check::Ok | Check::Zeroed) => Coverage::Verified {
+                partition,
+                how: format!(
+                    "the dm-verity {} root digest recomputed from its data matches the top-level vbmeta, whose signature verifies with the key it embeds (sha256 {key}); compare that key with the device's trusted key{}",
+                    h.algorithm,
+                    if c == Check::Zeroed { "; the stored hashtree is zeroed and must be regenerated before the device can verify it" } else { "" }
+                ),
+            },
+            Check::TreeMismatch => Coverage::Failed {
+                partition,
+                why: "its data matches the signed root digest but the stored hashtree is different, so dm-verity would reject it".into(),
+            },
+            Check::Unsupported(why) => Coverage::Unchecked { partition, why },
+            _ => Coverage::Failed {
+                partition,
+                why: "its data does not hash to the root digest in the signed top-level vbmeta (modified or wrong image)".into(),
+            },
         },
         Descriptor::ChainPartition { public_key_sha256, .. } => {
             if part.signature_verified != SignatureStatus::Valid {
@@ -786,6 +801,11 @@ pub enum Check {
     Mismatch,
     Missing,
     Unsupported(String),
+    /// Hashtree descriptor: the data matches the root digest but the stored tree is zeroed
+    /// (`ZeRoHaSH`), so the device cannot verify the partition until it is regenerated.
+    Zeroed,
+    /// Hashtree descriptor: the root digest matches the data but the stored tree differs.
+    TreeMismatch,
 }
 
 /// Result of interpreting the vbmeta rollback index.
@@ -849,28 +869,50 @@ impl SecurityState {
     }
 }
 
-/// Hash each hash-descriptor partition found as `<dir>/<partition>.img` and compare with the digest.
+/// Check each hash and hashtree descriptor's partition, found as `<dir>/<partition>.img`: a hash
+/// descriptor is re-hashed and compared; a hashtree descriptor has its tree regenerated, and the
+/// root digest and the stored tree are compared (a zeroed tree is reported as such).
 pub fn verify_images(meta: &Vbmeta, dir: &Path) -> Result<Vec<(String, Check)>> {
     let mut out = Vec::new();
     for d in &meta.descriptors {
-        let Descriptor::Hash(h) = d else { continue };
-        let safe = !h.partition.is_empty()
-            && h.partition
+        let partition = match d {
+            Descriptor::Hash(h) => &h.partition,
+            Descriptor::Hashtree(h) => &h.partition,
+            _ => continue,
+        };
+        let safe = !partition.is_empty()
+            && partition
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-        let path = dir.join(format!("{}.img", h.partition));
+        let path = dir.join(format!("{partition}.img"));
         let result = if !safe || !path.is_file() {
             Check::Missing
         } else {
-            match h.algorithm.as_str() {
-                "sha256" => hash_file::<Sha256>(&path, h)?,
-                "sha512" => hash_file::<Sha512>(&path, h)?,
-                other => Check::Unsupported(format!("hash algorithm {other:?}")),
+            match d {
+                Descriptor::Hash(h) => match h.algorithm.as_str() {
+                    "sha256" => hash_file::<Sha256>(&path, h)?,
+                    "sha512" => hash_file::<Sha512>(&path, h)?,
+                    other => Check::Unsupported(format!("hash algorithm {other:?}")),
+                },
+                Descriptor::Hashtree(h) => hashtree_file(&path, h)?,
+                _ => unreachable!("only hash and hashtree descriptors reach here"),
             }
         };
-        out.push((h.partition.clone(), result));
+        out.push((partition.to_string(), result));
     }
     Ok(out)
+}
+
+/// Recompute a hashtree descriptor against the image file at `path`.
+fn hashtree_file(path: &Path, h: &HashtreeDescriptor) -> Result<Check> {
+    use crate::hashtree::{TreeCheck, verify_file};
+    Ok(match verify_file(path, h)? {
+        TreeCheck::Ok => Check::Ok,
+        TreeCheck::Zeroed => Check::Zeroed,
+        TreeCheck::RootMismatch => Check::Mismatch,
+        TreeCheck::TreeMismatch => Check::TreeMismatch,
+        TreeCheck::Unsupported(why) => Check::Unsupported(why),
+    })
 }
 
 fn hash_file<D: Digest>(path: &Path, h: &HashDescriptor) -> Result<Check> {
@@ -1151,7 +1193,9 @@ impl Vbmeta {
         self.digest_ok == Some(false)
             || self.signature_verified == SignatureStatus::Invalid
             || self.signature_verified == SignatureStatus::Absent
-            || checks.iter().any(|(_, c)| *c == Check::Mismatch)
+            || checks
+                .iter()
+                .any(|(_, c)| matches!(c, Check::Mismatch | Check::TreeMismatch))
     }
 
     /// Cross-check the top-level vbmeta against chained vbmeta partitions.
@@ -1231,6 +1275,8 @@ fn check_label(c: &Check) -> String {
         Check::Mismatch => "MISMATCH".into(),
         Check::Missing => "image not found".into(),
         Check::Unsupported(why) => format!("not checked ({why})"),
+        Check::Zeroed => "ok (the data matches the root digest; the stored hashtree is zeroed and must be regenerated)".into(),
+        Check::TreeMismatch => "MISMATCH (the data matches the root digest but the stored hashtree is different)".into(),
     }
 }
 
@@ -1295,6 +1341,34 @@ mod tests {
         b.extend(name.as_bytes());
         b.extend([9u8; 4]);
         b.extend([7u8; 32]);
+        desc(TAG_HASHTREE, &b)
+    }
+
+    /// A hashtree descriptor carrying real values (sizes in bytes, 512-byte blocks).
+    fn tree_desc_for(h: &HashtreeDescriptor) -> Vec<u8> {
+        let mut b = h.version.to_be_bytes().to_vec();
+        for n in [h.image_size, h.tree_offset, h.tree_size] {
+            b.extend(n.to_be_bytes());
+        }
+        for n in [h.data_block_size, h.hash_block_size, h.fec_num_roots] {
+            b.extend(n.to_be_bytes());
+        }
+        for n in [h.fec_offset, h.fec_size] {
+            b.extend(n.to_be_bytes());
+        }
+        b.extend(alg32(&h.algorithm));
+        for n in [
+            h.partition.len(),
+            h.salt.len(),
+            h.root_digest.len(),
+            h.flags as usize,
+        ] {
+            b.extend((n as u32).to_be_bytes());
+        }
+        b.extend([0u8; 60]);
+        b.extend(h.partition.as_bytes());
+        b.extend(&h.salt);
+        b.extend(&h.root_digest);
         desc(TAG_HASHTREE, &b)
     }
 
@@ -1748,12 +1822,17 @@ mod tests {
             "an image shorter than the descriptor's size"
         );
         assert_eq!(get("missing"), Check::Missing);
+        assert_eq!(get("system"), Check::Missing);
         assert_eq!(
             get("../escape"),
             Check::Missing,
             "partition names cannot leave the directory"
         );
-        assert_eq!(r.len(), 5, "hashtrees are not hashed");
+        assert_eq!(
+            r.len(),
+            6,
+            "the hashtree descriptor is checked too (its image is absent)"
+        );
         assert!(m.any_failure(&r));
         assert!(
             m.to_text(&r).contains("check good: ok")
@@ -2218,13 +2297,13 @@ mod tests {
             Some(("avb-footer-not-covered", Severity::High))
         );
 
-        // A hashtree descriptor is named but not recomputed: reported, not claimed.
+        // A hashtree descriptor is recomputed now: this one's root digest is not these bytes'.
         let top = top_with(&[tree_desc("vendor")]);
         assert_eq!(
             judge(&mut meta, &top, &part),
-            Some(("avb-footer-covered", Severity::Info))
+            Some(("avb-footer-not-covered", Severity::High))
         );
-        assert!(matches!(meta.coverage, Some(Coverage::Unchecked { .. })));
+        assert!(matches!(meta.coverage, Some(Coverage::Failed { .. })));
     }
 
     /// The partition name falls back to the file name, without `.img` and an A/B slot suffix.
@@ -2266,5 +2345,111 @@ mod tests {
         assert_eq!(findings[0].rule, "avb-unsupported-algorithm");
         assert_eq!(findings[0].severity, crate::audit::Severity::Warn);
         assert!(findings[0].detail.contains("not checked"));
+    }
+
+    // Made by `avbtool add_hashtree_footer --block_size 512 --do_not_generate_fec` (avbtool 1.3.0):
+    // a = sha256 over 2 tree levels, b = sha1 (20-byte digests stored in 32), c = sha512 over 3 levels.
+    fn fixture_dir(tag: &str) -> crate::testutil::Scratch {
+        let d = crate::testutil::Scratch::new(tag);
+        for n in ["a", "b", "c"] {
+            std::fs::copy(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/avb/{n}.img")),
+                d.join(format!("{n}.img")),
+            )
+            .unwrap();
+        }
+        d
+    }
+
+    fn tree_result(dir: &Path, part: &str) -> Check {
+        let meta = read_input(&dir.join(format!("{part}.img")), None).unwrap();
+        let r = verify_images(&meta, dir).unwrap();
+        r.into_iter().find(|(p, _)| p == part).unwrap().1
+    }
+
+    #[test]
+    fn hashtrees_made_by_avbtool_verify() {
+        let d = fixture_dir("avb-tree-ok");
+        for part in ["a", "b", "c"] {
+            assert_eq!(tree_result(&d, part), Check::Ok, "{part}");
+        }
+    }
+
+    #[test]
+    fn changed_data_or_tree_or_a_zeroed_tree_are_told_apart() {
+        let d = fixture_dir("avb-tree-bad");
+        let meta = read_input(&d.join("a.img"), None).unwrap();
+        let Descriptor::Hashtree(h) = meta
+            .descriptors
+            .iter()
+            .find(|x| matches!(x, Descriptor::Hashtree(_)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let (tree_off, tree_size) = (h.tree_offset as usize, h.tree_size as usize);
+        let orig = std::fs::read(d.join("a.img")).unwrap();
+        let edit = |name: &str, f: &dyn Fn(&mut Vec<u8>)| {
+            let mut v = orig.clone();
+            f(&mut v);
+            std::fs::write(d.join(name), v).unwrap();
+        };
+        edit("a.img", &|v| v[1000] ^= 1);
+        assert_eq!(
+            tree_result(&d, "a"),
+            Check::Mismatch,
+            "data changed: root digest differs"
+        );
+        edit("a.img", &|v| v[tree_off + 7] ^= 1);
+        assert_eq!(
+            tree_result(&d, "a"),
+            Check::TreeMismatch,
+            "tree changed, data intact"
+        );
+        edit("a.img", &|v| {
+            v[tree_off..tree_off + tree_size].fill(0);
+            v[tree_off..tree_off + 8].copy_from_slice(b"ZeRoHaSH");
+        });
+        assert_eq!(tree_result(&d, "a"), Check::Zeroed);
+        assert!(meta.any_failure(&[("a".into(), Check::TreeMismatch)]));
+        assert!(check_label(&Check::Zeroed).contains("zeroed"));
+    }
+
+    /// `vbmeta <partition> --vbmeta <top-level>` recomputes a hashtree descriptor's tree from
+    /// the partition's bytes (avbtool-made fixture `a`), instead of calling it unproven.
+    #[test]
+    fn a_hashtree_footer_is_covered_by_a_signed_top_level_when_its_data_matches() {
+        use crate::audit::Severity;
+        let d = fixture_dir("avb-tree-cov");
+        let own = read_input(&d.join("a.img"), None).unwrap();
+        let Some(Descriptor::Hashtree(h)) = own
+            .descriptors
+            .iter()
+            .find(|x| matches!(x, Descriptor::Hashtree(_)))
+            .cloned()
+        else {
+            unreachable!()
+        };
+        let key = RsaPrivateKey::new(&mut OsRng, 2048).unwrap();
+        let top = parse(&vbmeta_signed(1, 0, &[tree_desc_for(&h)], &key), None).unwrap();
+        let judge = |path: &Path| {
+            let mut meta = read_input(path, None).unwrap();
+            meta.coverage = Some(check_coverage(&top, &meta, path).unwrap());
+            meta.findings()
+                .into_iter()
+                .find(|f| f.rule.starts_with("avb-footer"))
+                .map(|f| (f.rule, f.severity))
+        };
+        assert_eq!(
+            judge(&d.join("a.img")),
+            Some(("avb-footer-covered", Severity::Info))
+        );
+        let mut bytes = std::fs::read(d.join("a.img")).unwrap();
+        bytes[2000] ^= 1; // data changed
+        std::fs::write(d.join("a.img"), &bytes).unwrap();
+        assert_eq!(
+            judge(&d.join("a.img")),
+            Some(("avb-footer-not-covered", Severity::High))
+        );
     }
 }
