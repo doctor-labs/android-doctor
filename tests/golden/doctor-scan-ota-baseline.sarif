@@ -26,7 +26,7 @@
             "severity": "low"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 60
+          "ruleIndex": 62
         },
         {
           "baselineState": "new",
@@ -52,7 +52,7 @@
             "severity": "info"
           },
           "ruleId": "avb_signature",
-          "ruleIndex": 36
+          "ruleIndex": 38
         },
         {
           "baselineState": "new",
@@ -69,7 +69,7 @@
             "severity": "info"
           },
           "ruleId": "duplicate_properties",
-          "ruleIndex": 47
+          "ruleIndex": 49
         },
         {
           "baselineState": "new",
@@ -86,7 +86,7 @@
             "severity": "info"
           },
           "ruleId": "selinux_label_gaps",
-          "ruleIndex": 62
+          "ruleIndex": 64
         },
         {
           "baselineState": "new",
@@ -112,7 +112,7 @@
             "severity": "info"
           },
           "ruleId": "mode_anomalies",
-          "ruleIndex": 59
+          "ruleIndex": 61
         },
         {
           "baselineState": "new",
@@ -129,7 +129,7 @@
             "severity": "info"
           },
           "ruleId": "init_service_hygiene",
-          "ruleIndex": 56
+          "ruleIndex": 58
         },
         {
           "baselineState": "new",
@@ -155,7 +155,7 @@
             "severity": "info"
           },
           "ruleId": "debug_leftovers",
-          "ruleIndex": 40
+          "ruleIndex": 42
         }
       ],
       "tool": {
@@ -625,6 +625,38 @@
               "name": "apk-launch-mode-singletask",
               "shortDescription": {
                 "text": "An APK activity uses launchMode singleTask or singleInstance"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "A provider grants or guards every path via <grant-uri-permission> or <path-permission>"
+              },
+              "help": {
+                "text": "Scope <grant-uri-permission>/<path-permission> to the paths that must be shared"
+              },
+              "id": "apk-provider-broad-path",
+              "name": "apk-provider-broad-path",
+              "shortDescription": {
+                "text": "A provider grants or guards every path via <grant-uri-permission> or <path-permission>"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "A provider sets android:grantUriPermissions"
+              },
+              "help": {
+                "text": "Grant per-URI with narrow <grant-uri-permission> paths instead of grantUriPermissions=\"true\""
+              },
+              "id": "apk-provider-grant-uri",
+              "name": "apk-provider-grant-uri",
+              "shortDescription": {
+                "text": "A provider sets android:grantUriPermissions"
               }
             },
             {

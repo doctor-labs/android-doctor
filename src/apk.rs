@@ -250,6 +250,12 @@ pub struct Component {
     pub task_reparenting: bool,
     /// Every `<intent-filter>` under this component, with its activities, categories and data.
     pub intent_filters: Vec<IntentFilter>,
+    /// `android:grantUriPermissions` on a provider: when true, any URI it serves can be granted
+    /// to another app.
+    pub grant_uri_permissions: bool,
+    /// Broad path grants on a provider: from `<grant-uri-permission>` / `<path-permission>`
+    /// children whose path/pathPrefix/pathPattern covers every path.
+    pub broad_paths: Vec<String>,
 }
 
 /// One `<intent-filter>`: the actions, categories and data (scheme/host/path/mimeType) it
@@ -586,7 +592,10 @@ const ANDROID_ATTRS: &[(u32, &str)] = &[
     (0x0101_0027, "scheme"),
     (0x0101_0028, "host"),
     (0x0101_0029, "port"),
-    (0x0101_002c, "path"),
+    (0x0101_002a, "path"),
+    (0x0101_002b, "pathPrefix"),
+    (0x0101_002c, "pathPattern"),
+    (0x0101_001b, "grantUriPermissions"),
 ];
 
 /// The `android:` local name of an attribute, or None when it is not a framework attribute.
@@ -663,6 +672,7 @@ fn read_tag(
                 }
                 "taskAffinity" => c.task_affinity = Some(a.value.clone()),
                 "allowTaskReparenting" => c.task_reparenting = a.as_bool() == Some(true),
+                "grantUriPermissions" => c.grant_uri_permissions = a.as_bool() == Some(true),
                 _ => {}
             },
             _ => {}
@@ -686,6 +696,34 @@ fn read_tag(
         out.components[*i]
             .intent_filters
             .push(IntentFilter::default());
+    } else if matches!(tag, "grant-uri-permission" | "path-permission")
+        && let Some((_, Some(i))) = parent
+        && out.components[*i].kind == "provider"
+    {
+        let get = |n: &str| {
+            attrs
+                .iter()
+                .find(|a| android_attr(a, pool, res_ids) == Some(n))
+                .map(|a| a.value.clone())
+                .filter(|v| !v.is_empty())
+        };
+        if let Some(v) = get("path")
+            && v == "/"
+        {
+            out.components[*i].broad_paths.push("path=/".into());
+        }
+        if let Some(v) = get("pathPrefix")
+            && v == "/"
+        {
+            out.components[*i].broad_paths.push("pathPrefix=/".into());
+        }
+        if let Some(v) = get("pathPattern")
+            && (v == ".*" || v == "/.*")
+        {
+            out.components[*i]
+                .broad_paths
+                .push(format!("pathPattern={}", v));
+        }
     } else if let [.., (_, Some(i)), (f, _)] = stack
         && f == "intent-filter"
     {
@@ -903,6 +941,34 @@ fn manifest_issues(m: &ManifestAttrs) -> Vec<ManifestIssue> {
             Info,
             "android:allowBackup=true: app data can be pulled with adb backup".into(),
         );
+    }
+    // Provider URI/path grants, reported per provider.
+    for c in &m.components {
+        if c.kind != "provider" {
+            continue;
+        }
+        if c.grant_uri_permissions {
+            issue(
+                "apk-provider-grant-uri",
+                Medium,
+                format!(
+                    "provider {} sets grantUriPermissions: any URI it serves can be granted to another app",
+                    c.name
+                ),
+            );
+        }
+        if !c.broad_paths.is_empty() {
+            let paths: Vec<_> = c.broad_paths.iter().map(String::as_str).collect();
+            issue(
+                "apk-provider-broad-path",
+                Medium,
+                format!(
+                    "provider {} grants or guards every path ({})",
+                    c.name,
+                    paths.join(", ")
+                ),
+            );
+        }
     }
     out
 }
@@ -2145,6 +2211,85 @@ mod tests {
         ] {
             assert!(!rules.contains(&r), "{r} in {rules:?}");
         }
+    }
+
+    #[test]
+    fn framework_attribute_ids_match_android_r_attr() {
+        // android.R.attr values from android-36/android.jar
+        for (id, name) in [
+            (0x0101_002a, "path"),
+            (0x0101_002b, "pathPrefix"),
+            (0x0101_002c, "pathPattern"),
+            (0x0101_001b, "grantUriPermissions"),
+            (0x0101_0026, "mimeType"),
+            (0x0101_0027, "scheme"),
+            (0x0101_0028, "host"),
+            (0x0101_0029, "port"),
+        ] {
+            assert!(
+                ANDROID_ATTRS.contains(&(id, name)),
+                "{name} must be {id:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_uri_grants_and_broad_paths_are_reported() {
+        let has = |m: &El, rule: &str| issues(m).iter().any(|(r, _)| *r == rule);
+        let grant = manifest(
+            vec![],
+            33,
+            vec![],
+            vec![comp(
+                "provider",
+                vec![a("exported", f()), a("grantUriPermissions", t())],
+                vec![],
+            )],
+        );
+        assert!(has(&grant, "apk-provider-grant-uri"));
+        let broad_grant = manifest(
+            vec![],
+            33,
+            vec![],
+            vec![comp(
+                "provider",
+                vec![a("exported", f())],
+                vec![el(
+                    "grant-uri-permission",
+                    vec![a("pathPrefix", V::Str("/"))],
+                    vec![],
+                )],
+            )],
+        );
+        assert!(has(&broad_grant, "apk-provider-broad-path"));
+        let broad_perm = manifest(
+            vec![],
+            33,
+            vec![],
+            vec![comp(
+                "provider",
+                vec![a("exported", f())],
+                vec![el("path-permission", vec![a("path", V::Str("/"))], vec![])],
+            )],
+        );
+        assert!(has(&broad_perm, "apk-provider-broad-path"));
+        let narrow = manifest(
+            vec![],
+            33,
+            vec![],
+            vec![comp(
+                "provider",
+                vec![a("exported", f())],
+                vec![el(
+                    "grant-uri-permission",
+                    vec![a("pathPrefix", V::Str("/shared/"))],
+                    vec![],
+                )],
+            )],
+        );
+        assert!(
+            !has(&narrow, "apk-provider-broad-path") && !has(&narrow, "apk-provider-grant-uri")
+        );
     }
 
     #[test]

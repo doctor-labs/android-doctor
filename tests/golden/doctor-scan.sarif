@@ -25,7 +25,7 @@
             "severity": "critical"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 60
+          "ruleIndex": 62
         },
         {
           "level": "note",
@@ -50,7 +50,7 @@
             "severity": "info"
           },
           "ruleId": "avb_signature",
-          "ruleIndex": 36
+          "ruleIndex": 38
         }
       ],
       "tool": {
@@ -520,6 +520,38 @@
               "name": "apk-launch-mode-singletask",
               "shortDescription": {
                 "text": "An APK activity uses launchMode singleTask or singleInstance"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "A provider grants or guards every path via <grant-uri-permission> or <path-permission>"
+              },
+              "help": {
+                "text": "Scope <grant-uri-permission>/<path-permission> to the paths that must be shared"
+              },
+              "id": "apk-provider-broad-path",
+              "name": "apk-provider-broad-path",
+              "shortDescription": {
+                "text": "A provider grants or guards every path via <grant-uri-permission> or <path-permission>"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "A provider sets android:grantUriPermissions"
+              },
+              "help": {
+                "text": "Grant per-URI with narrow <grant-uri-permission> paths instead of grantUriPermissions=\"true\""
+              },
+              "id": "apk-provider-grant-uri",
+              "name": "apk-provider-grant-uri",
+              "shortDescription": {
+                "text": "A provider sets android:grantUriPermissions"
               }
             },
             {
