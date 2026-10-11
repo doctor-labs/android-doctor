@@ -706,7 +706,7 @@ Every subcommand takes `--help`. `--no-color` (or `NO_COLOR`) disables colour.
 
 | Command | What it does |
 | --- | --- |
-| `extract <ota.zip\|dir\|payload.bin> [-o out] [--only a,b] [--list] [--force]` | OTA to partition images (add `--files` for file trees, `--base` for incremental OTAs) |
+| `extract <ota.zip\|dir\|payload.bin> [-o out] [--only a,b] [--list] [--force]` | OTA to partition images (add `--files` for file trees, `--base DIR` for incremental OTAs: the old `<partition>.img` files; SOURCE_COPY, MOVE, SOURCE_BSDIFF, BSDIFF and BROTLI_BSDIFF are applied, PUFFDIFF, ZUCCHINI and LZ4DIFF are refused) |
 | `unpack <boot.img\|vendor_boot.img> [-o dir] [--json]` | Header, and with `-o` the kernel, ramdisk and dtb sections |
 | `ramdisk <boot.img\|ramdisk> [-o dir] [--json] [--list]` | Ramdisk contents and ADB properties |
 | `audit <image\|dir>... [--json] [--sarif FILE] [--baseline FILE] [--fail-on SEVERITY] [--score]` | ADB properties, setuid files, `su` binaries, init services, findings |

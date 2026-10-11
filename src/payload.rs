@@ -108,6 +108,12 @@ const OP_ZSTD: i32 = 14;
 // Incremental operations that read from the base partition image supplied by --base.
 const OP_SOURCE_COPY: i32 = 4;
 const OP_SOURCE_BSDIFF: i32 = 5;
+// The older in-place spellings (minor version 1): MOVE copies src to dst extents, BSDIFF patches
+// src into dst. Like payload-dumper-go, they are applied against the old image and written to a
+// new one. BROTLI_BSDIFF is SOURCE_BSDIFF with a BSDF2 (per-stream bzip2/brotli) patch.
+const OP_MOVE: i32 = 2;
+const OP_BSDIFF: i32 = 3;
+const OP_BROTLI_BSDIFF: i32 = 10;
 
 fn op_name(t: i32) -> String {
     match t {
@@ -253,7 +259,10 @@ fn is_data_op(t: i32) -> bool {
 
 /// Incremental operations that read from the base partition image (--base).
 fn is_source_op(t: i32) -> bool {
-    matches!(t, OP_SOURCE_COPY | OP_SOURCE_BSDIFF)
+    matches!(
+        t,
+        OP_SOURCE_COPY | OP_SOURCE_BSDIFF | OP_MOVE | OP_BSDIFF | OP_BROTLI_BSDIFF
+    )
 }
 
 fn has_verity(p: &pb::PartitionUpdate) -> bool {
@@ -400,14 +409,14 @@ fn plan_partition<'a>(
 /// Reject incremental payloads when no base image is supplied.
 ///
 /// When `opts.base` is `Some`, SOURCE_COPY and SOURCE_BSDIFF are allowed (the caller has
-/// provided the previous partition image to read from). Operations like MOVE, BSDIFF, PUFFDIFF
-/// and anything else that is not a data op, source op, or zero/discard is still rejected.
+/// provided the previous partition image to read from). PUFFDIFF, ZUCCHINI, LZ4DIFF_* and anything
+/// else that is not a data op, source op, or zero/discard is still rejected.
 fn check_full(
     payload: &Payload,
     selected: &[&pb::PartitionUpdate],
     opts: &ExtractOptions,
 ) -> Result<()> {
-    // When a base directory is supplied, SOURCE_COPY and SOURCE_BSDIFF are supported.
+    // When a base directory is supplied, the source operations are supported.
     let allowed_inc = opts.base.is_some();
     let mut needs_source: Vec<String> = Vec::new();
     for part in selected {
@@ -584,20 +593,27 @@ fn read_source(
     op: &pb::InstallOperation,
     src_path: &Path,
     bs: u64,
-    expected: u64,
+    expected: Option<u64>,
 ) -> Result<Vec<u8>> {
     let total: u64 = op
         .src_extents
         .iter()
         .map(|e| e.num_blocks.unwrap_or(0) * bs)
         .sum();
+    // A copy must fill its destination exactly; a bsdiff patch may turn n source bytes into m.
+    if let Some(expected) = expected {
+        ensure!(
+            total == expected,
+            "source extents ({total} bytes) do not match destination extents ({expected} bytes)"
+        );
+    }
     ensure!(
-        total == expected,
-        "source extents ({total} bytes) do not match destination extents ({expected} bytes)"
+        total <= MAX_BLOB_BYTES * 4,
+        "source extents of {total} bytes are over the limit"
     );
     let mut src = File::open(src_path)
         .with_context(|| format!("opening base image {}", src_path.display()))?;
-    let mut out = Vec::with_capacity(expected as usize);
+    let mut out = Vec::with_capacity(total as usize);
     for e in &op.src_extents {
         let (s, n) = (e.start_block.unwrap_or(0), e.num_blocks.unwrap_or(0));
         let off = s.checked_mul(bs).context("source start overflows")?;
@@ -619,7 +635,7 @@ fn copy_source(
     expected: &u64,
     w: &mut ExtentWriter,
 ) -> Result<()> {
-    let src = read_source(op, src_path, bs, *expected)?;
+    let src = read_source(op, src_path, bs, Some(*expected))?;
     copy_exact(&src[..], w, *expected)
 }
 
@@ -682,14 +698,14 @@ fn run_data_op(
                 .map_err(|e| anyhow!("zstd: {e}"))?;
             copy_exact(dec, &mut w, expected)
         }
-        OP_SOURCE_COPY => {
+        OP_SOURCE_COPY | OP_MOVE => {
             // Source is the old partition image; copy bytes from src_extents to dst_extents.
             copy_source(op, &blob, src_base, bs, &expected, &mut w)?;
             Ok(())
         }
-        OP_SOURCE_BSDIFF => {
-            // Blob is a BSDIFF4 patch; apply it to the source data read from src_extents.
-            let src = read_source(op, src_base, bs, expected)?;
+        OP_SOURCE_BSDIFF | OP_BSDIFF | OP_BROTLI_BSDIFF => {
+            // Blob is a BSDIFF40 or BSDF2 patch; apply it to the source data read from src_extents.
+            let src = read_source(op, src_base, bs, None)?;
             let patched = crate::bsdiff::apply(&blob, &src)?;
             copy_exact(&patched[..], &mut w, expected)?;
             Ok(())
@@ -759,7 +775,7 @@ pub fn extract(
         for plan in &plans {
             create_part(&part_path(out_dir, plan.name))?.set_len(plan.size)?;
         }
-        run_operations(&loc, &plans, out_dir)?;
+        run_operations(&loc, &plans, out_dir, bs)?;
         verify_and_publish(&plans, out_dir)
     })();
     if result.is_err() {
@@ -770,7 +786,7 @@ pub fn extract(
     result.map(Some)
 }
 
-fn run_operations(loc: &Located, plans: &[Plan], out_dir: &Path) -> Result<()> {
+fn run_operations(loc: &Located, plans: &[Plan], out_dir: &Path, block_size: u64) -> Result<()> {
     let base_dir: Option<&Path> = loc.base_dir.as_deref();
     // flat task list in payload order: (partition index, operation index within the plan)
     let mut tasks: Vec<(usize, usize, u64)> = Vec::new();
@@ -825,10 +841,14 @@ fn run_operations(loc: &Located, plans: &[Plan], out_dir: &Path) -> Result<()> {
                     let d = &plan.data_ops[oi];
                     let (start, len) = (d.start, d.len);
                     let out_path = part_path(out_dir, plan.name);
+                    // the old partition image for this partition: <--base dir>/<partition>.img
+                    let src_image = base_dir
+                        .map(|d| d.join(format!("{}.img", plan.name)))
+                        .unwrap_or_default();
                     let ctx = OpContext {
                         payload_base: loc.base,
-                        src_base: base_dir.unwrap_or(Path::new("")),
-                        block_size: 4096,
+                        src_base: &src_image,
+                        block_size,
                     };
                     let ran = run_data_op(&mut file, d.op, &d.extents, start, len, &out_path, &ctx);
                     match ran {
@@ -1420,6 +1440,95 @@ mod tests {
                 files_in(&out)
             );
         }
+    }
+
+    /// Hand-built incremental payload: partition `system` rebuilt from an old image with MOVE,
+    /// BSDIFF and BROTLI_BSDIFF (block size 512).
+    #[test]
+    fn move_bsdiff_and_brotli_bsdiff_rebuild_a_partition_from_the_old_image() {
+        const OLD: &[u8] = include_bytes!("../tests/fixtures/bsdiff/old.bin"); // 16 blocks
+        const NEW: &[u8] = include_bytes!("../tests/fixtures/bsdiff/new.bin"); // 16 blocks
+        const P40: &[u8] = include_bytes!("../tests/fixtures/bsdiff/patch.bsdiff");
+        const P2: &[u8] = include_bytes!("../tests/fixtures/bsdiff/patch.bsdf2");
+        let ext = |s: u64, n: u64| pb::Extent {
+            start_block: Some(s),
+            num_blocks: Some(n),
+        };
+        let mut blobs = Vec::new();
+        let mut mk = |t: i32, src: Vec<pb::Extent>, dst: Vec<pb::Extent>, blob: &[u8]| {
+            let (off, len) = if blob.is_empty() {
+                (None, None)
+            } else {
+                let off = blobs.len() as u64;
+                blobs.extend(blob);
+                (Some(off), Some(blob.len() as u64))
+            };
+            pb::InstallOperation {
+                r#type: t,
+                data_offset: off,
+                data_length: len,
+                src_extents: src,
+                dst_extents: dst,
+                data_sha256_hash: None,
+            }
+        };
+        // new image: 0..16 = BSDIFF result, 16..18 = MOVE of old blocks 4..6, 18..34 = BROTLI_BSDIFF
+        let ops = vec![
+            mk(OP_BSDIFF, vec![ext(0, 16)], vec![ext(0, 16)], P40),
+            mk(OP_MOVE, vec![ext(4, 2)], vec![ext(16, 2)], &[]),
+            mk(OP_BROTLI_BSDIFF, vec![ext(0, 16)], vec![ext(18, 16)], P2),
+        ];
+        let mut want = NEW.to_vec();
+        want.extend(&OLD[4 * 512..6 * 512]);
+        want.extend(NEW);
+        let manifest = pb::DeltaArchiveManifest {
+            block_size: Some(512),
+            minor_version: Some(1),
+            partitions: vec![pb::PartitionUpdate {
+                partition_name: "system".into(),
+                old_partition_info: Some(pb::PartitionInfo {
+                    size: Some(OLD.len() as u64),
+                    hash: None,
+                }),
+                new_partition_info: Some(pb::PartitionInfo {
+                    size: Some(want.len() as u64),
+                    hash: Some(Sha256::digest(&want).to_vec()),
+                }),
+                operations: ops,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let m = manifest.encode_to_vec();
+        let mut payload = Vec::new();
+        payload.extend(MAGIC);
+        payload.extend(2u64.to_be_bytes());
+        payload.extend((m.len() as u64).to_be_bytes());
+        payload.extend(0u32.to_be_bytes());
+        payload.extend(&m);
+        payload.extend(&blobs);
+
+        let (_g, dir) = as_dir("incr-ops", &payload);
+        let base = scratch("incr-base");
+        std::fs::write(base.join("system.img"), OLD).unwrap();
+        let out = scratch("incr-out");
+        // without the old image: refused, nothing written
+        assert!(run(&dir, &out, &ExtractOptions::default()).is_err());
+        let opts = ExtractOptions {
+            base: Some(base.to_path_buf()),
+            ..Default::default()
+        };
+        let got = run(&dir, &out, &opts).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(std::fs::read(out.join("system.img")).unwrap(), want);
+        assert_eq!(got[0].1, "sha256 verified");
+        // a different old image changes the result, and the manifest hash catches it
+        let mut wrong = OLD.to_vec();
+        wrong[100] ^= 0xff;
+        std::fs::write(base.join("system.img"), wrong).unwrap();
+        let out2 = scratch("incr-out2");
+        let e = run(&dir, &out2, &opts).unwrap_err().to_string();
+        assert!(e.contains("sha256 mismatch") || e.contains("bsdiff"), "{e}");
     }
 
     #[test]

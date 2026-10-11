@@ -30,19 +30,61 @@ use std::io::Read;
 /// Refuse absurd headers rather than allocating from a file-supplied size.
 const MAX_PATCH: usize = 1 << 31;
 
+/// bsdiff's `offtin`: 8 bytes little-endian in sign-magnitude form (bit 63 is the sign, the other
+/// 63 bits the magnitude). It is NOT two's complement: a seek of -5 is stored as 0x8000...05.
 fn i64le(b: &[u8], at: usize) -> Result<i64> {
     ensure!(at + 8 <= b.len(), "bsdiff: truncated");
     let mut v = [0u8; 8];
     v.copy_from_slice(&b[at..at + 8]);
-    Ok(i64::from_le_bytes(v))
+    let raw = u64::from_le_bytes(v);
+    let mag = (raw & !(1 << 63)) as i64;
+    Ok(if raw >> 63 != 0 { -mag } else { mag })
+}
+
+/// How one of the three streams is compressed. BSDIFF40 is bzip2 throughout; BSDF2 (Android's
+/// `BROTLI_BSDIFF`) names a compressor per stream: 0 none, 1 bzip2, 2 brotli.
+#[derive(Clone, Copy)]
+enum Comp {
+    None,
+    Bz2,
+    Brotli,
+}
+
+impl Comp {
+    fn from_byte(b: u8) -> Result<Comp> {
+        Ok(match b {
+            0 => Comp::None,
+            1 => Comp::Bz2,
+            2 => Comp::Brotli,
+            other => anyhow::bail!("bsdiff: unknown stream compressor {other}"),
+        })
+    }
 }
 
 /// Decompress a bzip2 block, refusing an implausible declared size.
-fn inflate(block: &[u8], expected_hint: Option<usize>, what: &str) -> Result<Vec<u8>> {
+fn inflate(block: &[u8], comp: Comp, expected_hint: Option<usize>, what: &str) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    bzip2::read::BzDecoder::new(block)
-        .read_to_end(&mut out)
-        .with_context(|| format!("bsdiff: {what} block is not valid bzip2"))?;
+    // Bound the output: a hostile stream must not expand without limit.
+    let limit = (MAX_PATCH as u64) + 1;
+    match comp {
+        Comp::None => out.extend_from_slice(block),
+        Comp::Bz2 => {
+            bzip2::read::BzDecoder::new(block)
+                .take(limit)
+                .read_to_end(&mut out)
+                .with_context(|| format!("bsdiff: {what} block is not valid bzip2"))?;
+        }
+        Comp::Brotli => {
+            crate::libbrotli::BrotliDecoderReader::new(block)
+                .take(limit)
+                .read_to_end(&mut out)
+                .with_context(|| format!("bsdiff: {what} block is not valid brotli"))?;
+        }
+    }
+    ensure!(
+        out.len() <= MAX_PATCH,
+        "bsdiff: {what} block expands past the {MAX_PATCH} byte limit"
+    );
     if let Some(hint) = expected_hint {
         ensure!(
             out.len() <= hint,
@@ -55,7 +97,17 @@ fn inflate(block: &[u8], expected_hint: Option<usize>, what: &str) -> Result<Vec
 /// Apply a BSDIFF4 patch to `old`, returning the new contents.
 pub fn apply(patch: &[u8], old: &[u8]) -> Result<Vec<u8>> {
     ensure!(patch.len() >= 32, "bsdiff: patch is truncated");
-    ensure!(&patch[..8] == b"BSDIFF40", "bsdiff: bad magic");
+    let comps = if &patch[..8] == b"BSDIFF40" {
+        [Comp::Bz2; 3]
+    } else if &patch[..5] == b"BSDF2" {
+        [
+            Comp::from_byte(patch[5])?,
+            Comp::from_byte(patch[6])?,
+            Comp::from_byte(patch[7])?,
+        ]
+    } else {
+        anyhow::bail!("bsdiff: bad magic");
+    };
     let ctrl_len = i64le(patch, 8)?;
     let diff_len = i64le(patch, 16)?;
     let new_size = i64le(patch, 24)?;
@@ -79,19 +131,21 @@ pub fn apply(patch: &[u8], old: &[u8]) -> Result<Vec<u8>> {
         "bsdiff: block lengths run past the end of the patch"
     );
 
-    let ctrl = inflate(&patch[32..32 + ctrl_len], None, "ctrl")?;
+    let ctrl = inflate(&patch[32..32 + ctrl_len], comps[0], None, "ctrl")?;
     ensure!(
         ctrl.len() % 24 == 0,
         "bsdiff: ctrl block is not a whole number of triples"
     );
     let diff = inflate(
         &patch[32 + ctrl_len..32 + ctrl_len + diff_len],
+        comps[1],
         None,
         "diff",
     )?;
     // The extra block runs to the end of the patch; bzip2 stops at its own stream end.
     let extra = inflate(
         &patch[32 + ctrl_len + diff_len..],
+        comps[2],
         Some(new_size as usize),
         "extra",
     )?;
@@ -180,12 +234,21 @@ mod tests {
         e.finish().unwrap()
     }
 
+    /// bsdiff's `offtout`: sign-magnitude, little-endian.
+    fn offtout(v: i64) -> [u8; 8] {
+        let mut b = v.unsigned_abs().to_le_bytes();
+        if v < 0 {
+            b[7] |= 0x80;
+        }
+        b
+    }
+
     /// Build a BSDIFF4 patch turning `old` into `new` for these simple cases.
     fn patch(new: &[u8], ctrl: &[(i64, i64, i64)], diff: &[u8], extra: &[u8]) -> Vec<u8> {
         let ctrl_raw: Vec<u8> = ctrl
             .iter()
             .flat_map(|(x, y, z)| {
-                [x.to_le_bytes(), y.to_le_bytes(), z.to_le_bytes()]
+                [offtout(*x), offtout(*y), offtout(*z)]
                     .into_iter()
                     .flatten()
                     .collect::<Vec<u8>>()
@@ -196,9 +259,9 @@ mod tests {
         let e = bz(extra);
         let mut out = Vec::new();
         out.extend_from_slice(b"BSDIFF40");
-        out.extend_from_slice(&(c.len() as i64).to_le_bytes());
-        out.extend_from_slice(&(d.len() as i64).to_le_bytes());
-        out.extend_from_slice(&(new.len() as i64).to_le_bytes());
+        out.extend_from_slice(&offtout(c.len() as i64));
+        out.extend_from_slice(&offtout(d.len() as i64));
+        out.extend_from_slice(&offtout(new.len() as i64));
         out.extend_from_slice(&c);
         out.extend_from_slice(&d);
         out.extend_from_slice(&e);
@@ -283,5 +346,36 @@ mod tests {
         let mut p = patch(b"x", &[(0, 1, 0)], &[], b"x");
         p[24..32].copy_from_slice(&i64::MAX.to_le_bytes());
         assert!(apply(&p, b"").is_err());
+    }
+
+    // Made by the real bsdiff4 (python) from old.bin to new.bin; three of its five control
+    // triples seek backwards, which are stored sign-magnitude. /usr/bin/bspatch applies it too.
+    const OLD: &[u8] = include_bytes!("../tests/fixtures/bsdiff/old.bin");
+    const NEW: &[u8] = include_bytes!("../tests/fixtures/bsdiff/new.bin");
+    const BSDIFF40: &[u8] = include_bytes!("../tests/fixtures/bsdiff/patch.bsdiff");
+    // The same streams recompressed with brotli under a BSDF2 header (compressor bytes 2,2,2).
+    const BSDF2: &[u8] = include_bytes!("../tests/fixtures/bsdiff/patch.bsdf2");
+
+    #[test]
+    fn a_real_bsdiff_patch_with_backward_seeks_applies() {
+        assert_eq!(apply(BSDIFF40, OLD).unwrap(), NEW);
+    }
+
+    #[test]
+    fn a_bsdf2_brotli_patch_applies() {
+        assert_eq!(apply(BSDF2, OLD).unwrap(), NEW);
+        // an unknown compressor byte is refused, not guessed
+        let mut p = BSDF2.to_vec();
+        p[5] = 9;
+        assert!(apply(&p, OLD).is_err());
+        // truncation and byte flips never panic
+        for cut in 0..BSDF2.len() {
+            let _ = apply(&BSDF2[..cut], OLD);
+        }
+        for at in 0..BSDF2.len() {
+            let mut v = BSDF2.to_vec();
+            v[at] ^= 0xff;
+            let _ = apply(&v, OLD);
+        }
     }
 }
