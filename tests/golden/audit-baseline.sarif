@@ -35,7 +35,7 @@
             "severity": "high"
           },
           "ruleId": "debuggable-build",
-          "ruleIndex": 38
+          "ruleIndex": 41
         },
         {
           "baselineState": "new",
@@ -61,7 +61,7 @@
             "severity": "high"
           },
           "ruleId": "insecure-adb",
-          "ruleIndex": 54
+          "ruleIndex": 57
         },
         {
           "baselineState": "new",
@@ -87,7 +87,7 @@
             "severity": "high"
           },
           "ruleId": "su-binary",
-          "ruleIndex": 62
+          "ruleIndex": 65
         }
       ],
       "tool": {
@@ -548,6 +548,22 @@
                 "level": "warning"
               },
               "fullDescription": {
+                "text": "An APK activity uses launchMode singleTask or singleInstance"
+              },
+              "help": {
+                "text": "Use the standard launch mode or set taskAffinity=\"\""
+              },
+              "id": "apk-launch-mode-singletask",
+              "name": "apk-launch-mode-singletask",
+              "shortDescription": {
+                "text": "An APK activity uses launchMode singleTask or singleInstance"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
                 "text": "An APK uses android:sharedUserId"
               },
               "help": {
@@ -589,6 +605,38 @@
               "name": "apk-signature-unverified",
               "shortDescription": {
                 "text": "An APK signature could not be verified (unsupported algorithm or curve)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK activity sets a custom taskAffinity"
+              },
+              "help": {
+                "text": "Set taskAffinity=\"\" unless the task sharing is intended"
+              },
+              "id": "apk-task-affinity",
+              "name": "apk-task-affinity",
+              "shortDescription": {
+                "text": "An APK activity sets a custom taskAffinity"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK activity or application sets allowTaskReparenting"
+              },
+              "help": {
+                "text": "Remove allowTaskReparenting"
+              },
+              "id": "apk-task-reparenting",
+              "name": "apk-task-reparenting",
+              "shortDescription": {
+                "text": "An APK activity or application sets allowTaskReparenting"
               }
             },
             {
