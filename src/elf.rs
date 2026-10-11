@@ -395,7 +395,7 @@ pub fn to_json(a: &ElfAudit) -> Value {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// What to put in a hand-built ELF.
@@ -432,6 +432,18 @@ mod tests {
             strings: vec!["memcpy"],
             ..base()
         }
+    }
+
+    /// A shared object with none of the hardening (for other modules' tests).
+    pub(crate) fn unhardened_so() -> Vec<u8> {
+        build(&Spec {
+            etype: 3,
+            ..unhardened()
+        })
+    }
+    /// A fully hardened shared object.
+    pub(crate) fn hardened_so() -> Vec<u8> {
+        build(&base())
     }
 
     fn put(v: &mut Vec<u8>, be: bool, size: usize, x: u64) {

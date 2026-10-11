@@ -1084,7 +1084,8 @@ pub fn audit_apk_bytes(path: &Path, bytes: &[u8]) -> ApkAudit {
         let activities = attrs.as_ref().map_or(0, |a| {
             a.components.iter().filter(|c| c.kind == "activity").count()
         });
-        let code_issues = code_issues(&mut zip, activities);
+        let mut code_issues = code_issues(&mut zip, activities);
+        code_issues.extend(native_issues(&mut zip));
         Ok(ApkInfo {
             path: path.display().to_string(),
             package_name: attrs
@@ -1155,6 +1156,74 @@ fn code_issues(zip: &mut ZipArchive<Cursor<&[u8]>>, activities: usize) -> Vec<Ma
         });
     }
     out
+}
+
+/// Largest single `.so` and total `.so` bytes the native rules will inspect in one APK.
+const MAX_SO_ENTRY: u64 = 32 * 1024 * 1024;
+const MAX_SO_TOTAL: u64 = 128 * 1024 * 1024;
+
+/// Run the ELF hardening rules over the APK's `lib/<abi>/*.so` entries.
+fn native_issues(zip: &mut ZipArchive<Cursor<&[u8]>>) -> Vec<ManifestIssue> {
+    let mut names: Vec<String> = zip
+        .file_names()
+        .filter(|n| n.starts_with("lib/") && n.ends_with(".so"))
+        .map(String::from)
+        .collect();
+    names.sort();
+    let mut total: u64 = 0;
+    // Collect per-rule: (rule_id, severity, reason, Vec<entry_names>)
+    let mut per_rule: Vec<(&'static str, Severity, &'static str, Vec<String>)> = Vec::new();
+    for n in names {
+        let ok_size = zip
+            .by_name(&n)
+            .map(|f| f.size())
+            .map(|s| {
+                total += s;
+                s <= MAX_SO_ENTRY && total <= MAX_SO_TOTAL
+            })
+            .unwrap_or(false);
+        if !ok_size {
+            continue;
+        }
+        let bytes = zip.by_name(&n).ok().and_then(|mut f| {
+            let mut v = Vec::new();
+            f.read_to_end(&mut v).ok().map(|_| v)
+        });
+        let Some(bytes) = bytes else {
+            continue;
+        };
+        if !bytes.starts_with(b"\x7fELF") {
+            continue;
+        }
+        let Ok(Some(info)) = crate::elf::parse(&bytes) else {
+            continue;
+        };
+        for (sev, rule, reason) in crate::elf::issues(&info) {
+            let pos = per_rule.iter().position(|(r, _, _, _)| *r == rule);
+            if let Some(p) = pos {
+                per_rule[p].3.push(n.clone());
+            } else {
+                per_rule.push((rule, sev, reason, vec![n.clone()]));
+            }
+        }
+    }
+    per_rule
+        .into_iter()
+        .map(|(rule, severity, reason, names)| {
+            let count = names.len();
+            let label = if count == 1 { "library" } else { "libraries" };
+            let list = if count <= 5 {
+                names.join(", ")
+            } else {
+                format!("{} (+{} more)", names[..5].join(", "), count - 5)
+            };
+            ManifestIssue {
+                rule,
+                severity,
+                detail: format!("{count} native {label}: {list}: {reason}"),
+            }
+        })
+        .collect()
 }
 
 /// Read one entry out of the archive, refusing anything over the per-entry limit.
@@ -2252,5 +2321,36 @@ mod tests {
                 let _ = info.posture(NOW);
             }
         }
+    }
+
+    #[test]
+    fn native_libraries_get_the_elf_hardening_rules() {
+        use std::io::Write;
+        let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let opt = zip::write::SimpleFileOptions::default();
+        w.start_file("lib/arm64-v8a/libbad.so", opt).unwrap();
+        w.write_all(&crate::elf::tests::unhardened_so()).unwrap();
+        w.start_file("lib/arm64-v8a/libgood.so", opt).unwrap();
+        w.write_all(&crate::elf::tests::hardened_so()).unwrap();
+        w.start_file("assets/plugin.so", opt).unwrap();
+        w.write_all(&crate::elf::tests::unhardened_so()).unwrap();
+        let bytes = w.finish().unwrap().into_inner();
+        let a = audit_apk_bytes(std::path::Path::new("/x.apk"), &bytes);
+        let info = a.info.expect("a zip without a manifest still audits");
+        let native: Vec<_> = info
+            .issues()
+            .into_iter()
+            .filter(|i| i.rule.starts_with("elf-"))
+            .collect();
+        assert!(
+            native
+                .iter()
+                .any(|i| i.rule == "elf-no-relro" && i.detail.contains("lib/arm64-v8a/libbad.so")),
+            "{native:?}"
+        );
+        assert!(native.iter().any(|i| i.rule == "elf-exec-stack"));
+        assert!(native
+            .iter()
+            .all(|i| !i.detail.contains("libgood.so") && !i.detail.contains("assets/plugin.so")));
     }
 }
