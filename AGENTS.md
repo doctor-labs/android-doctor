@@ -48,6 +48,7 @@ Install the skill for an agent with `android-doctor doctor install --agent <clau
 
     src/main.rs        CLI (clap commands registered on doctor-kit's `run_with`) and command dispatch
     src/mcp.rs         MCP server (JSON-RPC 2.0 on stdio, pure `handle` function)
+    src/fec.rs         dm-verity FEC: Reed-Solomon parity generate/verify/repair (`fec` command)
     src/skill.rs       agent skill installer; src/skill_body.md is the skill text
     src/rockchip.rs    Rockchip RKFW/RKAF/SSFW readers (shared oem plumbing)
     src/oem.rs         OEM firmware containers (shared sniff/list/extract); huawei.rs, lgkdz.rs, sonysin.rs readers

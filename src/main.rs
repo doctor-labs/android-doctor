@@ -23,6 +23,7 @@ mod erofsfs;
 mod ext4fs;
 mod extract;
 mod f2fsfs;
+mod fec;
 mod findings;
 mod fix;
 mod fwdiff;
@@ -128,6 +129,11 @@ enum Command {
         /// Print JSON instead of text
         #[arg(long)]
         json: bool,
+    },
+    /// dm-verity forward error correction: generate Reed-Solomon parity for a file, verify a file against it, repair a damaged file
+    Fec {
+        #[command(subcommand)]
+        action: FecAction,
     },
     /// Show a flash manifest (Qualcomm rawprogram*.xml or MediaTek scatter.txt) and check it
     /// against the image files actually present
@@ -300,6 +306,47 @@ enum Command {
     },
 }
 
+/// What `fec` should do.
+#[derive(Subcommand)]
+enum FecAction {
+    /// Write the FEC file (parity + AOSP header) for a file whose size is a multiple of 4096
+    Generate {
+        input: PathBuf,
+        /// Where to write the FEC data
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Parity bytes per RS block (2 to 24; AOSP uses 2)
+        #[arg(long, default_value = "2")]
+        roots: usize,
+        /// Replace an existing output file instead of refusing
+        #[arg(long)]
+        force: bool,
+    },
+    /// Check a file against its FEC data; exit 1 if anything differs
+    Verify {
+        input: PathBuf,
+        /// The FEC data made by `fec generate` (or avbroot / AOSP `fec`)
+        fec: PathBuf,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write a corrected copy of a damaged file (up to roots/2 wrong bytes per RS block); exit 1 if some blocks cannot be fixed
+    Repair {
+        input: PathBuf,
+        fec: PathBuf,
+        /// Where to write the repaired copy
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Replace an existing output file instead of refusing
+        #[arg(long)]
+        force: bool,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 /// What `ci` should do.
 #[derive(Subcommand)]
 enum CiAction {
@@ -321,6 +368,136 @@ enum CiAction {
         #[arg(long, value_name = "LEVEL", default_value = "critical", value_parser = ci::FAIL_ON)]
         fail_on: String,
     },
+}
+
+/// A new output file next to `target`, renamed into place on success; refuses to replace an
+/// existing file unless `force`, and never writes through a symlink.
+fn write_atomically(
+    target: &std::path::Path,
+    force: bool,
+    write: impl FnOnce(&mut std::fs::File) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    if !force && target.symlink_metadata().is_ok() {
+        anyhow::bail!(
+            "{} already exists; pass --force to replace it",
+            target.display()
+        );
+    }
+    let mut part = target.as_os_str().to_owned();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    let mut f = extract::create_part(&part)?;
+    if let Err(e) = write(&mut f) {
+        let _ = std::fs::remove_file(&part);
+        return Err(e);
+    }
+    drop(f);
+    if let Err(e) = std::fs::rename(&part, target) {
+        let _ = std::fs::remove_file(&part);
+        return Err(e.into());
+    }
+    Ok(())
+}
+
+fn fec_report(r: &fec::Report) -> (String, serde_json::Value) {
+    let text = format!(
+        "{} blocks, {} rounds, {} parity bytes per RS block: FEC data {}; {} damaged RS block(s), {} byte(s) corrected, {} uncorrectable",
+        r.blocks,
+        r.rounds,
+        r.roots,
+        if r.fec_intact {
+            "intact"
+        } else {
+            "DAMAGED (its hash does not match)"
+        },
+        r.bad_codewords,
+        r.corrected_bytes,
+        r.uncorrectable
+    );
+    let json = serde_json::json!({
+        "roots": r.roots, "blocks": r.blocks, "rounds": r.rounds, "fec_intact": r.fec_intact,
+        "bad_codewords": r.bad_codewords, "corrected_bytes": r.corrected_bytes, "uncorrectable": r.uncorrectable,
+        "ok": r.clean(),
+    });
+    (text, json)
+}
+
+fn fec_command(action: FecAction) -> anyhow::Result<()> {
+    let gate = |msg: &str| -> anyhow::Error {
+        reporting::Gate {
+            code: doctor_core::ExitCode::Findings,
+            message: msg.into(),
+        }
+        .into()
+    };
+    match action {
+        FecAction::Generate {
+            input,
+            output,
+            roots,
+            force,
+        } => {
+            let mut shape = None;
+            write_atomically(&output, force, |f| {
+                let mut w = std::io::BufWriter::new(f);
+                shape = Some(fec::generate(&input, &mut w, roots)?);
+                w.flush()?;
+                Ok(())
+            })?;
+            let s = shape.expect("generated");
+            print_out(&format!(
+                "wrote {} ({} bytes): {} blocks in {} rounds, {} parity bytes per RS block",
+                output.display(),
+                s.file_len(),
+                s.blocks,
+                s.rounds,
+                s.roots
+            ))
+        }
+        FecAction::Verify {
+            input,
+            fec: fec_file,
+            json,
+        } => {
+            let r = fec::verify(&input, &fec_file)?;
+            let (text, j) = fec_report(&r);
+            print_out(&if json {
+                serde_json::to_string_pretty(&j)?
+            } else {
+                text
+            })?;
+            if r.clean() {
+                Ok(())
+            } else {
+                Err(gate("the file does not match its FEC data"))
+            }
+        }
+        FecAction::Repair {
+            input,
+            fec: fec_file,
+            output,
+            force,
+            json,
+        } => {
+            let mut report = None;
+            write_atomically(&output, force, |f| {
+                report = Some(fec::repair(&input, &fec_file, f)?);
+                Ok(())
+            })?;
+            let r = report.expect("repaired");
+            let (text, j) = fec_report(&r);
+            print_out(&if json {
+                serde_json::to_string_pretty(&j)?
+            } else {
+                text
+            })?;
+            if r.uncorrectable > 0 {
+                Err(gate("some blocks could not be repaired"))
+            } else {
+                Ok(())
+            }
+        }
+    }
 }
 
 /// `ci install`: print or write the pinned workflow.
@@ -652,6 +829,7 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             json,
         } => partitions_command(&input, sector_size, json),
         Command::Dt { input, json } => dt_command(&input, json),
+        Command::Fec { action } => fec_command(action),
         Command::Amlogic { input } => {
             let img = amlogic::describe_file(&input)?;
             print_out(&amlogic::to_text(&img, &display_name(&input)))
