@@ -35,7 +35,7 @@
             "severity": "high"
           },
           "ruleId": "debuggable-build",
-          "ruleIndex": 43
+          "ruleIndex": 44
         },
         {
           "baselineState": "new",
@@ -61,7 +61,7 @@
             "severity": "high"
           },
           "ruleId": "insecure-adb",
-          "ruleIndex": 59
+          "ruleIndex": 60
         },
         {
           "baselineState": "new",
@@ -87,7 +87,7 @@
             "severity": "high"
           },
           "ruleId": "su-binary",
-          "ruleIndex": 67
+          "ruleIndex": 68
         }
       ],
       "tool": {
@@ -541,6 +541,22 @@
               "name": "apk-exported-provider",
               "shortDescription": {
                 "text": "An APK exports a content provider with no permission"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK exports a component behind a permission it declares as normal or dangerous"
+              },
+              "help": {
+                "text": "Declare the guarding permission with android:protectionLevel=\"signature\" so only apps signed with the same key can hold it"
+              },
+              "id": "apk-exported-weak-permission",
+              "name": "apk-exported-weak-permission",
+              "shortDescription": {
+                "text": "An APK exports a component behind a permission it declares as normal or dangerous"
               }
             },
             {

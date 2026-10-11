@@ -339,6 +339,11 @@ pub fn help(rule: &str) -> Option<Help> {
             "Set android:exported=\"false\", or guard it with a signature-level android:permission",
             Medium,
         ),
+        "apk-exported-weak-permission" => (
+            "An APK exports a component behind a permission it declares as normal or dangerous",
+            "Declare the guarding permission with android:protectionLevel=\"signature\" so only apps signed with the same key can hold it",
+            Medium,
+        ),
         "apk-exported-provider" => (
             "An APK exports a content provider with no permission",
             "Set android:exported=\"false\", or require a signature-level permission (or separate read and write permissions)",
@@ -794,6 +799,7 @@ const KNOWN_RULES: &[&str] = &[
     "elf-no-canary",
     "elf-no-fortify",
     "apk-exported-component",
+    "apk-exported-weak-permission",
     "apk-exported-provider",
     "apk-launch-mode-singletask",
     "apk-task-affinity",

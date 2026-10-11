@@ -6,7 +6,9 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- APK audit reports exported components guarded by a permission the app declares as normal or dangerous (#209).
 
+- APK audit reports exported components guarded by a permission the app declares as normal or dangerous (#209).
 - APK audit reports task-hijacking manifest attributes: singleTask/singleInstance launchMode, a custom taskAffinity and allowTaskReparenting (#207).
 - Audit flags key and keystore files by name (`.jks`, `.bks`, `.keystore`, `.p12`, `.pfx`, `.pem`, `.key`) as `keystore_files` (#187).
 - Rockchip `RKFW` / `RKAF` / `SSFW` `update.img` containers (#168, PR #243): `identify`, `extract` and `extract --list` unwrap the loader and the RKAF parts (`parameter`, `kernel`, `boot`, `system`, ...), checking the RKAF CRC and the RKFW MD5 trailer. Synthetic-fixture-validated only.
