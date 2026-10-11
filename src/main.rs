@@ -30,6 +30,7 @@ mod fix;
 mod fwdiff;
 mod hashtree;
 mod huawei;
+mod imgdiff;
 mod info;
 mod kit;
 mod lgkdz;
