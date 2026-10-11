@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- APK audit reports custom permissions without signature protection and a minSdkVersion below 23 (#211).
+- APK audit reports custom permissions without signature protection and a minSdkVersion below 23 (#211).
 - APK audit reports exported components guarded by a permission the app declares as normal or dangerous (#209).
 
 - APK audit reports exported components guarded by a permission the app declares as normal or dangerous (#209).

@@ -35,7 +35,7 @@
             "severity": "high"
           },
           "ruleId": "diff-debuggable-build",
-          "ruleIndex": 45
+          "ruleIndex": 47
         },
         {
           "baselineState": "new",
@@ -61,7 +61,7 @@
             "severity": "high"
           },
           "ruleId": "diff-insecure-adb",
-          "ruleIndex": 46
+          "ruleIndex": 48
         },
         {
           "baselineState": "new",
@@ -87,7 +87,7 @@
             "severity": "high"
           },
           "ruleId": "diff-su-binary",
-          "ruleIndex": 52
+          "ruleIndex": 54
         },
         {
           "baselineState": "new",
@@ -113,7 +113,7 @@
             "severity": "high"
           },
           "ruleId": "diff-new-setuid",
-          "ruleIndex": 48
+          "ruleIndex": 50
         },
         {
           "baselineState": "new",
@@ -139,7 +139,7 @@
             "severity": "info"
           },
           "ruleId": "diff-prop-changed",
-          "ruleIndex": 49
+          "ruleIndex": 51
         },
         {
           "baselineState": "new",
@@ -165,7 +165,7 @@
             "severity": "info"
           },
           "ruleId": "diff-prop-changed",
-          "ruleIndex": 49
+          "ruleIndex": 51
         }
       ],
       "tool": {
@@ -559,6 +559,22 @@
             },
             {
               "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "Custom permission without signature protection"
+              },
+              "help": {
+                "text": "Declare custom permissions with android:protectionLevel=\"signature\""
+              },
+              "id": "apk-custom-permission-weak",
+              "name": "apk-custom-permission-weak",
+              "shortDescription": {
+                "text": "Custom permission without signature protection"
+              }
+            },
+            {
+              "defaultConfiguration": {
                 "level": "error"
               },
               "fullDescription": {
@@ -651,6 +667,22 @@
               "name": "apk-launch-mode-singletask",
               "shortDescription": {
                 "text": "An APK activity uses launchMode singleTask or singleInstance"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "Old minimum SDK"
+              },
+              "help": {
+                "text": "Raise minSdkVersion to a release that still gets security updates"
+              },
+              "id": "apk-min-sdk-old",
+              "name": "apk-min-sdk-old",
+              "shortDescription": {
+                "text": "Old minimum SDK"
               }
             },
             {

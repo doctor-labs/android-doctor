@@ -344,6 +344,16 @@ pub fn help(rule: &str) -> Option<Help> {
             "Declare the guarding permission with android:protectionLevel=\"signature\" so only apps signed with the same key can hold it",
             Medium,
         ),
+        "apk-custom-permission-weak" => (
+            "Custom permission without signature protection",
+            "Declare custom permissions with android:protectionLevel=\"signature\"",
+            Low,
+        ),
+        "apk-min-sdk-old" => (
+            "Old minimum SDK",
+            "Raise minSdkVersion to a release that still gets security updates",
+            Low,
+        ),
         "apk-exported-provider" => (
             "An APK exports a content provider with no permission",
             "Set android:exported=\"false\", or require a signature-level permission (or separate read and write permissions)",
@@ -800,6 +810,8 @@ const KNOWN_RULES: &[&str] = &[
     "elf-no-fortify",
     "apk-exported-component",
     "apk-exported-weak-permission",
+    "apk-custom-permission-weak",
+    "apk-min-sdk-old",
     "apk-exported-provider",
     "apk-launch-mode-singletask",
     "apk-task-affinity",

@@ -206,6 +206,8 @@ pub struct ManifestAttrs {
     pub version_name: Option<String>,
     /// `<uses-sdk android:targetSdkVersion>` when it is a plain integer.
     pub target_sdk: Option<u32>,
+    /// `<uses-sdk android:minSdkVersion>` when it is a plain integer.
+    pub min_sdk: Option<u32>,
     /// `<manifest android:sharedUserId>`.
     pub shared_user_id: Option<String>,
     /// `<application>` booleans. `None` means absent or not a literal boolean (for example
@@ -588,6 +590,7 @@ const ANDROID_ATTRS: &[(u32, &str)] = &[
     (0x0101_000f, "debuggable"),
     (0x0101_0010, "exported"),
     (0x0101_0270, "targetSdkVersion"),
+    (0x0101_020c, "minSdkVersion"),
     (0x0101_0272, "testOnly"),
     (0x0101_0280, "allowBackup"),
     (0x0101_0204, "allowTaskReparenting"),
@@ -656,6 +659,9 @@ fn read_tag(
             }
             ("uses-sdk", "targetSdkVersion") if (0x10..=0x1f).contains(&a.data_type) => {
                 out.target_sdk = Some(a.data)
+            }
+            ("uses-sdk", "minSdkVersion") if (0x10..=0x1f).contains(&a.data_type) => {
+                out.min_sdk = Some(a.data)
             }
             ("application", "debuggable") => out.debuggable = a.as_bool(),
             ("application", "usesCleartextTraffic") => out.uses_cleartext_traffic = a.as_bool(),
@@ -903,6 +909,46 @@ fn manifest_issues(m: &ManifestAttrs) -> Vec<ManifestIssue> {
                 ),
             );
         }
+    }
+    // Custom permissions declared as normal (0) or dangerous (1): any app can request them.
+    let weak: Vec<&String> = m
+        .permissions
+        .iter()
+        .filter(|(_, level)| level & 0xf == 0 || level & 0xf == 1)
+        .map(|(name, _)| name)
+        .collect();
+    if !weak.is_empty() {
+        let shown = weak
+            .iter()
+            .take(5)
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = weak.len().saturating_sub(5);
+        let tail = if more > 0 {
+            format!(" and {more} more")
+        } else {
+            String::new()
+        };
+        issue(
+            "apk-custom-permission-weak",
+            Warn,
+            format!(
+                "custom permissions any app can request (not signature-protected): {shown}{tail}"
+            ),
+        );
+    }
+    // minSdkVersion below 23 installs on releases before runtime permissions that no longer get updates.
+    if let Some(n) = m.min_sdk
+        && n < 23
+    {
+        issue(
+            "apk-min-sdk-old",
+            Warn,
+            format!(
+                "minSdkVersion {n} installs on Android releases before runtime permissions (API 23) that no longer get security updates"
+            ),
+        );
     }
     // StrandHogg-style task-hijacking attributes, reported per activity.
     for c in &m.components {
@@ -2401,6 +2447,51 @@ mod tests {
         );
         // the guard keeps the component out of the unguarded-export rules either way
         assert!(!has(&with_level(0), "apk-exported-component"));
+    }
+
+    #[test]
+    fn custom_permissions_without_signature_and_an_old_min_sdk_are_reported() {
+        let has = |m: &El, rule: &str| issues(m).iter().any(|(r, _)| *r == rule);
+        let app = |min: u32, levels: &[u32]| {
+            let mut kids = vec![el(
+                "uses-sdk",
+                vec![
+                    a("minSdkVersion", V::Int(min)),
+                    a("targetSdkVersion", V::Int(34)),
+                ],
+                vec![],
+            )];
+            for (i, level) in levels.iter().enumerate() {
+                let name: &'static str =
+                    ["com.example.fx.A", "com.example.fx.B", "com.example.fx.C"][i];
+                kids.push(el(
+                    "permission",
+                    vec![
+                        a("name", V::Str(name)),
+                        a("protectionLevel", V::Int(*level)),
+                    ],
+                    vec![],
+                ));
+            }
+            kids.push(el("application", vec![], vec![]));
+            el(
+                "manifest",
+                vec![(false, "package", V::Str("com.example.fx"))],
+                kids,
+            )
+        };
+        // normal (0) and dangerous (1) custom permissions are reported once, together; signature (2, 0x12) is not
+        let weak = issues(&app(26, &[0, 1, 0x12]));
+        assert_eq!(
+            weak.iter()
+                .filter(|(r, _)| *r == "apk-custom-permission-weak")
+                .count(),
+            1
+        );
+        assert!(!has(&app(26, &[2, 0x12]), "apk-custom-permission-weak"));
+        // minSdkVersion below 23 (before runtime permissions) is reported; 23 is not
+        assert!(has(&app(22, &[]), "apk-min-sdk-old"));
+        assert!(!has(&app(23, &[]), "apk-min-sdk-old"));
     }
 
     #[test]
