@@ -1497,6 +1497,7 @@ mod tests {
                 operations: ops,
                 ..Default::default()
             }],
+            ..Default::default()
         };
         let m = manifest.encode_to_vec();
         let mut payload = Vec::new();
