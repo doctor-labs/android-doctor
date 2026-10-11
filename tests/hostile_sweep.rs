@@ -142,6 +142,8 @@ fn invocations(d: &Path) -> Vec<Vec<String>> {
             "-o".into(),
             d.join("x.fec").display().to_string(),
         ],
+        vec!["verify-ota".into(), img.display().to_string()],
+        vec!["verify-ota".into(), ota.display().to_string()],
         vec!["vbmeta".into(), img.display().to_string()],
         vec![
             "vbmeta".into(),
@@ -234,7 +236,7 @@ fn every_command_survives_hostile_input() {
 #[test]
 fn a_fifo_never_blocks_a_reader() {
     let d = fixture("fifo");
-    for cmd in ["identify", "ls", "audit", "dt", "vbmeta"] {
+    for cmd in ["identify", "ls", "audit", "dt", "verify-ota", "vbmeta"] {
         let args = vec![cmd.to_string(), d.join("pipe.img").display().to_string()];
         let err = run(&args);
         assert!(!err.contains("panicked"), "{cmd} panicked on a FIFO: {err}");

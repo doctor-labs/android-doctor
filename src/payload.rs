@@ -73,6 +73,10 @@ pub mod pb {
     pub struct DeltaArchiveManifest {
         #[prost(uint32, optional, tag = "3")]
         pub block_size: Option<u32>,
+        #[prost(uint64, optional, tag = "4")]
+        pub signatures_offset: Option<u64>,
+        #[prost(uint64, optional, tag = "5")]
+        pub signatures_size: Option<u64>,
         #[prost(uint32, optional, tag = "12")]
         pub minor_version: Option<u32>,
         #[prost(message, repeated, tag = "13")]
@@ -1091,6 +1095,7 @@ mod tests {
             block_size: Some(BS as u32),
             minor_version: Some(0),
             partitions: updates,
+            ..Default::default()
         };
         let m = manifest.encode_to_vec();
         let mut out = Vec::new();

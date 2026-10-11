@@ -12,7 +12,7 @@ use std::io::{Cursor, Read};
 use std::path::Path;
 use zip::ZipArchive;
 
-mod verify;
+pub(crate) mod verify;
 pub use verify::{SchemeCheck, Verdict, v4_detected, verify_apk};
 
 /// AOSP public test-key certificate subject CNs (Apache-2.0, AOSP test keys).

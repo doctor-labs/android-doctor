@@ -52,14 +52,14 @@ fn check(scheme: &'static str, verdict: Verdict, detail: impl Into<String>) -> S
 // --- Hashes ---
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Hash {
+pub(crate) enum Hash {
     Sha1,
     Sha256,
     Sha384,
     Sha512,
 }
 
-enum Hasher {
+pub(crate) enum Hasher {
     Sha1(Sha1),
     Sha256(Sha256),
     Sha384(Sha384),
@@ -67,7 +67,7 @@ enum Hasher {
 }
 
 impl Hasher {
-    fn new(h: Hash) -> Self {
+    pub(crate) fn new(h: Hash) -> Self {
         match h {
             Hash::Sha1 => Hasher::Sha1(Sha1::new()),
             Hash::Sha256 => Hasher::Sha256(Sha256::new()),
@@ -75,7 +75,7 @@ impl Hasher {
             Hash::Sha512 => Hasher::Sha512(Sha512::new()),
         }
     }
-    fn update(&mut self, d: &[u8]) {
+    pub(crate) fn update(&mut self, d: &[u8]) {
         match self {
             Hasher::Sha1(x) => x.update(d),
             Hasher::Sha256(x) => x.update(d),
@@ -83,7 +83,7 @@ impl Hasher {
             Hasher::Sha512(x) => x.update(d),
         }
     }
-    fn finish(self) -> Vec<u8> {
+    pub(crate) fn finish(self) -> Vec<u8> {
         match self {
             Hasher::Sha1(x) => x.finalize().iter().copied().collect(),
             Hasher::Sha256(x) => x.finalize().iter().copied().collect(),
@@ -143,7 +143,7 @@ impl Hash {
 
 // --- Public keys and raw signature checks ---
 
-enum Key {
+pub(crate) enum Key {
     Rsa {
         n: BigUint,
         e: BigUint,
@@ -324,18 +324,32 @@ fn dsa_ok(
     Some(v == r)
 }
 
+/// RSASSA-PKCS1-v1_5: `sig` is a signature over an already computed `digest` of hash `h`.
+fn pkcs1_digest_ok(n: &BigUint, e: &BigUint, h: Hash, digest: &[u8], sig: &[u8]) -> bool {
+    let Some(em) = rsa_raw(n, e, sig) else {
+        return false;
+    };
+    let t = [h.prefix(), digest].concat();
+    let Some(pad) = em.len().checked_sub(t.len() + 1) else {
+        return false;
+    };
+    let mut want = vec![0u8, 1];
+    want.resize(pad, 0xff);
+    want.push(0);
+    want.extend(t);
+    want == em
+}
+
 fn verify_sig(key: &Key, alg: Alg, msg: &[u8], sig: &[u8]) -> Result<(), String> {
     let bad = || "signature does not verify".to_string();
     match (key, alg) {
         (Key::Other(why), _) => Err(format!("not checked: {why}")),
         (Key::Rsa { n, e }, Alg::Pkcs1(h)) => {
-            let em = rsa_raw(n, e, sig).ok_or_else(bad)?;
-            let mut want = vec![0u8, 1];
-            let t = [h.prefix(), &h.digest(&[msg])].concat();
-            want.resize(em.len().checked_sub(t.len() + 1).ok_or_else(bad)?, 0xff);
-            want.push(0);
-            want.extend(t);
-            if want == em { Ok(()) } else { Err(bad()) }
+            if pkcs1_digest_ok(n, e, h, &h.digest(&[msg]), sig) {
+                Ok(())
+            } else {
+                Err(bad())
+            }
         }
         (Key::Rsa { n, e }, Alg::Pss(h)) => match pss_ok(n, e, h, msg, sig) {
             Some(true) => Ok(()),
@@ -969,6 +983,69 @@ pub fn v4_detected() -> SchemeCheck {
         Verdict::NotChecked,
         "a .idsig sidecar is present; v4 is detected but not verified",
     )
+}
+
+impl Key {
+    /// Same public key (RSA modulus and exponent, or EC point).
+    pub(crate) fn same_as(&self, o: &Key) -> bool {
+        match (self, o) {
+            (Key::Rsa { n, e }, Key::Rsa { n: n2, e: e2 }) => n == n2 && e == e2,
+            (Key::Ec(a), Key::Ec(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+// --- Used by the OTA verifier (src/otaverify.rs) ---
+
+/// An RSA public key from a PEM or DER X.509 certificate or SubjectPublicKeyInfo, with the
+/// SHA-256 of the DER it came from. `Err` says why the key cannot be used.
+pub(crate) fn public_key(bytes: &[u8]) -> Result<Key, String> {
+    let der = crate::otameta::pem_to_der(bytes).map_err(|e| format!("{e:#}"))?;
+    let spki = match cert_serial_spki(&der) {
+        Some((_, spki)) => spki.to_vec(),
+        None => der,
+    };
+    parse_spki(&spki).ok_or_else(|| "not a certificate or public key".to_string())
+}
+
+/// RSA PKCS#1 v1.5 + SHA-256 over an already computed digest (update_engine payload signatures).
+pub(crate) fn verify_rsa_sha256_digest(key: &Key, digest: &[u8], sig: &[u8]) -> Result<(), String> {
+    match key {
+        Key::Rsa { n, e } if pkcs1_digest_ok(n, e, Hash::Sha256, digest, sig) => Ok(()),
+        Key::Rsa { .. } => Err("signature does not verify".into()),
+        Key::Other(why) => Err(format!("not checked: {why}")),
+        _ => Err("not checked: only RSA keys are supported for payload signatures".into()),
+    }
+}
+
+/// Which hash a detached PKCS#7 signature uses, so the caller can hash the content.
+pub(crate) fn p7_hash(p7: &[u8]) -> Option<Hash> {
+    let (_, si) = parse_p7(p7)?;
+    si.digest
+}
+
+/// Verify a detached PKCS#7 (CMS) signature whose signed attributes carry `content_digest` (the
+/// digest of the content under [`p7_hash`]). Returns the signer certificate's DER on success.
+pub(crate) fn p7_verify(p7: &[u8], content_digest: &[u8]) -> Result<Vec<u8>, String> {
+    let (certs, si) = parse_p7(p7).ok_or("malformed PKCS#7 signature")?;
+    let cert = certs
+        .iter()
+        .find(|c| cert_serial_spki(c).is_some_and(|(s, _)| s == si.serial))
+        .or(certs.first())
+        .ok_or("no signer certificate")?;
+    let (_, spki) = cert_serial_spki(cert).ok_or("malformed certificate")?;
+    let alg = p7_alg(&si).ok_or("not checked: unsupported signature algorithm")?;
+    let key = parse_spki(spki).ok_or("malformed public key")?;
+    let attrs = si
+        .attrs
+        .ok_or("not checked: signature without signed attributes")?;
+    if payload_md(attrs).as_deref() != Some(content_digest) {
+        return Err("the signed digest does not match the content".into());
+    }
+    let signed = [&[0x31][..], &attrs[1..]].concat();
+    verify_sig(&key, alg, &signed, si.signature)?;
+    Ok(cert.to_vec())
 }
 
 #[cfg(test)]

@@ -39,6 +39,7 @@ mod mcp;
 mod nokianb0;
 mod oem;
 mod otameta;
+mod otaverify;
 mod ozip;
 mod pac;
 mod payload;
@@ -134,6 +135,17 @@ enum Command {
     Fec {
         #[command(subcommand)]
         action: FecAction,
+    },
+    /// Verify an OTA's signatures: the zip's whole-file (signapk) signature and the payload's metadata and payload signatures
+    VerifyOta {
+        /// An OTA zip, a payload.bin, or a directory holding payload.bin
+        input: PathBuf,
+        /// Trusted certificate or public key (PEM/DER); without it the package's own otacert is used (integrity only)
+        #[arg(long, value_name = "FILE")]
+        cert: Option<PathBuf>,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
     },
     /// Show a flash manifest (Qualcomm rawprogram*.xml or MediaTek scatter.txt) and check it
     /// against the image files actually present
@@ -830,6 +842,22 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
         } => partitions_command(&input, sector_size, json),
         Command::Dt { input, json } => dt_command(&input, json),
         Command::Fec { action } => fec_command(action),
+        Command::VerifyOta { input, cert, json } => {
+            let r = otaverify::verify(&input, cert.as_deref())?;
+            print_out(&if json {
+                serde_json::to_string_pretty(&r.to_json())?
+            } else {
+                r.to_text()
+            })?;
+            if r.any_invalid() {
+                return Err(reporting::Gate {
+                    code: doctor_core::ExitCode::Findings,
+                    message: "an OTA signature does not verify".into(),
+                }
+                .into());
+            }
+            Ok(())
+        }
         Command::Amlogic { input } => {
             let img = amlogic::describe_file(&input)?;
             print_out(&amlogic::to_text(&img, &display_name(&input)))
