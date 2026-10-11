@@ -1229,6 +1229,22 @@
             },
             {
               "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "A native library has an unsafe RPATH/RUNPATH"
+              },
+              "help": {
+                "text": "Remove RPATH/RUNPATH, or point it only at /system, /vendor, /apex or $ORIGIN"
+              },
+              "id": "elf-rpath-unsafe",
+              "name": "elf-rpath-unsafe",
+              "shortDescription": {
+                "text": "A native library has an unsafe RPATH/RUNPATH"
+              }
+            },
+            {
+              "defaultConfiguration": {
                 "level": "note"
               },
               "fullDescription": {

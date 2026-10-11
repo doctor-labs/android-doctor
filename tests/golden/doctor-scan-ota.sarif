@@ -25,7 +25,7 @@
             "severity": "low"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 73
+          "ruleIndex": 74
         },
         {
           "level": "note",
@@ -82,7 +82,7 @@
             "severity": "info"
           },
           "ruleId": "selinux_label_gaps",
-          "ruleIndex": 75
+          "ruleIndex": 76
         },
         {
           "level": "note",
@@ -107,7 +107,7 @@
             "severity": "info"
           },
           "ruleId": "mode_anomalies",
-          "ruleIndex": 72
+          "ruleIndex": 73
         },
         {
           "level": "note",
@@ -123,7 +123,7 @@
             "severity": "info"
           },
           "ruleId": "init_service_hygiene",
-          "ruleIndex": 69
+          "ruleIndex": 70
         },
         {
           "level": "note",
@@ -1163,6 +1163,22 @@
               "name": "elf-partial-relro",
               "shortDescription": {
                 "text": "Partial RELRO: RELRO is set but relocations are lazy"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "A native library has an unsafe RPATH/RUNPATH"
+              },
+              "help": {
+                "text": "Remove RPATH/RUNPATH, or point it only at /system, /vendor, /apex or $ORIGIN"
+              },
+              "id": "elf-rpath-unsafe",
+              "name": "elf-rpath-unsafe",
+              "shortDescription": {
+                "text": "A native library has an unsafe RPATH/RUNPATH"
               }
             },
             {

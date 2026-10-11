@@ -459,6 +459,11 @@ pub fn help(rule: &str) -> Option<Help> {
             "Link with -Wl,-z,relro",
             Medium,
         ),
+        "elf-rpath-unsafe" => (
+            "A native library has an unsafe RPATH/RUNPATH",
+            "Remove RPATH/RUNPATH, or point it only at /system, /vendor, /apex or $ORIGIN",
+            Medium,
+        ),
         "elf-partial-relro" => (
             "Partial RELRO: RELRO is set but relocations are lazy",
             "Link with -Wl,-z,relro,-z,now for full RELRO",
@@ -848,6 +853,7 @@ const KNOWN_RULES: &[&str] = &[
     "elf-no-pie",
     "elf-exec-stack",
     "elf-no-relro",
+    "elf-rpath-unsafe",
     "elf-partial-relro",
     "elf-no-canary",
     "elf-no-fortify",
