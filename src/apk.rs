@@ -43,6 +43,10 @@ pub struct Signer {
     /// Certificate validity window as Unix seconds (notBefore, notAfter), when it parsed.
     pub not_before: Option<i64>,
     pub not_after: Option<i64>,
+    /// OID name of the signatureAlgorithm in the signer's certificate, e.g. "sha1WithRSAEncryption".
+    pub sig_alg: Option<&'static str>,
+    /// Bit length of the certificate's RSA public key modulus (when it is RSA).
+    pub rsa_bits: Option<u32>,
 }
 
 /// The auditable contents of one APK.
@@ -115,6 +119,28 @@ impl ApkInfo {
                         ymd(nb),
                         ymd(now)
                     ),
+                ));
+            }
+            if let Some(alg) = s.sig_alg
+                && matches!(
+                    alg,
+                    "md5WithRSAEncryption"
+                        | "sha1WithRSAEncryption"
+                        | "dsaWithSHA1"
+                        | "ecdsaWithSHA1"
+                )
+            {
+                out.push((
+                    "apk-cert-weak-hash",
+                    format!(
+                        "signer (CN={cn}) certificate is signed with {alg}: collisions are practical"
+                    ),
+                ));
+            }
+            if let Some(bits) = s.rsa_bits.filter(|&b| b < 2048) {
+                out.push((
+                    "apk-cert-weak-key",
+                    format!("signer (CN={cn}) uses a {bits}-bit RSA key (under 2048)"),
                 ));
             }
         }
@@ -908,6 +934,142 @@ fn cert_meta(cert: &[u8], cn: Option<&str>) -> (bool, Option<i64>, Option<i64>) 
     (debug, v.map(|v| v.0), v.map(|v| v.1))
 }
 
+// --- Certificate signature algorithm and RSA key size ---
+//
+// OID value bytes (the content octets of the OID, without the 0x06 tag or length) for the
+// signature algorithms we recognise (RFC 8017 / 5754):
+//   1.2.840.113549.1.1.4  md5WithRSAEncryption
+//   1.2.840.113549.1.1.5  sha1WithRSAEncryption
+//   1.2.840.113549.1.1.11 sha256WithRSAEncryption
+//   1.2.840.113549.1.1.12 sha384WithRSAEncryption
+//   1.2.840.113549.1.1.13 sha512WithRSAEncryption
+//   1.2.840.10040.4.3     dsaWithSHA1
+//   1.2.840.10045.4.1     ecdsaWithSHA1
+//   1.2.840.10045.4.3.2   ecdsaWithSHA256
+//   1.2.840.10045.4.3.3   ecdsaWithSHA384
+//   1.2.840.10045.4.3.4   ecdsaWithSHA512
+// rsaEncryption (1.2.840.113549.1.1.1) value bytes: 2a 86 48 86 f7 0d 01 01 01
+const RSA_E_KEY: &[u8] = b"\x2a\x86\x48\x86\xf7\x0d\x01\x01\x01";
+
+/// Read the outer Certificate's signatureAlgorithm OID from a DER X.509 cert and return its
+/// name. The outer Certificate is `SEQUENCE { tbsCertificate, signatureAlgorithm, signatureValue }`,
+/// so the second element's AlgorithmIdentifier SEQUENCE contains the OID.
+pub fn cert_sig_alg(cert: &[u8]) -> Option<&'static str> {
+    let (outer, _) = der_one(cert).ok()?;
+    if (outer.tag & 0x1F) != 0x10 {
+        return None;
+    }
+    let mut it = DerIter::new(outer.payload);
+    let _tbs = it.next()?;
+    let sig_alg = it.next()?;
+    // sig_alg.payload is the contents of the AlgorithmIdentifier SEQUENCE: OID followed by
+    // optional parameters. The first element is the OID (tag 0x06).
+    let mut params = DerIter::new(sig_alg.payload);
+    let oid = params.next()?;
+    if oid.tag != 0x06 {
+        return None;
+    }
+    match oid.payload {
+        b"\x2a\x86\x48\x86\xf7\x0d\x01\x01\x04" => Some("md5WithRSAEncryption"),
+        b"\x2a\x86\x48\x86\xf7\x0d\x01\x01\x05" => Some("sha1WithRSAEncryption"),
+        b"\x2a\x86\x48\x86\xf7\x0d\x01\x01\x0b" => Some("sha256WithRSAEncryption"),
+        b"\x2a\x86\x48\x86\xf7\x0d\x01\x01\x0c" => Some("sha384WithRSAEncryption"),
+        b"\x2a\x86\x48\x86\xf7\x0d\x01\x01\x0d" => Some("sha512WithRSAEncryption"),
+        b"\x2a\x86\x48\xce\x38\x04\x03" => Some("dsaWithSHA1"),
+        b"\x2a\x86\x48\xce\x3d\x04\x01" => Some("ecdsaWithSHA1"),
+        b"\x2a\x86\x48\xce\x3d\x04\x03\x02" => Some("ecdsaWithSHA256"),
+        b"\x2a\x86\x48\xce\x3d\x04\x03\x03" => Some("ecdsaWithSHA384"),
+        b"\x2a\x86\x48\xce\x3d\x04\x03\x04" => Some("ecdsaWithSHA512"),
+        _ => None,
+    }
+}
+
+/// Decode the RSA modulus bit length from a DER X.509 certificate's subjectPublicKeyInfo,
+/// when the key algorithm is rsaEncryption (1.2.840.113549.1.1.1).
+pub fn cert_rsa_bits(cert: &[u8]) -> Option<u32> {
+    let (outer, _) = der_one(cert).ok()?;
+    if (outer.tag & 0x1F) != 0x10 {
+        return None;
+    }
+    // Certificate ::= SEQUENCE { tbsCertificate, signatureAlgorithm, signatureValue }
+    let mut top = DerIter::new(outer.payload);
+    let tbs = top.next()?;
+    if (tbs.tag & 0x1F) != 0x10 {
+        return None;
+    }
+    // TBSCertificate ::= SEQUENCE { [0] version, serial, signature, issuer, validity,
+    //   subject, subjectPublicKeyInfo, ... }
+    // Skip [0] version if present (tag 0xA0), then iterate serial/signature/issuer/validity/subject/SPKI.
+    let mut tbs_payload = tbs.payload;
+    if let Ok((first, consumed)) = der_one(tbs_payload)
+        && first.tag == 0xA0
+    {
+        tbs_payload = &tbs_payload[consumed..];
+    }
+    let mut tbs_fields = DerIter::new(tbs_payload);
+    let _serial = tbs_fields.next()?;
+    let _sig_alg = tbs_fields.next()?;
+    let _issuer = tbs_fields.next()?;
+    let _validity = tbs_fields.next()?;
+    let _subject = tbs_fields.next()?;
+    let spki = tbs_fields.next()?;
+    if (spki.tag & 0x1F) != 0x10 {
+        return None;
+    }
+    // SubjectPublicKeyInfo ::= SEQUENCE { algorithm, subjectPublicKey BIT STRING }
+    let mut spki_fields = DerIter::new(spki.payload);
+    let algo = spki_fields.next()?;
+    if (algo.tag & 0x1F) != 0x10 {
+        return None;
+    }
+    // AlgorithmIdentifier ::= SEQUENCE { algorithm OID, parameters }
+    let mut algo_fields = DerIter::new(algo.payload);
+    let key_oid_el = algo_fields.next()?;
+    if key_oid_el.tag != 0x06 {
+        return None;
+    }
+    if key_oid_el.payload != RSA_E_KEY {
+        return None; // not an RSA key
+    }
+    let bit_string = spki_fields.next()?;
+    if bit_string.tag != 0x03 {
+        return None;
+    }
+    // The BIT STRING payload is: unused-bits byte (1) + RSAPublicKey DER.
+    let bs_payload = &bit_string.payload;
+    if bs_payload.is_empty() {
+        return None;
+    }
+    let rsa = &bs_payload[1..]; // skip unused-bits byte
+    let (rsa_seq, _) = der_one(rsa).ok()?;
+    if (rsa_seq.tag & 0x1F) != 0x10 {
+        return None;
+    }
+    // RSAPublicKey ::= SEQUENCE { modulus INTEGER, publicExponent INTEGER }
+    let mut rsa_fields = DerIter::new(rsa_seq.payload);
+    let modulus = rsa_fields.next()?;
+    if modulus.tag != 0x02 {
+        return None;
+    }
+    // A modulus is an unsigned big-endian INTEGER; a leading 0x00 byte may be present as a
+    // sign marker. Ignore it when computing the bit length.
+    let mut m = modulus.payload;
+    if m.first() == Some(&0x00) {
+        m = &m[1..];
+    }
+    let bits = m.len() * 8;
+    // Subtract leading zero bytes that aren't part of the value.
+    let mut leading = 0usize;
+    for b in m {
+        if *b == 0 {
+            leading += 1;
+        } else {
+            break;
+        }
+    }
+    Some((bits - leading * 8) as u32)
+}
+
 /// Extract the CN from an X.509 certificate.
 ///
 /// Walks the DER tree looking for the commonName attribute OID (2.5.4.3, encoded
@@ -1077,6 +1239,8 @@ pub fn audit_apk_bytes(path: &Path, bytes: &[u8]) -> ApkAudit {
                     is_debug_cert,
                     not_before,
                     not_after,
+                    sig_alg: cert_sig_alg(&cert),
+                    rsa_bits: cert_rsa_bits(&cert),
                 });
             }
         }
@@ -1373,6 +1537,8 @@ fn signer_from(signer: &[u8]) -> Option<Signer> {
         is_debug_cert,
         not_before,
         not_after,
+        sig_alg: cert_sig_alg(der),
+        rsa_bits: cert_rsa_bits(der),
     })
 }
 
@@ -2100,6 +2266,12 @@ mod tests {
 
     const NOW: i64 = 1_800_000_000; // 2027-01-15
 
+    /// A 1024-bit RSA cert signed with SHA-1, CN=weak.
+    const WEAK_CERT_HEX: &str = "308201fa30820163a003020102021408da1805815262963eafe7df0622a7d4f0f22978300d06092a864886f70d0101050500300f310d300b06035504030c047765616b301e170d3236313031313131313235385a170d3336313030383131313235385a300f310d300b06035504030c047765616b30819f300d06092a864886f70d010101050003818d0030818902818100b1ce9fd45895811978a52c2f1f4fad18366a6203e75b17a163b43efefe94a9316a3bd05725ef6ed49af4ff30c21c1fa427e8d96b188496f88a565bba549946a620e19f4db68c216d614b6b9db70ee209439037c7405ecc856425f99f8f32e9e56d8b0b9ce82ade764355cf9dc6ede7aec2de4572d0c8891b41ad0b1acc94a6970203010001a3533051301d0603551d0e04160414e415966a37b52c38558a4a8d1ce5048123e3f682301f0603551d23041830168014e415966a37b52c38558a4a8d1ce5048123e3f682300f0603551d130101ff040530030101ff300d06092a864886f70d01010505000381810093ce2aee4a20a3bad486521188b372ea73893a4a712d044dfae6e8b3f0ec53ddd3e8bac9e36f22518e75ebe94a1f2b9cc09b0f736b3a84945cf770ed6a8783536a81a9cb276fa074d452f376606b39cb69dee3d4672b50d690996ef339ccb887a0f442f8cdd1ad233676417c45f4d486a0f26df7dea9df5d994e4f031a69b02a";
+
+    /// A 2048-bit RSA cert signed with SHA-256, CN=strong.
+    const STRONG_CERT_HEX: &str = "30820303308201eba00302010202144e7bd78387b8c895a9ab066fd81423e9155d2838300d06092a864886f70d01010b05003011310f300d06035504030c067374726f6e67301e170d3236313031313131313235385a170d3336313030383131313235385a3011310f300d06035504030c067374726f6e6730820122300d06092a864886f70d01010105000382010f003082010a02820101008c4b011af0517a508b786a9d5a41e51a7e631aa2642b1d11eb739c6aa0c3525565f2e0b35aa950d14096d8ee860ea4ed630d52a453f66aef96bcaedf3a383a287ee79d616dfffc622c4e23c67352347d36dac9723977fac1302b9f09183ae0f62a23c7a71eee50906591a4d8c709be619e1ee50c222afd552406b0bbbce50447e2d992a171c796c86c21fc3abb66c9a697447f5681aca7ce29bcd0fa8a0274b74f8226fa2a803ab6f09f73f99271266889047d90b1970fc01df25a8123fcefd0a8d4ceabfca86d243883b11ec945f86da0942f372dd8aae70bff31ec0deccfbc771041110769cdd4514c6d21e960ffec755f47832e000152c804c764a2cf42130203010001a3533051301d0603551d0e04160414a94ea5d6e4be78f0c166a0e323c6164032fb5fb5301f0603551d23041830168014a94ea5d6e4be78f0c166a0e323c6164032fb5fb5300f0603551d130101ff040530030101ff300d06092a864886f70d01010b05000382010100079942c59d09d6b7ecbc785d830c06084bca4c5d0e55efd2bfa4b1d27e4fd2127fb8cfef3214b12982f18ed311876e88ac16a587e79a9894ff676020f4c57fb3a99be92cfb314014d4c61722dc54f868d873ae7dcbb2c1ba813654cdabbd55ce983de4e385f7a8dd4b4e45de74c3868ffbeed3a1bbb2632df700905489f7b75e73212c4dd0752a71edc2b4e89fc3321531f381616ca6d56f0d97a07b241170f30750f4479d47be2b1c9cbe4d01e669b14c3ced55ee6e4d15468eb1c701285f9d38836ccd65a0a68a48ab68063db842f7fa0b467f21a1a76918f0b1676f76f6cb1b621936901a475258e5dfb2d3c58b0dacbf785125f81d3cc2312c9b108b70fc";
+
     fn der(tag: u8, body: &[u8]) -> Vec<u8> {
         let mut v = vec![tag];
         match body.len() {
@@ -2352,5 +2524,92 @@ mod tests {
         assert!(native
             .iter()
             .all(|i| !i.detail.contains("libgood.so") && !i.detail.contains("assets/plugin.so")));
+    }
+
+    /// Decode a hex string into bytes (test-only helper).
+    fn hex_decode(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn cert_strength_reads_the_signature_hash_and_rsa_size() {
+        let weak = hex_decode(WEAK_CERT_HEX);
+        let strong = hex_decode(STRONG_CERT_HEX);
+        assert_eq!(cert_sig_alg(&weak), Some("sha1WithRSAEncryption"));
+        assert_eq!(cert_rsa_bits(&weak), Some(1024));
+        assert_eq!(cert_sig_alg(&strong), Some("sha256WithRSAEncryption"));
+        assert_eq!(cert_rsa_bits(&strong), Some(2048));
+        assert_eq!(cert_sig_alg(b"junk"), None);
+        assert_eq!(cert_rsa_bits(b"junk"), None);
+        // ECDSA P-256 signed with SHA-1: the weak hash is recognised, and there is no RSA size
+        let ec = hex_decode(
+            "308201743082011ca00302010202142639b3e3bffa203e16b398d8a6b4b554820e4f76300906072a8648ce3d04013011310f300d06035504030c0665637765616b301e170d3236313031313131353335345a170d3336313030383131353335345a3011310f300d06035504030c0665637765616b3059301306072a8648ce3d020106082a8648ce3d030107034200049accae7e3d654e584cbe2aca5cff7cc0348d8d8c8bdf5903193dc5d93c39571d4555f8e84bb8e4cfa251c025d71c7f34ea19cd4a1dba358cf539ec0e59d5ea1aa3533051301d0603551d0e041604142c3f730875e5979ca06d7e474e3b66b8bf397a85301f0603551d230418301680142c3f730875e5979ca06d7e474e3b66b8bf397a85300f0603551d130101ff040530030101ff300906072a8648ce3d04010347003044022070004537604b0a9648dd47bb90cb5662f31b36a18157cdcf4fef1655813e4b8a02206d6c0be7c0a290e2a9951fc659d41a2ef33e11e0fb4a1925d6c1293b8c27e8d8",
+        );
+        assert_eq!(cert_sig_alg(&ec), Some("ecdsaWithSHA1"));
+        assert_eq!(cert_rsa_bits(&ec), None);
+    }
+
+    #[test]
+    fn posture_flags_weak_signer_certificates() {
+        let weak_der = hex_decode(WEAK_CERT_HEX);
+        let strong_der = hex_decode(STRONG_CERT_HEX);
+        // A Signer built from the weak cert: sha1/1024
+        let s_weak = Signer {
+            scheme: "v1",
+            cert_sha256: String::new(),
+            subject_cn: Some("weak".to_string()),
+            is_aosp_test_key: false,
+            is_debug_cert: false,
+            not_before: None,
+            not_after: None,
+            sig_alg: cert_sig_alg(&weak_der),
+            rsa_bits: cert_rsa_bits(&weak_der),
+        };
+        // A Signer built from the strong cert: sha256/2048
+        let s_strong = Signer {
+            scheme: "v1",
+            cert_sha256: String::new(),
+            subject_cn: Some("strong".to_string()),
+            is_aosp_test_key: false,
+            is_debug_cert: false,
+            not_before: None,
+            not_after: None,
+            sig_alg: cert_sig_alg(&strong_der),
+            rsa_bits: cert_rsa_bits(&strong_der),
+        };
+        // Build an ApkInfo with the weak signer and check posture.
+        let apk_weak = ApkInfo {
+            path: "/x.apk".into(),
+            signers: vec![s_weak],
+            ..Default::default()
+        };
+        let rules_weak: Vec<_> = apk_weak
+            .posture(NOW)
+            .iter()
+            .map(|p| p.0)
+            .filter(|r| !r.starts_with("apk-signature"))
+            .collect();
+        assert!(rules_weak.contains(&"apk-cert-weak-hash"), "{rules_weak:?}");
+        assert!(rules_weak.contains(&"apk-cert-weak-key"), "{rules_weak:?}");
+        // The strong signer produces neither rule.
+        let apk_strong = ApkInfo {
+            path: "/x.apk".into(),
+            signers: vec![s_strong],
+            ..Default::default()
+        };
+        let rules_strong: Vec<_> = apk_strong
+            .posture(NOW)
+            .iter()
+            .map(|p| p.0)
+            .filter(|r| !r.starts_with("apk-signature"))
+            .collect();
+        assert!(
+            !rules_strong.contains(&"apk-cert-weak-hash")
+                && !rules_strong.contains(&"apk-cert-weak-key"),
+            "{rules_strong:?}"
+        );
     }
 }

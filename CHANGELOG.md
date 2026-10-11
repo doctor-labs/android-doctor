@@ -19,6 +19,7 @@ All notable changes to this project are documented here. The format follows
 - Incremental block OTAs (#170, PR #245): `move`, `bsdiff`, `imgdiff`, `stash` and `free` transfer-list commands (versions 1 to 4) with `<part>.patch.dat[.br]`, applied in place over `--base`'s old image with SHA-1 checks from version 3. New dependencies: `sha1`, and flate2's `zlib` backend (bundled zlib via libz-sys) so imgdiff DEFLATE chunks recompress byte-exactly. Stacked on #244 (needs its bsdiff fixes).
 - Incremental payload operations MOVE, BSDIFF and BROTLI_BSDIFF (#169, PR #244) with `--base`, applied against the old image like payload-dumper-go; BSDF2 patches (bzip2/brotli/none per stream) are read.
 - APK audit runs the ELF hardening rules (PIE, NX stack, RELRO, canary, FORTIFY) on `lib/<abi>/*.so` (#190).
+- APK audit flags signer certificates signed with MD5/SHA-1 (`apk-cert-weak-hash`) and RSA keys under 2048 bits (`apk-cert-weak-key`) (#203).
 
 ### Fixed
 

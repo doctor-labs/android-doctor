@@ -1039,6 +1039,8 @@ mod tests {
                     is_debug_cert: debug,
                     not_before: Some(0),
                     not_after: Some(na),
+                    sig_alg: None,
+                    rsa_bits: None,
                 }],
                 ..Default::default()
             }),

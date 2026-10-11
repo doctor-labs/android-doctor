@@ -529,6 +529,16 @@ pub fn help(rule: &str) -> Option<Help> {
             "Check the certificate dates and the host clock",
             Medium,
         ),
+        "apk-cert-weak-hash" => (
+            "An APK signing certificate is signed with MD5 or SHA-1",
+            "Re-sign with SHA-256 or stronger",
+            Medium,
+        ),
+        "apk-cert-weak-key" => (
+            "An APK signing certificate uses an RSA key under 2048 bits",
+            "Re-sign with a 2048-bit or larger RSA key",
+            High,
+        ),
         "partition_coverage" => (
             "An expected partition image is missing",
             "Make sure system, vendor and boot images are all present",
@@ -774,6 +784,8 @@ const KNOWN_RULES: &[&str] = &[
     "apk-debug-signing-cert",
     "apk-cert-expired",
     "apk-cert-not-yet-valid",
+    "apk-cert-weak-hash",
+    "apk-cert-weak-key",
     "apk-signature-invalid",
     "apk-signature-unverified",
     "apk-code-webview",

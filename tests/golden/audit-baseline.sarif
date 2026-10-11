@@ -35,7 +35,7 @@
             "severity": "high"
           },
           "ruleId": "debuggable-build",
-          "ruleIndex": 36
+          "ruleIndex": 38
         },
         {
           "baselineState": "new",
@@ -61,7 +61,7 @@
             "severity": "high"
           },
           "ruleId": "insecure-adb",
-          "ruleIndex": 52
+          "ruleIndex": 54
         },
         {
           "baselineState": "new",
@@ -87,7 +87,7 @@
             "severity": "high"
           },
           "ruleId": "su-binary",
-          "ruleIndex": 60
+          "ruleIndex": 62
         }
       ],
       "tool": {
@@ -205,6 +205,38 @@
               "name": "apk-cert-not-yet-valid",
               "shortDescription": {
                 "text": "An APK signing certificate is not yet valid (host clock)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK signing certificate is signed with MD5 or SHA-1"
+              },
+              "help": {
+                "text": "Re-sign with SHA-256 or stronger"
+              },
+              "id": "apk-cert-weak-hash",
+              "name": "apk-cert-weak-hash",
+              "shortDescription": {
+                "text": "An APK signing certificate is signed with MD5 or SHA-1"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "An APK signing certificate uses an RSA key under 2048 bits"
+              },
+              "help": {
+                "text": "Re-sign with a 2048-bit or larger RSA key"
+              },
+              "id": "apk-cert-weak-key",
+              "name": "apk-cert-weak-key",
+              "shortDescription": {
+                "text": "An APK signing certificate uses an RSA key under 2048 bits"
               }
             },
             {
