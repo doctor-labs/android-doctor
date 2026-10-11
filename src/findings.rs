@@ -349,6 +349,26 @@ pub fn help(rule: &str) -> Option<Help> {
             "Declare custom permissions with android:protectionLevel=\"signature\"",
             Low,
         ),
+        "apk-intent-priority-high" => (
+            "High intent-filter priority",
+            "Keep intent-filter priorities at or below 100 unless the app must pre-empt the default handler",
+            Medium,
+        ),
+        "apk-sms-port-receiver" => (
+            "Binary SMS port receiver",
+            "Validate binary SMS payloads and their sender; prefer a server push channel",
+            Medium,
+        ),
+        "apk-dialer-secret-code" => (
+            "Dialer secret code",
+            "Remove secret dialer codes from release builds or guard what they open",
+            Medium,
+        ),
+        "apk-direct-boot-aware" => (
+            "Direct-boot aware component",
+            "Only mark components directBootAware when they must run before unlock, and keep their data in device-protected storage only when needed",
+            Info,
+        ),
         "apk-min-sdk-old" => (
             "Old minimum SDK",
             "Raise minSdkVersion to a release that still gets security updates",
@@ -811,6 +831,10 @@ const KNOWN_RULES: &[&str] = &[
     "apk-exported-component",
     "apk-exported-weak-permission",
     "apk-custom-permission-weak",
+    "apk-intent-priority-high",
+    "apk-sms-port-receiver",
+    "apk-dialer-secret-code",
+    "apk-direct-boot-aware",
     "apk-min-sdk-old",
     "apk-exported-provider",
     "apk-launch-mode-singletask",

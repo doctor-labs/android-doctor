@@ -221,6 +221,8 @@ pub struct ManifestAttrs {
     pub task_reparenting: bool,
     /// `<application android:permission>`: the default guard for every component.
     pub app_permission: bool,
+    /// `<application android:directBootAware>` being true.
+    pub direct_boot_aware: bool,
     /// Top-level `<permission>` declarations: (name, protectionLevel & 0xf).
     pub permissions: Vec<(String, u32)>,
     /// `<application android:taskAffinity>`: inherited by activities unless overridden.
@@ -245,6 +247,8 @@ pub struct Component {
     /// `android:enabled="false"`.
     pub disabled: bool,
     pub has_intent_filter: bool,
+    /// `android:directBootAware` on this component being true.
+    pub direct_boot_aware: bool,
     /// An intent filter handles `android.intent.action.MAIN` (a launcher entry point).
     pub main_action: bool,
     /// `android:launchMode` on this activity (integer data). `None` when absent.
@@ -272,6 +276,8 @@ pub struct IntentFilter {
     pub actions: Vec<String>,
     pub categories: Vec<String>,
     pub data: Vec<IntentData>,
+    /// `<intent-filter android:priority>`: integer data, can read as `a.data as i32`.
+    pub priority: Option<i32>,
 }
 
 /// One `<data>` element inside an intent filter (a deep-link surface).
@@ -604,6 +610,8 @@ const ANDROID_ATTRS: &[(u32, &str)] = &[
     (0x0101_002b, "pathPrefix"),
     (0x0101_002c, "pathPattern"),
     (0x0101_001b, "grantUriPermissions"),
+    (0x0101_001c, "priority"),
+    (0x0101_0505, "directBootAware"),
 ];
 
 /// The `android:` local name of an attribute, or None when it is not a framework attribute.
@@ -641,6 +649,7 @@ fn read_tag(
     let (mut read_perm, mut write_perm) = (false, false);
     let mut perm_name: Option<String> = None;
     let mut perm_level: Option<u32> = None;
+    let mut comp_dba = false;
     for a in attrs {
         if tag == "manifest" {
             match pool.get(a.name_idx).map(String::as_str) {
@@ -669,6 +678,11 @@ fn read_tag(
             ("application", "testOnly") => out.test_only = a.as_bool(),
             ("application", "networkSecurityConfig") => out.has_network_security_config = true,
             ("application", "permission") => out.app_permission = !a.value.is_empty(),
+            ("application", "directBootAware") => {
+                if a.as_bool() == Some(true) {
+                    out.direct_boot_aware = true;
+                }
+            }
             ("permission", "name")
                 if parent.is_some_and(|(p, _)| p == "manifest") && !a.value.is_empty() =>
             {
@@ -701,6 +715,9 @@ fn read_tag(
                 "taskAffinity" => c.task_affinity = Some(a.value.clone()),
                 "allowTaskReparenting" => c.task_reparenting = a.as_bool() == Some(true),
                 "grantUriPermissions" => c.grant_uri_permissions = a.as_bool() == Some(true),
+                "directBootAware" if a.as_bool() == Some(true) => {
+                    comp_dba = true;
+                }
                 _ => {}
             },
             _ => {}
@@ -720,6 +737,7 @@ fn read_tag(
             if c.task_affinity.is_none() {
                 c.task_affinity = out.app_task_affinity.clone();
             }
+            c.direct_boot_aware = comp_dba;
             out.components.push(c);
             *comp_slot = Some(out.components.len() - 1);
         }
@@ -727,9 +745,15 @@ fn read_tag(
         && let Some((_, Some(i))) = parent
     {
         out.components[*i].has_intent_filter = true;
-        out.components[*i]
-            .intent_filters
-            .push(IntentFilter::default());
+        let priority = attrs
+            .iter()
+            .find(|a| android_attr(a, pool, res_ids) == Some("priority"))
+            .filter(|a| (0x10..=0x1f).contains(&a.data_type))
+            .map(|a| a.data as i32);
+        out.components[*i].intent_filters.push(IntentFilter {
+            priority,
+            ..IntentFilter::default()
+        });
     } else if matches!(tag, "grant-uri-permission" | "path-permission")
         && let Some((_, Some(i))) = parent
         && out.components[*i].kind == "provider"
@@ -1072,6 +1096,94 @@ fn manifest_issues(m: &ManifestAttrs) -> Vec<ManifestIssue> {
                 ),
             );
         }
+    }
+    // Intent-filter priorities above 100, SMS port receivers, dialer secret codes, directBootAware.
+    let mut dba_names: Vec<String> = Vec::new();
+    if m.direct_boot_aware {
+        dba_names.push("application".into());
+    }
+    for c in &m.components {
+        if c.disabled {
+            continue;
+        }
+        for f in &c.intent_filters {
+            if let Some(p) = f.priority
+                && p > 100
+            {
+                issue(
+                    "apk-intent-priority-high",
+                    Warn,
+                    format!(
+                        "{} {} has an intent filter with priority {p} (above 100), so it receives ordered broadcasts such as incoming SMS before other apps",
+                        c.kind, c.name
+                    ),
+                );
+            }
+            let has_sms = f
+                .actions
+                .iter()
+                .any(|a| a == "android.intent.action.DATA_SMS_RECEIVED");
+            if has_sms
+                && f.data.iter().any(|d| d.port.is_some())
+                && let Some(d) = f.data.iter().find(|d| d.port.is_some())
+            {
+                issue(
+                    "apk-sms-port-receiver",
+                    Medium,
+                    format!(
+                        "{} {} receives binary SMS on port {}",
+                        c.kind,
+                        c.name,
+                        d.port.as_deref().unwrap_or("")
+                    ),
+                );
+            }
+            let has_secret = f
+                .actions
+                .iter()
+                .any(|a| a == "android.provider.Telephony.SECRET_CODE");
+            if has_secret
+                && f.data
+                    .iter()
+                    .any(|d| d.scheme.as_deref() == Some("android_secret_code"))
+                && let Some(d) = f
+                    .data
+                    .iter()
+                    .find(|d| d.scheme.as_deref() == Some("android_secret_code"))
+            {
+                issue(
+                    "apk-dialer-secret-code",
+                    Warn,
+                    format!(
+                        "{} {} opens on the dialer code *#*#{}#*#*",
+                        c.kind,
+                        c.name,
+                        d.host.as_deref().unwrap_or("")
+                    ),
+                );
+            }
+        }
+        if c.direct_boot_aware {
+            dba_names.push(format!("{} {}", c.kind, c.name));
+        }
+    }
+    if !dba_names.is_empty() {
+        let shown: Vec<String> = dba_names.iter().take(5).cloned().collect();
+        let more = dba_names.len().saturating_sub(5);
+        let tail = if more > 0 {
+            format!(" and {more} more")
+        } else {
+            String::new()
+        };
+        issue(
+            "apk-direct-boot-aware",
+            Info,
+            format!(
+                "runs before the user unlocks the device (directBootAware): {}{}",
+                shown.join(", "),
+                tail
+            ),
+        );
     }
     out
 }
@@ -2492,6 +2604,78 @@ mod tests {
         // minSdkVersion below 23 (before runtime permissions) is reported; 23 is not
         assert!(has(&app(22, &[]), "apk-min-sdk-old"));
         assert!(!has(&app(23, &[]), "apk-min-sdk-old"));
+    }
+
+    #[test]
+    fn intent_priority_sms_port_secret_code_and_direct_boot_are_reported() {
+        let has = |m: &El, rule: &str| issues(m).iter().any(|(r, _)| *r == rule);
+        let action = |n: &'static str| el("action", vec![a("name", V::Str(n))], vec![]);
+        let receiver = |filter_attrs: Vec<A>, kids: Vec<El>| {
+            manifest(
+                vec![],
+                33,
+                vec![],
+                vec![comp(
+                    "receiver",
+                    vec![
+                        a("exported", t()),
+                        a("permission", V::Str("com.example.fx.GUARD")),
+                    ],
+                    vec![el("intent-filter", filter_attrs, kids)],
+                )],
+            )
+        };
+        // a filter priority above 100 jumps the ordered-broadcast queue; 100 does not
+        let sms = || action("android.provider.Telephony.SMS_RECEIVED");
+        assert!(has(
+            &receiver(vec![a("priority", V::Int(999))], vec![sms()]),
+            "apk-intent-priority-high"
+        ));
+        assert!(!has(
+            &receiver(vec![a("priority", V::Int(100))], vec![sms()]),
+            "apk-intent-priority-high"
+        ));
+        // a data-SMS receiver bound to a port
+        let data_sms = receiver(
+            vec![],
+            vec![
+                action("android.intent.action.DATA_SMS_RECEIVED"),
+                el(
+                    "data",
+                    vec![a("scheme", V::Str("sms")), a("port", V::Str("8901"))],
+                    vec![],
+                ),
+            ],
+        );
+        assert!(has(&data_sms, "apk-sms-port-receiver"));
+        // a dialer secret code (*#*#4636#*#*-style)
+        let secret = receiver(
+            vec![],
+            vec![
+                action("android.provider.Telephony.SECRET_CODE"),
+                el(
+                    "data",
+                    vec![
+                        a("scheme", V::Str("android_secret_code")),
+                        a("host", V::Str("4636")),
+                    ],
+                    vec![],
+                ),
+            ],
+        );
+        assert!(has(&secret, "apk-dialer-secret-code"));
+        assert!(
+            issues(&secret)
+                .iter()
+                .all(|(r, _)| *r != "apk-sms-port-receiver")
+        );
+        // directBootAware on the application runs code before the user unlocks the device
+        let dba = manifest(vec![], 33, vec![a("directBootAware", t())], vec![]);
+        assert!(has(&dba, "apk-direct-boot-aware"));
+        assert!(!has(
+            &manifest(vec![], 33, vec![], vec![]),
+            "apk-direct-boot-aware"
+        ));
     }
 
     #[test]
