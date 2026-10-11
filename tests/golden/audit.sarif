@@ -34,7 +34,7 @@
             "severity": "high"
           },
           "ruleId": "debuggable-build",
-          "ruleIndex": 44
+          "ruleIndex": 46
         },
         {
           "level": "error",
@@ -59,7 +59,7 @@
             "severity": "high"
           },
           "ruleId": "insecure-adb",
-          "ruleIndex": 60
+          "ruleIndex": 62
         },
         {
           "level": "error",
@@ -84,7 +84,7 @@
             "severity": "high"
           },
           "ruleId": "su-binary",
-          "ruleIndex": 68
+          "ruleIndex": 70
         }
       ],
       "tool": {
@@ -478,6 +478,22 @@
             },
             {
               "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "Custom permission without signature protection"
+              },
+              "help": {
+                "text": "Declare custom permissions with android:protectionLevel=\"signature\""
+              },
+              "id": "apk-custom-permission-weak",
+              "name": "apk-custom-permission-weak",
+              "shortDescription": {
+                "text": "Custom permission without signature protection"
+              }
+            },
+            {
+              "defaultConfiguration": {
                 "level": "error"
               },
               "fullDescription": {
@@ -570,6 +586,22 @@
               "name": "apk-launch-mode-singletask",
               "shortDescription": {
                 "text": "An APK activity uses launchMode singleTask or singleInstance"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "Old minimum SDK"
+              },
+              "help": {
+                "text": "Raise minSdkVersion to a release that still gets security updates"
+              },
+              "id": "apk-min-sdk-old",
+              "name": "apk-min-sdk-old",
+              "shortDescription": {
+                "text": "Old minimum SDK"
               }
             },
             {
