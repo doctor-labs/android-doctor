@@ -26,7 +26,7 @@
             "severity": "critical"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 55
+          "ruleIndex": 57
         },
         {
           "baselineState": "new",
@@ -52,7 +52,7 @@
             "severity": "info"
           },
           "ruleId": "avb_signature",
-          "ruleIndex": 31
+          "ruleIndex": 33
         }
       ],
       "tool": {
@@ -170,6 +170,38 @@
               "name": "apk-cert-not-yet-valid",
               "shortDescription": {
                 "text": "An APK signing certificate is not yet valid (host clock)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK signing certificate is signed with MD5 or SHA-1"
+              },
+              "help": {
+                "text": "Re-sign with SHA-256 or stronger"
+              },
+              "id": "apk-cert-weak-hash",
+              "name": "apk-cert-weak-hash",
+              "shortDescription": {
+                "text": "An APK signing certificate is signed with MD5 or SHA-1"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "An APK signing certificate uses an RSA key under 2048 bits"
+              },
+              "help": {
+                "text": "Re-sign with a 2048-bit or larger RSA key"
+              },
+              "id": "apk-cert-weak-key",
+              "name": "apk-cert-weak-key",
+              "shortDescription": {
+                "text": "An APK signing certificate uses an RSA key under 2048 bits"
               }
             },
             {

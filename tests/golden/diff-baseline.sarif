@@ -35,7 +35,7 @@
             "severity": "high"
           },
           "ruleId": "diff-debuggable-build",
-          "ruleIndex": 37
+          "ruleIndex": 39
         },
         {
           "baselineState": "new",
@@ -61,7 +61,7 @@
             "severity": "high"
           },
           "ruleId": "diff-insecure-adb",
-          "ruleIndex": 38
+          "ruleIndex": 40
         },
         {
           "baselineState": "new",
@@ -87,7 +87,7 @@
             "severity": "high"
           },
           "ruleId": "diff-su-binary",
-          "ruleIndex": 44
+          "ruleIndex": 46
         },
         {
           "baselineState": "new",
@@ -113,7 +113,7 @@
             "severity": "high"
           },
           "ruleId": "diff-new-setuid",
-          "ruleIndex": 40
+          "ruleIndex": 42
         },
         {
           "baselineState": "new",
@@ -139,7 +139,7 @@
             "severity": "info"
           },
           "ruleId": "diff-prop-changed",
-          "ruleIndex": 41
+          "ruleIndex": 43
         },
         {
           "baselineState": "new",
@@ -165,7 +165,7 @@
             "severity": "info"
           },
           "ruleId": "diff-prop-changed",
-          "ruleIndex": 41
+          "ruleIndex": 43
         }
       ],
       "tool": {
@@ -283,6 +283,38 @@
               "name": "apk-cert-not-yet-valid",
               "shortDescription": {
                 "text": "An APK signing certificate is not yet valid (host clock)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK signing certificate is signed with MD5 or SHA-1"
+              },
+              "help": {
+                "text": "Re-sign with SHA-256 or stronger"
+              },
+              "id": "apk-cert-weak-hash",
+              "name": "apk-cert-weak-hash",
+              "shortDescription": {
+                "text": "An APK signing certificate is signed with MD5 or SHA-1"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "An APK signing certificate uses an RSA key under 2048 bits"
+              },
+              "help": {
+                "text": "Re-sign with a 2048-bit or larger RSA key"
+              },
+              "id": "apk-cert-weak-key",
+              "name": "apk-cert-weak-key",
+              "shortDescription": {
+                "text": "An APK signing certificate uses an RSA key under 2048 bits"
               }
             },
             {
