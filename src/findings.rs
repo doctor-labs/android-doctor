@@ -155,6 +155,7 @@ const CONTENT_RULES: &[&str] = &[
     "hardcoded_credentials",
     "cloud_credentials",
     "provider_tokens",
+    "keystore_files",
     "debug_endpoints",
     "content-indicator",
 ];
@@ -412,6 +413,11 @@ pub fn help(rule: &str) -> Option<Help> {
             "A service API key or access token (GitHub, Slack, Stripe, ...) is embedded in the image",
             "Remove the token from the image and revoke it at the provider",
             High,
+        ),
+        "keystore_files" => (
+            "A key or keystore file is shipped in the image",
+            "Remove signing keys and keystores from the image; ship only public certificates",
+            Medium,
         ),
         "debug_endpoints" => (
             "A debug endpoint is referenced in the image",
@@ -762,6 +768,7 @@ const KNOWN_RULES: &[&str] = &[
     "hardcoded_credentials",
     "cloud_credentials",
     "provider_tokens",
+    "keystore_files",
     "debug_endpoints",
     "apk-v1-only-signing",
     "apk-debug-signing-cert",

@@ -63,6 +63,22 @@ pub fn scan_bytes(path: &str, buf: &[u8]) -> Vec<Hit> {
     out
 }
 
+/// Key and keystore file extensions (MobSF cert_analysis, qark packaged_private_keys).
+const KEYSTORE_EXTENSIONS: [&str; 7] =
+    [".jks", ".bks", ".keystore", ".p12", ".pfx", ".pem", ".key"];
+
+/// A key or keystore file flagged by its name alone (the bytes may be encrypted or binary).
+pub fn keystore_name_hit(path: &str) -> Option<Hit> {
+    let lower = path.to_ascii_lowercase();
+    let ext = KEYSTORE_EXTENSIONS.iter().find(|e| lower.ends_with(*e))?;
+    Some(Hit {
+        rule: "keystore_files".into(),
+        severity: "medium".into(),
+        path: path.into(),
+        detail: format!("key or keystore file by name ({ext})"),
+    })
+}
+
 fn aws_access_key_ids(buf: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
     if buf.len() < 20 {

@@ -6,7 +6,9 @@
 //! as root or in a shell or `su` SELinux domain), then turns what it found into findings with a
 //! severity. It only reads: nothing is extracted or executed.
 use crate::apk::{ApkAudit, audit_apk_bytes};
-use crate::content::{Hit as ContentHit, MAX_SCAN_FILE_BYTES, MAX_SCAN_TOTAL_BYTES, scan_bytes};
+use crate::content::{
+    Hit as ContentHit, MAX_SCAN_FILE_BYTES, MAX_SCAN_TOTAL_BYTES, keystore_name_hit, scan_bytes,
+};
 use crate::ramdisk::{MAX_PROP_FILE, REPORTED_PROPS, is_prop_file};
 use crate::term::{Renderer, Severity as TermSeverity, Style};
 use crate::tree::{Entry, Kind, Tree};
@@ -332,6 +334,12 @@ fn scan_content(
     let mut scanned: u64 = 0;
     let mut budget = MAX_SCAN_TOTAL_BYTES;
     for e in entries {
+        if e.kind == Kind::File
+            && let Some(hit) = keystore_name_hit(&e.path)
+            && !hits.contains(&hit)
+        {
+            hits.push(hit);
+        }
         if e.kind != Kind::File || e.size == 0 || e.size > MAX_SCAN_FILE_BYTES {
             continue;
         }
@@ -594,6 +602,7 @@ fn findings(a: &ImageAudit) -> Vec<(Finding, (String, String))> {
             "cloud_credentials" => "cloud_credentials",
             "provider_tokens" => "provider_tokens",
             "debug_endpoints" => "debug_endpoints",
+            "keystore_files" => "keystore_files",
             _ => "content-indicator",
         };
         let sev = match a.content_findings[0].severity.as_str() {
@@ -1521,11 +1530,43 @@ service plain /system/bin/plain
     }
 
     #[test]
+    fn keystore_files_are_flagged_by_name() {
+        let a = run(
+            vec![
+                file("system/etc/release.jks", 0o644),
+                file("vendor/app/client.p12", 0o644),
+                file("system/etc/readme.txt", 0o644),
+            ],
+            &[
+                ("system/etc/release.jks", "feedfeed-not-a-real-store"),
+                ("vendor/app/client.p12", "pkcs12-placeholder"),
+                ("system/etc/readme.txt", "hello"),
+            ],
+        );
+        let ks: Vec<_> = a
+            .content_findings
+            .iter()
+            .filter(|h| h.rule == "keystore_files")
+            .collect();
+        assert_eq!(ks.len(), 2, "{:?}", a.content_findings);
+        assert!(ks.iter().all(|h| h.severity == "medium"));
+        assert!(
+            ks.iter()
+                .any(|h| h.path == "system/etc/release.jks" && h.detail.contains(".jks"))
+        );
+        assert!(
+            ks.iter()
+                .any(|h| h.path == "vendor/app/client.p12" && h.detail.contains(".p12"))
+        );
+        assert!(rules(&a).contains(&"keystore_files"));
+    }
+
+    #[test]
     fn content_findings_are_collected() {
         let key = "BEGIN RSA PRIVATE KEY verysecret";
         let a = run(
-            vec![file("secrets/key.pem", 0o644)],
-            &[("secrets/key.pem", key)],
+            vec![file("secrets/blob.bin", 0o644)],
+            &[("secrets/blob.bin", key)],
         );
         assert_eq!(a.content_findings.len(), 1);
         assert_eq!(a.content_findings[0].rule, "hardcoded_credentials");
