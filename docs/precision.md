@@ -46,7 +46,7 @@ machine, not necessarily across machines. Findings do not depend on it.
 | `debug-props` | `debuggable-build`, `insecure-adb`, `adb-unauthenticated`, `adb-root`, `test-keys`, `debug-build-type`, `adb-by-default` |
 | `perms` (erofs) | `su-binary`, `writable-setuid`, `setuid-files`, `world-writable`, `mode_anomalies` |
 | `init-services` | `adbd-service`, `shell-service`, `su-service`, `init_service_hygiene` |
-| `secret-key` / `secret-cloud` / `secret-debug` | `hardcoded_credentials` / `cloud_credentials` / `debug_endpoints` |
+| `secret-key` / `secret-cloud` / `secret-debug` / `secret-token` | `hardcoded_credentials` / `cloud_credentials` / `debug_endpoints` / `provider_tokens` (a JWT, medium: the one token shape that no secret scanner blocks in a repository) |
 | `leftovers` | `debug_leftovers`, `duplicate_properties`, `unhandled_input` |
 | `stb-recovery` | `shell-service` (medium x3 for the boot-started shell-domain services, info for the `disabled` one), `adbd-service` (info), `debug_endpoints` (medium) |
 | `ota-blocks` | the "cannot evaluate" infos for every quality rule (OTA with no images) |

@@ -84,7 +84,7 @@
             "severity": "high"
           },
           "ruleId": "su-binary",
-          "ruleIndex": 42
+          "ruleIndex": 43
         }
       ],
       "tool": {
@@ -699,6 +699,22 @@
               "name": "partition_coverage",
               "shortDescription": {
                 "text": "An expected partition image is missing"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "A service API key or access token (GitHub, Slack, Stripe, ...) is embedded in the image"
+              },
+              "help": {
+                "text": "Remove the token from the image and revoke it at the provider"
+              },
+              "id": "provider_tokens",
+              "name": "provider_tokens",
+              "shortDescription": {
+                "text": "A service API key or access token (GitHub, Slack, Stripe, ...) is embedded in the image"
               }
             },
             {

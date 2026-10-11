@@ -581,6 +581,7 @@ fn findings(a: &ImageAudit) -> Vec<(Finding, (String, String))> {
         let rule = match a.content_findings[0].rule.as_str() {
             "hardcoded_credentials" => "hardcoded_credentials",
             "cloud_credentials" => "cloud_credentials",
+            "provider_tokens" => "provider_tokens",
             "debug_endpoints" => "debug_endpoints",
             _ => "content-indicator",
         };

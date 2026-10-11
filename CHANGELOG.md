@@ -9,6 +9,7 @@ All notable changes to this project are documented here. The format follows
 
 - Rockchip `RKFW` / `RKAF` / `SSFW` `update.img` containers (#168, PR #243): `identify`, `extract` and `extract --list` unwrap the loader and the RKAF parts (`parameter`, `kernel`, `boot`, `system`, ...), checking the RKAF CRC and the RKFW MD5 trailer. Synthetic-fixture-validated only.
 - `vbmeta --images` recomputes hashtree descriptors (#180, PR #PR): sha1/sha256/sha512, multi-level trees, root digest and stored tree compared, `ZeRoHaSH` zeroed trees reported; `--vbmeta` coverage of a hashtree partition is now proven instead of "not recomputed". New dependency `sha1` (same line as in #239/#240/#245).
+- `provider_tokens` (#186, PR #247): API keys and access tokens of about 40 provider formats found in file contents (GitHub, GitLab, Slack and its webhooks, Stripe, SendGrid, npm, Google, Twilio, Mailgun, Shopify, Square, PyPI, DigitalOcean, Hugging Face, OpenAI, Anthropic, Docker Hub, Databricks, Postman, Azure storage, Discord webhooks, JWTs, ...), matched by prefix, length and alphabet, reported redacted. Also PGP, DSA and encrypted private-key markers, and AWS `ASIA` session key ids. The SARIF rules tables gain `provider_tokens` (goldens updated).
 
 ### Fixed
 
