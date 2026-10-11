@@ -384,6 +384,16 @@ pub fn help(rule: &str) -> Option<Help> {
             "Build the shipped APK without android:testOnly",
             Medium,
         ),
+        "apk-provider-grant-uri" => (
+            "A provider sets android:grantUriPermissions",
+            "Grant per-URI with narrow <grant-uri-permission> paths instead of grantUriPermissions=\"true\"",
+            Medium,
+        ),
+        "apk-provider-broad-path" => (
+            "A provider grants or guards every path via <grant-uri-permission> or <path-permission>",
+            "Scope <grant-uri-permission>/<path-permission> to the paths that must be shared",
+            Medium,
+        ),
         "elf-no-pie" => (
             "A native executable is not position-independent (ET_EXEC): no ASLR",
             "Build with -fPIE -pie so the loader can randomise its base",
@@ -793,6 +803,8 @@ const KNOWN_RULES: &[&str] = &[
     "apk-shared-user-id",
     "apk-allow-backup",
     "apk-test-only",
+    "apk-provider-grant-uri",
+    "apk-provider-broad-path",
     "hardcoded_credentials",
     "cloud_credentials",
     "provider_tokens",

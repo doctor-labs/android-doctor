@@ -21,9 +21,11 @@ All notable changes to this project are documented here. The format follows
 - Incremental payload operations MOVE, BSDIFF and BROTLI_BSDIFF (#169, PR #244) with `--base`, applied against the old image like payload-dumper-go; BSDF2 patches (bzip2/brotli/none per stream) are read.
 - APK audit runs the ELF hardening rules (PIE, NX stack, RELRO, canary, FORTIFY) on `lib/<abi>/*.so` (#190).
 - APK audit flags signer certificates signed with MD5/SHA-1 (`apk-cert-weak-hash`) and RSA keys under 2048 bits (`apk-cert-weak-key`) (#203).
+- APK audit reports provider URI grants (`grantUriPermissions`) and grants or path permissions covering every path (#208).
 
 ### Fixed
 
+- The manifest `path` attribute is read from its real id (0x0101002a); 0x0101002c is `pathPattern`.
 - `hash-tree` computed the wrong root digest (it hashed the last tree level a second time) and stored the levels leaf-first; both now match `avbtool` byte for byte. The old unit test expected the wrong roots. sha1 and sha512 descriptors were refused and are now supported.
 - The v3 signing block id was wrong (`0x7109871b`; it is `0xf05368c0`), so v3-only signers were never listed.
 - Incremental extraction with `--base` never worked: the base directory was opened as if it were the image (now `<base>/<partition>.img`), the block size was fixed at 4096 (now the manifest's), and a bsdiff op wrongly required equal source and destination sizes.
