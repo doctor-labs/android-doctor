@@ -1608,6 +1608,7 @@ pub fn audit_apk_bytes(path: &Path, bytes: &[u8]) -> ApkAudit {
         });
         let mut code_issues = code_issues(&mut zip, activities);
         code_issues.extend(native_issues(&mut zip));
+        code_issues.extend(packer_issues(&mut zip));
         Ok(ApkInfo {
             path: path.display().to_string(),
             package_name: attrs
@@ -1746,6 +1747,84 @@ fn native_issues(zip: &mut ZipArchive<Cursor<&[u8]>>) -> Vec<ManifestIssue> {
             }
         })
         .collect()
+}
+
+/// Names known Android packers/protectors from the FILE NAME of entries under `lib/` or `assets/`.
+///
+/// The match is on the entry's file name (the part after the last `/`, case-sensitive), matching
+/// APKiD-style stub library names. Only the first matching packer name is recorded per entry.
+fn packer_of(file_name: &str) -> Option<&'static str> {
+    let fname = file_name.rsplit('/').next().unwrap_or(file_name);
+    let is_so = fname.ends_with(".so");
+    let starts = |pre: &str| -> bool { fname.starts_with(pre) && is_so };
+    match fname {
+        // Qihoo 360 Jiagu (stub under assets/): libjiagu*.so
+        _ if starts("libjiagu") => Some("Qihoo 360 Jiagu"),
+        // Bangcle: libsecexe.so / libsecmain.so
+        "libsecexe.so" | "libsecmain.so" => Some("Bangcle"),
+        // SecNeo (DexHelper): libDexHelper*.so
+        _ if starts("libDexHelper") => Some("SecNeo (DexHelper)"),
+        // Tencent Legu: libtup.so | libshella*.so | libshellx*.so
+        "libtup.so" => Some("Tencent Legu"),
+        _ if starts("libshella") || starts("libshellx") => Some("Tencent Legu"),
+        // Baidu protect: libbaiduprotect*.so
+        _ if starts("libbaiduprotect") => Some("Baidu protect"),
+        // Alibaba mobisec: libmobisec*.so
+        _ if starts("libmobisec") => Some("Alibaba mobisec"),
+        // Ijiami: libexecmain.so (NOT plain libexec.so: too generic)
+        "libexecmain.so" => Some("Ijiami"),
+        _ => None,
+    }
+}
+
+fn packer_issues(zip: &mut ZipArchive<Cursor<&[u8]>>) -> Vec<ManifestIssue> {
+    // Collect (packer name, entry path) for every matching entry, sorted by path.
+    let mut hits: Vec<(&'static str, String)> = zip
+        .file_names()
+        .filter(|n| n.starts_with("lib/") || n.starts_with("assets/"))
+        .filter_map(|n| packer_of(n).map(|name| (name, n.to_string())))
+        .collect();
+    hits.sort_by(|a, b| a.1.cmp(&b.1));
+    if hits.is_empty() {
+        return Vec::new();
+    }
+
+    // Unique packer names, in table order (first appearance in hits).
+    let mut names: Vec<&'static str> = Vec::new();
+    for (name, _) in &hits {
+        if !names.contains(name) {
+            names.push(*name);
+        }
+    }
+
+    // Paths: first 5 comma-separated, then "and N more".
+    let count = hits.len();
+    let list = if count <= 5 {
+        hits.iter()
+            .map(|(_, p)| p.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    } else {
+        format!(
+            "{}, and {} more",
+            hits[..5]
+                .iter()
+                .map(|(_, p)| p.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            count - 5
+        )
+    };
+
+    vec![ManifestIssue {
+        rule: "apk-packer",
+        severity: Severity::Warn,
+        detail: format!(
+            "packed or protected with {} ({}): the real code is decrypted at run time, so code findings cover only the stub",
+            names.join(", "),
+            list,
+        ),
+    }]
 }
 
 /// Read one entry out of the archive, refusing anything over the per-entry limit.
@@ -3171,6 +3250,53 @@ mod tests {
                 let _ = info.posture(NOW);
             }
         }
+    }
+
+    #[test]
+    fn known_packer_stubs_are_named() {
+        use std::io::Write;
+        let zip_of = |names: &[&str]| {
+            let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+            let opt = zip::write::SimpleFileOptions::default();
+            for n in names {
+                w.start_file(*n, opt).unwrap();
+                w.write_all(b"not an elf").unwrap();
+            }
+            w.finish().unwrap().into_inner()
+        };
+        let issues = |b: &[u8]| {
+            audit_apk_bytes(Path::new("/x.apk"), b)
+                .info
+                .unwrap()
+                .issues()
+        };
+        // Qihoo 360 Jiagu ships its stub under assets/, SecNeo under lib/
+        let packed = issues(&zip_of(&[
+            "assets/libjiagu_a64.so",
+            "lib/arm64-v8a/libDexHelper.so",
+            "lib/arm64-v8a/libapp.so",
+        ]));
+        let p: Vec<_> = packed.iter().filter(|i| i.rule == "apk-packer").collect();
+        assert_eq!(p.len(), 1, "{packed:?}");
+        assert!(
+            p[0].detail.contains("Qihoo 360 Jiagu") && p[0].detail.contains("SecNeo"),
+            "{}",
+            p[0].detail
+        );
+        assert!(
+            p[0].detail.contains("assets/libjiagu_a64.so"),
+            "{}",
+            p[0].detail
+        );
+        // ordinary libraries are not a packer
+        assert!(
+            issues(&zip_of(&[
+                "lib/arm64-v8a/libapp.so",
+                "lib/arm64-v8a/libexec.so"
+            ]))
+            .iter()
+            .all(|i| i.rule != "apk-packer")
+        );
     }
 
     #[test]

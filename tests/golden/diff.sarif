@@ -34,7 +34,7 @@
             "severity": "high"
           },
           "ruleId": "diff-debuggable-build",
-          "ruleIndex": 51
+          "ruleIndex": 52
         },
         {
           "level": "error",
@@ -59,7 +59,7 @@
             "severity": "high"
           },
           "ruleId": "diff-insecure-adb",
-          "ruleIndex": 52
+          "ruleIndex": 53
         },
         {
           "level": "error",
@@ -84,7 +84,7 @@
             "severity": "high"
           },
           "ruleId": "diff-su-binary",
-          "ruleIndex": 58
+          "ruleIndex": 59
         },
         {
           "level": "error",
@@ -109,7 +109,7 @@
             "severity": "high"
           },
           "ruleId": "diff-new-setuid",
-          "ruleIndex": 54
+          "ruleIndex": 55
         },
         {
           "level": "note",
@@ -134,7 +134,7 @@
             "severity": "info"
           },
           "ruleId": "diff-prop-changed",
-          "ruleIndex": 55
+          "ruleIndex": 56
         },
         {
           "level": "note",
@@ -159,7 +159,7 @@
             "severity": "info"
           },
           "ruleId": "diff-prop-changed",
-          "ruleIndex": 55
+          "ruleIndex": 56
         }
       ],
       "tool": {
@@ -725,6 +725,22 @@
               "name": "apk-min-sdk-old",
               "shortDescription": {
                 "text": "Old minimum SDK"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An APK is packed or protected by a known packer"
+              },
+              "help": {
+                "text": "Unpack the APK (run it and dump the decrypted dex) before trusting code findings; a packer is not a vulnerability by itself"
+              },
+              "id": "apk-packer",
+              "name": "apk-packer",
+              "shortDescription": {
+                "text": "An APK is packed or protected by a known packer"
               }
             },
             {
