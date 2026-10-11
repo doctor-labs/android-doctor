@@ -26,7 +26,7 @@
             "severity": "low"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 54
+          "ruleIndex": 55
         },
         {
           "baselineState": "new",
@@ -86,7 +86,7 @@
             "severity": "info"
           },
           "ruleId": "selinux_label_gaps",
-          "ruleIndex": 56
+          "ruleIndex": 57
         },
         {
           "baselineState": "new",
@@ -112,7 +112,7 @@
             "severity": "info"
           },
           "ruleId": "mode_anomalies",
-          "ruleIndex": 53
+          "ruleIndex": 54
         },
         {
           "baselineState": "new",
@@ -994,6 +994,22 @@
               "name": "insecure-adb",
               "shortDescription": {
                 "text": "ro.secure=0: adbd keeps root"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "A key or keystore file is shipped in the image"
+              },
+              "help": {
+                "text": "Remove signing keys and keystores from the image; ship only public certificates"
+              },
+              "id": "keystore_files",
+              "name": "keystore_files",
+              "shortDescription": {
+                "text": "A key or keystore file is shipped in the image"
               }
             },
             {

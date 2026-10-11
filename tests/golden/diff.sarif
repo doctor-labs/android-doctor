@@ -1053,6 +1053,22 @@
             },
             {
               "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "A key or keystore file is shipped in the image"
+              },
+              "help": {
+                "text": "Remove signing keys and keystores from the image; ship only public certificates"
+              },
+              "id": "keystore_files",
+              "name": "keystore_files",
+              "shortDescription": {
+                "text": "A key or keystore file is shipped in the image"
+              }
+            },
+            {
+              "defaultConfiguration": {
                 "level": "note"
               },
               "fullDescription": {

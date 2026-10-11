@@ -87,7 +87,7 @@
             "severity": "high"
           },
           "ruleId": "su-binary",
-          "ruleIndex": 59
+          "ruleIndex": 60
         }
       ],
       "tool": {
@@ -926,6 +926,22 @@
               "name": "insecure-adb",
               "shortDescription": {
                 "text": "ro.secure=0: adbd keeps root"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "A key or keystore file is shipped in the image"
+              },
+              "help": {
+                "text": "Remove signing keys and keystores from the image; ship only public certificates"
+              },
+              "id": "keystore_files",
+              "name": "keystore_files",
+              "shortDescription": {
+                "text": "A key or keystore file is shipped in the image"
               }
             },
             {
