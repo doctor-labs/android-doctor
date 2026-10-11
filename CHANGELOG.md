@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Added
+
+- Rockchip `RKFW` / `RKAF` / `SSFW` `update.img` containers (#168, PR #243): `identify`, `extract` and `extract --list` unwrap the loader and the RKAF parts (`parameter`, `kernel`, `boot`, `system`, ...), checking the RKAF CRC and the RKFW MD5 trailer. Synthetic-fixture-validated only.
+
 ## [0.5.1]
 
 ### Fixed (contract)

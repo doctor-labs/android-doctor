@@ -731,9 +731,10 @@ like any other input. An Android sparse payload inside is expanded on the way ou
 | Sony `.sin` | `sony-sin` | supported (synthetic) | Header version 3; the hash/signature blocks are skipped and reported as **not verified**; a compressed payload is refused by name |
 | Coolpad `.cpb` | `coolpad-cpb` | named, unsupported | Undocumented and usually encrypted with vendor-specific keys; `extract` refuses and says to decrypt with the vendor tool first |
 | Nokia `.nb0` | `nokia-nb0` | supported (synthetic) | Count + 48-byte entry table (offset, length, flags, name) + blobs; detected by extension, header strictly validated, mis-named files refused |
+| Rockchip `RKFW` / `RKAF` / `SSFW` | `rockchip-rkfw`, `rockchip-rkaf`, `rockchip-ssfw` | supported (synthetic) | RKFW = loader + RKAF image (MD5 trailer checked when present); RKAF = part table of `update.img`, CRC checked (MSB-first CRC-32, poly 0x04C10DB7), `PARM` and `KRNL` wrappers removed, `SELF` skipped; SSFW = table of child images (layout from one implementation, afptool-rs). Detected by magic |
 
 **Caveat: these readers are validated only against synthetic fixtures built in the tests from the layouts
-documented at the top of each module (`src/huawei.rs`, `src/lgkdz.rs`, `src/sonysin.rs`, `src/nokianb0.rs`), not against real device
+documented at the top of each module (`src/huawei.rs`, `src/lgkdz.rs`, `src/sonysin.rs`, `src/nokianb0.rs`, `src/rockchip.rs`), not against real device
 firmware, and they were written from the public layouts rather than from the GPL reference tools. A real sample
 would catch any misread of a field offset, so treat a refusal on a genuine file as a likely spec gap and open an
 issue. Anything the readers cannot process (unknown header version, unexpected magic, out-of-range offsets, a
@@ -771,7 +772,7 @@ Status: **verified** = checked against an independent reference tool on real fir
 | Device tree / dtbo tables (`dt`) | synthetic | Parses and displays the device tree blob and dtbo table headers; tested on AOSP `mkdtboimg` output |
 | Other vendor containers (Amlogic, ...) | planned | Without real samples these will be marked unverified |
 | Spreadtrum/MediaTek `.pac` containers | synthetic | Parser and extractor (adapted from SR Labs PacHandler, Apache-2.0); tested with generated fixtures, not yet verified on real firmware |
-| Huawei `UPDATE.APP`, LG `.kdz`/`.dz`, Sony `.sin`, Nokia `.nb0` containers | synthetic | See [Firmware containers](#firmware-containers); spec-built fixtures only, no real sample yet |
+| Huawei `UPDATE.APP`, LG `.kdz`/`.dz`, Sony `.sin`, Nokia `.nb0`, Rockchip RKFW/RKAF/SSFW containers | synthetic | See [Firmware containers](#firmware-containers); spec-built fixtures only, no real sample yet |
 | Coolpad `.cpb` container | detected | Named by `identify`; `extract` refuses (undocumented, usually encrypted) |
 | Incremental OTAs (`*.patch.dat`, delta payloads) | no | Fails with a clear error |
 | dm-verity hash tree and FEC regeneration for A/B partitions | planned | Needed to check the whole-image hash of partitions that declare those extents |

@@ -44,6 +44,7 @@ mod payload;
 mod ramdisk;
 mod report;
 mod reporting;
+mod rockchip;
 mod sdat;
 mod skill;
 mod sonysin;
