@@ -219,6 +219,8 @@ pub struct ManifestAttrs {
     pub task_reparenting: bool,
     /// `<application android:permission>`: the default guard for every component.
     pub app_permission: bool,
+    /// Top-level `<permission>` declarations: (name, protectionLevel & 0xf).
+    pub permissions: Vec<(String, u32)>,
     /// `<application android:taskAffinity>`: inherited by activities unless overridden.
     /// `None` means absent; an empty string is the StrandHogg mitigation and is kept.
     pub app_task_affinity: Option<String>,
@@ -236,6 +238,8 @@ pub struct Component {
     pub exported: Option<bool>,
     /// `android:permission` (or both read and write permissions on a provider) is set.
     pub guarded: bool,
+    /// `android:permission` value (the guarding permission name).
+    pub permission: Option<String>,
     /// `android:enabled="false"`.
     pub disabled: bool,
     pub has_intent_filter: bool,
@@ -576,6 +580,7 @@ const ANDROID_ATTRS: &[(u32, &str)] = &[
     (0x0101_0006, "permission"),
     (0x0101_0007, "readPermission"),
     (0x0101_0008, "writePermission"),
+    (0x0101_0009, "protectionLevel"),
     (0x0101_000b, "sharedUserId"),
     (0x0101_0012, "taskAffinity"),
     (0x0101_001d, "launchMode"),
@@ -631,6 +636,8 @@ fn read_tag(
         ..Default::default()
     };
     let (mut read_perm, mut write_perm) = (false, false);
+    let mut perm_name: Option<String> = None;
+    let mut perm_level: Option<u32> = None;
     for a in attrs {
         if tag == "manifest" {
             match pool.get(a.name_idx).map(String::as_str) {
@@ -656,6 +663,14 @@ fn read_tag(
             ("application", "testOnly") => out.test_only = a.as_bool(),
             ("application", "networkSecurityConfig") => out.has_network_security_config = true,
             ("application", "permission") => out.app_permission = !a.value.is_empty(),
+            ("permission", "name")
+                if parent.is_some_and(|(p, _)| p == "manifest") && !a.value.is_empty() =>
+            {
+                perm_name = Some(a.value.clone())
+            }
+            ("permission", "protectionLevel") if (0x10..=0x1f).contains(&a.data_type) => {
+                perm_level = Some(a.data & 0xf)
+            }
             ("application", "allowTaskReparenting") => {
                 out.task_reparenting = a.as_bool() == Some(true)
             }
@@ -664,7 +679,14 @@ fn read_tag(
                 "name" => c.name = a.value.clone(),
                 "exported" => c.exported = a.as_bool(),
                 "enabled" => c.disabled = a.as_bool() == Some(false),
-                "permission" => c.guarded = !a.value.is_empty(),
+                "permission" => {
+                    c.guarded = !a.value.is_empty();
+                    c.permission = if a.value.is_empty() {
+                        None
+                    } else {
+                        Some(a.value.clone())
+                    };
+                }
                 "readPermission" => read_perm = !a.value.is_empty(),
                 "writePermission" => write_perm = !a.value.is_empty(),
                 "launchMode" if (0x10..=0x1f).contains(&a.data_type) => {
@@ -677,6 +699,12 @@ fn read_tag(
             },
             _ => {}
         }
+    }
+    if tag == "permission"
+        && parent.is_some_and(|(p, _)| p == "manifest")
+        && let Some(name) = perm_name
+    {
+        out.permissions.push((name, perm_level.unwrap_or(0)));
     }
     if is_component && in_app {
         if out.components.len() < MAX_COMPONENTS {
@@ -846,6 +874,35 @@ fn manifest_issues(m: &ManifestAttrs) -> Vec<ManifestIssue> {
                 names.len()
             ),
         );
+    }
+    // Exported components guarded by a permission the app declares as normal (0) or dangerous (1).
+    for c in &m.components {
+        if c.disabled || !c.guarded || c.permission.is_none() {
+            continue;
+        }
+        if exported(c, m.target_sdk).is_none() {
+            continue;
+        }
+        let perm = c.permission.as_deref().unwrap();
+        let level = m
+            .permissions
+            .iter()
+            .find(|(name, _)| name == perm)
+            .map(|(_, level)| level & 0xf);
+        if let Some(0 | 1) = level {
+            let label = match level.unwrap() {
+                0 => "normal",
+                _ => "dangerous",
+            };
+            issue(
+                "apk-exported-weak-permission",
+                Medium,
+                format!(
+                    "{} {} is exported behind {}, a {} permission any app can request",
+                    c.kind, c.name, perm, label
+                ),
+            );
+        }
     }
     // StrandHogg-style task-hijacking attributes, reported per activity.
     for c in &m.components {
@@ -2290,6 +2347,60 @@ mod tests {
         assert!(
             !has(&narrow, "apk-provider-broad-path") && !has(&narrow, "apk-provider-grant-uri")
         );
+    }
+
+    #[test]
+    fn exported_component_guarded_by_a_weak_permission_is_reported() {
+        let has = |m: &El, rule: &str| issues(m).iter().any(|(r, _)| *r == rule);
+        // <permission name=P protectionLevel=L/> next to <application>, one exported service guarded by P.
+        let with_level = |level: u32| {
+            el(
+                "manifest",
+                vec![(false, "package", V::Str("com.example.fx"))],
+                vec![
+                    el("uses-sdk", vec![a("targetSdkVersion", V::Int(33))], vec![]),
+                    el(
+                        "permission",
+                        vec![
+                            a("name", V::Str("com.example.fx.SYNC")),
+                            a("protectionLevel", V::Int(level)),
+                        ],
+                        vec![],
+                    ),
+                    el(
+                        "application",
+                        vec![],
+                        vec![comp(
+                            "service",
+                            vec![
+                                a("exported", t()),
+                                a("permission", V::Str("com.example.fx.SYNC")),
+                            ],
+                            vec![],
+                        )],
+                    ),
+                ],
+            )
+        };
+        assert!(
+            has(&with_level(0), "apk-exported-weak-permission"),
+            "normal"
+        );
+        assert!(
+            has(&with_level(1), "apk-exported-weak-permission"),
+            "dangerous"
+        );
+        assert!(
+            !has(&with_level(2), "apk-exported-weak-permission"),
+            "signature"
+        );
+        // flags above the base level do not change it: signature|privileged (0x12) is still signature
+        assert!(
+            !has(&with_level(0x12), "apk-exported-weak-permission"),
+            "signature|privileged"
+        );
+        // the guard keeps the component out of the unguarded-export rules either way
+        assert!(!has(&with_level(0), "apk-exported-component"));
     }
 
     #[test]

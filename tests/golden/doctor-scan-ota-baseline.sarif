@@ -26,7 +26,7 @@
             "severity": "low"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 62
+          "ruleIndex": 63
         },
         {
           "baselineState": "new",
@@ -52,7 +52,7 @@
             "severity": "info"
           },
           "ruleId": "avb_signature",
-          "ruleIndex": 38
+          "ruleIndex": 39
         },
         {
           "baselineState": "new",
@@ -69,7 +69,7 @@
             "severity": "info"
           },
           "ruleId": "duplicate_properties",
-          "ruleIndex": 49
+          "ruleIndex": 50
         },
         {
           "baselineState": "new",
@@ -86,7 +86,7 @@
             "severity": "info"
           },
           "ruleId": "selinux_label_gaps",
-          "ruleIndex": 64
+          "ruleIndex": 65
         },
         {
           "baselineState": "new",
@@ -112,7 +112,7 @@
             "severity": "info"
           },
           "ruleId": "mode_anomalies",
-          "ruleIndex": 61
+          "ruleIndex": 62
         },
         {
           "baselineState": "new",
@@ -129,7 +129,7 @@
             "severity": "info"
           },
           "ruleId": "init_service_hygiene",
-          "ruleIndex": 58
+          "ruleIndex": 59
         },
         {
           "baselineState": "new",
@@ -155,7 +155,7 @@
             "severity": "info"
           },
           "ruleId": "debug_leftovers",
-          "ruleIndex": 42
+          "ruleIndex": 43
         }
       ],
       "tool": {
@@ -609,6 +609,22 @@
               "name": "apk-exported-provider",
               "shortDescription": {
                 "text": "An APK exports a content provider with no permission"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK exports a component behind a permission it declares as normal or dangerous"
+              },
+              "help": {
+                "text": "Declare the guarding permission with android:protectionLevel=\"signature\" so only apps signed with the same key can hold it"
+              },
+              "id": "apk-exported-weak-permission",
+              "name": "apk-exported-weak-permission",
+              "shortDescription": {
+                "text": "An APK exports a component behind a permission it declares as normal or dangerous"
               }
             },
             {

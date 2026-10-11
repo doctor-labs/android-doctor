@@ -369,8 +369,9 @@ provider is exported by default only below targetSdk 17 (never reported when tar
 unknown), and an activity, service or receiver is exported by default only if it has an
 `<intent-filter>` and targetSdk is below 31 (from 31 the attribute is mandatory, so an absent one
 is not reported). A launcher activity (a `MAIN` action) is not reported. Any `android:permission`
-on the component or `<application>` counts as a guard; its protection level lives in another
-package and is not checked, so this can under-report. Disabled components are skipped.
+on the component or `<application>` counts as a guard; a guarding permission this app declares
+with a normal or dangerous protection level is reported (`apk-exported-weak-permission`); a
+permission declared by another package is not resolved. Disabled components are skipped.
 `allowBackup` is reported only when explicitly true, not when absent. A cleartext default is not
 flagged on targetSdk 28 and later, and the contents of a `networkSecurityConfig` resource are not
 read.

@@ -26,7 +26,7 @@
             "severity": "critical"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 62
+          "ruleIndex": 63
         },
         {
           "baselineState": "new",
@@ -52,7 +52,7 @@
             "severity": "info"
           },
           "ruleId": "avb_signature",
-          "ruleIndex": 38
+          "ruleIndex": 39
         }
       ],
       "tool": {
@@ -506,6 +506,22 @@
               "name": "apk-exported-provider",
               "shortDescription": {
                 "text": "An APK exports a content provider with no permission"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK exports a component behind a permission it declares as normal or dangerous"
+              },
+              "help": {
+                "text": "Declare the guarding permission with android:protectionLevel=\"signature\" so only apps signed with the same key can hold it"
+              },
+              "id": "apk-exported-weak-permission",
+              "name": "apk-exported-weak-permission",
+              "shortDescription": {
+                "text": "An APK exports a component behind a permission it declares as normal or dangerous"
               }
             },
             {
