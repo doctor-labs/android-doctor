@@ -113,6 +113,7 @@ pub struct ImageAudit {
     pub name: String,
     pub entries: Vec<Entry>,
     pub props: Vec<PropHit>,
+    pub fstab: Vec<(String, &'static str, Severity, String)>,
     pub setuid: Vec<Special>,
     pub capabilities: Vec<(String, String)>,
     pub world_writable: Vec<Special>,
@@ -147,6 +148,13 @@ fn special(e: &Entry) -> Special {
         gid: e.gid,
         label: label_of(e),
     }
+}
+
+/// An fstab file is one named `fstab` or starting with `fstab.` (e.g.
+/// `vendor/etc/fstab.qcom`, `fstab.default`).
+fn is_fstab_file(path: &str) -> bool {
+    let base = path.rsplit('/').next().unwrap_or(path);
+    base == "fstab" || base.starts_with("fstab.")
 }
 
 fn parse_props(text: &str, file: &str, out: &mut Vec<PropHit>) {
@@ -291,8 +299,8 @@ fn analyse_with(
         if let Some((_, v)) = e.xattrs.iter().find(|(k, _)| k == "security.capability") {
             a.capabilities.push((e.path.clone(), v.clone()));
         }
-        let wants_text =
-            e.size <= MAX_PROP_FILE && (is_prop_file(&e.path) || e.path.ends_with(".rc"));
+        let wants_text = e.size <= MAX_PROP_FILE
+            && (is_prop_file(&e.path) || e.path.ends_with(".rc") || is_fstab_file(&e.path));
         if wants_text {
             files_read += 1;
             bytes_read += e.size;
@@ -304,6 +312,11 @@ fn analyse_with(
             let text = String::from_utf8_lossy(&bytes);
             if is_prop_file(&e.path) {
                 parse_props(&text, &e.path, &mut a.props);
+            } else if is_fstab_file(&e.path) {
+                let entries = crate::fstab::parse(&text);
+                for (rule, sev, detail) in crate::fstab::issues(&entries) {
+                    a.fstab.push((e.path.clone(), rule, sev, detail));
+                }
             } else {
                 a.services.extend(parse_services(&text, &e.path));
             }
@@ -663,6 +676,21 @@ fn findings(a: &ImageAudit) -> Vec<(Finding, (String, String))> {
         }
     }
     f.extend(crate::elf::findings(&a.elf));
+    let fstab_findings: Vec<_> = a
+        .fstab
+        .iter()
+        .map(|(file, rule, sev, detail)| {
+            (
+                Finding {
+                    severity: *sev,
+                    rule,
+                    detail: format!("{detail} in {file}"),
+                },
+                (file.clone(), String::new()),
+            )
+        })
+        .collect();
+    f.extend(fstab_findings);
     f.sort_by_key(|x| x.0.severity);
     f
 }
@@ -1084,6 +1112,46 @@ mod tests {
             findings(&a)
                 .iter()
                 .all(|(f, _)| f.rule == "debug-build-type")
+        );
+    }
+
+    #[test]
+    fn an_fstab_in_the_image_is_read_and_reported() {
+        let a = run(
+            vec![
+                file("vendor/etc/fstab.qcom", 0o644),
+                file("vendor/etc/fstabish.txt", 0o644),
+            ],
+            &[
+                (
+                    "vendor/etc/fstab.qcom",
+                    "/dev/block/by-name/vendor /vendor ext4 ro wait,logical\n/dev/block/by-name/userdata /data f2fs noatime wait,check\n",
+                ),
+                (
+                    "vendor/etc/fstabish.txt",
+                    "/dev/block/by-name/vendor /vendor ext4 ro wait\n",
+                ),
+            ],
+        );
+        let rules: Vec<_> = a
+            .findings
+            .iter()
+            .map(|f| (f.rule, f.detail.clone()))
+            .collect();
+        assert!(
+            rules
+                .iter()
+                .any(|(r, d)| *r == "fstab-no-verity" && d.contains("vendor/etc/fstab.qcom")),
+            "{rules:?}"
+        );
+        assert!(
+            rules.iter().any(|(r, _)| *r == "fstab-data-unencrypted"),
+            "{rules:?}"
+        );
+        // only files named fstab or fstab.* are fstabs
+        assert!(
+            !rules.iter().any(|(_, d)| d.contains("fstabish")),
+            "{rules:?}"
         );
     }
 

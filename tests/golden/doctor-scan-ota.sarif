@@ -25,7 +25,7 @@
             "severity": "low"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 70
+          "ruleIndex": 73
         },
         {
           "level": "note",
@@ -82,7 +82,7 @@
             "severity": "info"
           },
           "ruleId": "selinux_label_gaps",
-          "ruleIndex": 72
+          "ruleIndex": 75
         },
         {
           "level": "note",
@@ -107,7 +107,7 @@
             "severity": "info"
           },
           "ruleId": "mode_anomalies",
-          "ruleIndex": 69
+          "ruleIndex": 72
         },
         {
           "level": "note",
@@ -123,7 +123,7 @@
             "severity": "info"
           },
           "ruleId": "init_service_hygiene",
-          "ruleIndex": 66
+          "ruleIndex": 69
         },
         {
           "level": "note",
@@ -1179,6 +1179,54 @@
               "name": "file-capabilities",
               "shortDescription": {
                 "text": "Files carry file capabilities"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "/data encryption is optional"
+              },
+              "help": {
+                "text": "Replace encryptable= with fileencryption= so /data is always encrypted"
+              },
+              "id": "fstab-data-encryption-optional",
+              "name": "fstab-data-encryption-optional",
+              "shortDescription": {
+                "text": "/data encryption is optional"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "/data is not encrypted"
+              },
+              "help": {
+                "text": "Mount /data with fileencryption= (file-based encryption)"
+              },
+              "id": "fstab-data-unencrypted",
+              "name": "fstab-data-unencrypted",
+              "shortDescription": {
+                "text": "/data is not encrypted"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "A system partition is mounted without dm-verity"
+              },
+              "help": {
+                "text": "Add avb (or verify) to the fs_mgr flags of every read-only system partition"
+              },
+              "id": "fstab-no-verity",
+              "name": "fstab-no-verity",
+              "shortDescription": {
+                "text": "A system partition is mounted without dm-verity"
               }
             },
             {

@@ -269,6 +269,21 @@ pub fn help(rule: &str) -> Option<Help> {
             "Set ro.secure=1 in the shipped build",
             High,
         ),
+        "fstab-no-verity" => (
+            "A system partition is mounted without dm-verity",
+            "Add avb (or verify) to the fs_mgr flags of every read-only system partition",
+            Medium,
+        ),
+        "fstab-data-unencrypted" => (
+            "/data is not encrypted",
+            "Mount /data with fileencryption= (file-based encryption)",
+            High,
+        ),
+        "fstab-data-encryption-optional" => (
+            "/data encryption is optional",
+            "Replace encryptable= with fileencryption= so /data is always encrypted",
+            Medium,
+        ),
         "adb-unauthenticated" => (
             "ro.adb.secure=0: ADB connections need no authorization",
             "Set ro.adb.secure=1",
@@ -814,6 +829,9 @@ pub fn to_sarif(findings: &[Finding], score: &Score, baselined: bool) -> Value {
 const KNOWN_RULES: &[&str] = &[
     "debuggable-build",
     "insecure-adb",
+    "fstab-no-verity",
+    "fstab-data-unencrypted",
+    "fstab-data-encryption-optional",
     "adb-unauthenticated",
     "adb-root",
     "test-keys",

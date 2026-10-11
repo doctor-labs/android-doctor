@@ -7,6 +7,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 - APK audit names known packers and protectors (Jiagu, Bangcle, SecNeo, Tencent Legu, Baidu, Alibaba, Ijiami) from their stub libraries (#195).
+- Image audit parses fstab files and reports system partitions without dm-verity and /data without (or with optional) encryption (#192).
 - APK audit reports high intent-filter priorities, binary SMS port receivers, dialer secret codes and directBootAware components (#210).
 - APK audit reports custom permissions without signature protection and a minSdkVersion below 23 (#211).
 - APK audit reports custom permissions without signature protection and a minSdkVersion below 23 (#211).
