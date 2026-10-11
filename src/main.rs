@@ -1,9 +1,14 @@
+use anyhow::Context;
 use clap::{Arg, ArgAction, ArgMatches, CommandFactory, Parser, Subcommand};
 use doctor_kit::{ExtCommand, Extensions, Meta};
 use kit::AndroidDoctor;
 use reporting::{Emit, ReportArgs, emit};
+use rsa::traits::PublicKeyParts;
+use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::PathBuf;
+
+use crate::detect::refuse_blocking_file;
 
 mod amlogic;
 mod apk;
@@ -241,6 +246,17 @@ enum Command {
         only: Vec<String>,
         #[command(flatten)]
         report: ReportArgs,
+    },
+    /// Write the AVB public key blob of a PEM RSA key (avbtool extract_public_key) and print its SHA-256 digest
+    Avbkey {
+        /// A PEM-encoded RSA key file (public or private)
+        key: PathBuf,
+        /// Write the blob here instead of just printing the digest
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
     },
     /// Show an AVB vbmeta image (or a partition with an AVB footer): header, key, signature, descriptors, hashes
     Vbmeta {
@@ -843,6 +859,7 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             only,
             report,
         } => diff_command(&old, &new, json, &only, &report, no_color),
+        Command::Avbkey { key, output, json } => avbkey_command(&key, output.as_deref(), json),
         Command::Vbmeta {
             image,
             images,
@@ -1207,6 +1224,46 @@ fn files_command(
             .join("\n")
     };
     print_out(&text)
+}
+
+/// `avbkey`: write the AVB public key blob of a PEM RSA key and print its SHA-256.
+fn avbkey_command(
+    key: &std::path::Path,
+    output: Option<&std::path::Path>,
+    json: bool,
+) -> anyhow::Result<()> {
+    use std::io::Read;
+
+    refuse_blocking_file(key)?;
+    if key.is_dir() {
+        anyhow::bail!("{} is a directory, not a key file", key.display());
+    }
+    let mut pem = String::new();
+    let mut f = std::fs::File::open(key).with_context(|| format!("opening {}", key.display()))?;
+    f.read_to_string(&mut pem)?;
+    let pubkey = avb::load_rsa_public_key(&pem)?;
+    let bits = pubkey.n().bits() as u32;
+    let blob = avb::public_key_blob(pubkey.n());
+    let sha = avb::hex(&Sha256::digest(&blob));
+    if let Some(out) = output {
+        write_atomically(out, false, |f| {
+            f.write_all(&blob)?;
+            Ok(())
+        })?;
+    }
+    let key_str = key.display().to_string();
+    let text = if json {
+        serde_json::to_string_pretty(&serde_json::json!({
+            "key": key_str,
+            "bits": bits,
+            "sha256": sha,
+            "output": output.map(|p| p.display().to_string()),
+        }))?
+    } else {
+        format!("{sha}  {key_str}")
+    };
+    print_out(&text)?;
+    Ok(())
 }
 
 fn vbmeta_command(

@@ -306,7 +306,7 @@ pub fn check_coverage(top: &Vbmeta, part: &Vbmeta, path: &Path) -> Result<Covera
     })
 }
 
-fn hex(b: &[u8]) -> String {
+pub fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
@@ -455,6 +455,53 @@ pub fn read_key(path: &Path) -> Result<RsaPublicKey> {
     rsa::pkcs8::DecodePublicKey::from_public_key_pem(&pem)
         .or_else(|_| rsa::pkcs1::DecodeRsaPublicKey::from_pkcs1_pem(&pem))
         .with_context(|| "invalid PEM RSA public key")
+}
+
+/// Load an RSA public key from a PEM string. Accepts a PKCS#8 public key
+/// (`BEGIN PUBLIC KEY`), a PKCS#1 public key (`BEGIN RSA PUBLIC KEY`), a PKCS#8
+/// private key (`BEGIN PRIVATE KEY`), or a PKCS#1 private key (`BEGIN RSA
+/// PRIVATE KEY`), in that order; only the public parts are used.
+pub fn load_rsa_public_key(pem: &str) -> anyhow::Result<rsa::RsaPublicKey> {
+    use rsa::RsaPrivateKey;
+    use rsa::pkcs1::DecodeRsaPrivateKey;
+    use rsa::pkcs8::DecodePrivateKey;
+    // Try public-key formats first, then private-key formats (from which the
+    // public half is extracted).
+    rsa::pkcs8::DecodePublicKey::from_public_key_pem(pem)
+        .or_else(|_| rsa::pkcs1::DecodeRsaPublicKey::from_pkcs1_pem(pem))
+        .or_else(|_| RsaPrivateKey::from_pkcs8_pem(pem).map(|k| k.to_public_key()))
+        .or_else(|_| RsaPrivateKey::from_pkcs1_pem(pem).map(|k| k.to_public_key()))
+        .with_context(|| "not a recognised RSA PEM key (public or private)")
+}
+
+/// Build an AVB-format public key blob from an RSA modulus, as `avbtool
+/// extract_public_key` produces it (`AvbRSAPublicKeyHeader`): `key_num_bits`
+/// and `n0inv` as big-endian u32, then the big-endian modulus padded to
+/// `bits / 8` bytes, then `rr = 2^(2 * bits) mod n` of the same length.
+pub fn public_key_blob(n: &rsa::BigUint) -> Vec<u8> {
+    let bits = n.bits() as u32;
+    let key_bytes = (bits / 8) as usize;
+    let pad = |v: Vec<u8>| {
+        let mut out = vec![0u8; key_bytes - v.len()];
+        out.extend(v);
+        out
+    };
+    // n0inv = -(n^-1) mod 2^32, by Newton's iteration on the low word.
+    let n0 = n.to_bytes_le()[..4]
+        .iter()
+        .rev()
+        .fold(0u32, |a, b| (a << 8) | u32::from(*b));
+    let mut inv = n0;
+    for _ in 0..5 {
+        inv = inv.wrapping_mul(2u32.wrapping_sub(n0.wrapping_mul(inv)));
+    }
+    let rr = (rsa::BigUint::from(1u8) << (2 * bits as usize)) % n;
+    let mut k = bits.to_be_bytes().to_vec();
+    k.extend(inv.wrapping_neg().to_be_bytes());
+    k.extend(pad(n.to_bytes_be()));
+    k.extend(pad(rr.to_bytes_be()));
+    assert_eq!(k.len(), 8 + 2 * key_bytes);
+    k
 }
 
 /// Verify an RSA signature using an externally supplied public key instead of
@@ -1429,29 +1476,7 @@ mod tests {
     /// (`AvbRSAPublicKeyHeader`): `key_num_bits` and `n0inv` as big-endian u32, then the modulus
     /// and `rr` = 2^(2 * bits) mod n, each `bits / 8` bytes big-endian. 520 bytes for RSA-2048.
     fn key_blob_from_key(key: &RsaPrivateKey) -> Vec<u8> {
-        let bits = key.n().bits() as u32;
-        let key_bytes = (bits / 8) as usize;
-        let pad = |v: Vec<u8>| {
-            let mut out = vec![0u8; key_bytes - v.len()];
-            out.extend(v);
-            out
-        };
-        // n0inv = -(n^-1) mod 2^32, by Newton's iteration on the low word.
-        let n0 = key.n().to_bytes_le()[..4]
-            .iter()
-            .rev()
-            .fold(0u32, |a, b| (a << 8) | u32::from(*b));
-        let mut inv = n0;
-        for _ in 0..5 {
-            inv = inv.wrapping_mul(2u32.wrapping_sub(n0.wrapping_mul(inv)));
-        }
-        let rr = (rsa::BigUint::from(1u8) << (2 * bits as usize)) % key.n();
-        let mut k = bits.to_be_bytes().to_vec();
-        k.extend(inv.wrapping_neg().to_be_bytes());
-        k.extend(pad(key.n().to_bytes_be()));
-        k.extend(pad(rr.to_bytes_be()));
-        assert_eq!(k.len(), 8 + 2 * key_bytes);
-        k
+        public_key_blob(key.n())
     }
 
     /// Create an AVB-format public key blob with a fake key of the given bit size.
