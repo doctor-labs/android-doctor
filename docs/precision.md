@@ -22,7 +22,7 @@ For every case under `tests/corpus/trees/`:
 
 ## How fixtures are generated
 
-Nothing binary is committed. Each case is a directory of plain text:
+Nothing binary is committed (one exception, `apk-code`, below). Each case is a directory of plain text:
 
 - `NAME.ext4/` becomes `NAME.img` via `mke2fs -d`; `NAME.erofs/` becomes `NAME.img` via
   `mkfs.erofs`. The directory's own contents are the filesystem root.
@@ -49,6 +49,7 @@ machine, not necessarily across machines. Findings do not depend on it.
 | `secret-key` / `secret-cloud` / `secret-debug` / `secret-token` | `hardcoded_credentials` / `cloud_credentials` / `debug_endpoints` / `provider_tokens` (a JWT, medium: the one token shape that no secret scanner blocks in a repository) |
 | `leftovers` | `debug_leftovers`, `duplicate_properties`, `unhandled_input` |
 | `stb-recovery` | `shell-service` (medium x3 for the boot-started shell-domain services, info for the `disabled` one), `adbd-service` (info), `debug_endpoints` (medium) |
+| `apk-code` (erofs) | the `apk-code-*` rules over the DEX of one APK (`Risky.apk`, a zip of `tests/fixtures/dex/risky.dex`, built from `Risky.java` next to it). The one binary in the corpus: a DEX cannot be written as text. No manifest, so the activity-based `apk-code-tapjacking` / `apk-code-screenshot` are covered by unit tests instead |
 | `ota-blocks` | the "cannot evaluate" infos for every quality rule (OTA with no images) |
 | `corrupt-image` | the same infos, from an unreadable image |
 

@@ -25,7 +25,7 @@
             "severity": "critical"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 40
+          "ruleIndex": 54
         },
         {
           "level": "note",
@@ -50,7 +50,7 @@
             "severity": "info"
           },
           "ruleId": "avb_signature",
-          "ruleIndex": 17
+          "ruleIndex": 31
         }
       ],
       "tool": {
@@ -184,6 +184,230 @@
               "name": "apk-cleartext-traffic",
               "shortDescription": {
                 "text": "An APK sets android:usesCleartextTraffic=true"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An APK's code looks for root, an emulator, frida or a debugger"
+              },
+              "help": {
+                "text": "Informational: such checks slow analysis but are easy to bypass; do not rely on them"
+              },
+              "id": "apk-code-anti-analysis",
+              "name": "apk-code-anti-analysis",
+              "shortDescription": {
+                "text": "An APK's code looks for root, an emulator, frida or a debugger"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK's code runs external commands (Runtime.exec, ProcessBuilder)"
+              },
+              "help": {
+                "text": "Avoid shelling out; never build the command from untrusted input"
+              },
+              "id": "apk-code-command-exec",
+              "name": "apk-code-command-exec",
+              "shortDescription": {
+                "text": "An APK's code runs external commands (Runtime.exec, ProcessBuilder)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK's code loads code at run time (DexClassLoader and similar, System.load)"
+              },
+              "help": {
+                "text": "Ship all code in the APK, or verify the signature of anything loaded"
+              },
+              "id": "apk-code-dynamic-loading",
+              "name": "apk-code-dynamic-loading",
+              "shortDescription": {
+                "text": "An APK's code loads code at run time (DexClassLoader and similar, System.load)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An APK's code uses shared external storage"
+              },
+              "help": {
+                "text": "Keep sensitive data in app-private storage; use scoped storage for shared files"
+              },
+              "id": "apk-code-external-storage",
+              "name": "apk-code-external-storage",
+              "shortDescription": {
+                "text": "An APK's code uses shared external storage"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An APK's code uses java.util.Random or Math.random"
+              },
+              "help": {
+                "text": "Use java.security.SecureRandom for anything security-related"
+              },
+              "id": "apk-code-insecure-random",
+              "name": "apk-code-insecure-random",
+              "shortDescription": {
+                "text": "An APK's code uses java.util.Random or Math.random"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An APK's code logs with android.util.Log or printStackTrace"
+              },
+              "help": {
+                "text": "Strip logging from release builds and never log secrets"
+              },
+              "id": "apk-code-logging",
+              "name": "apk-code-logging",
+              "shortDescription": {
+                "text": "An APK's code logs with android.util.Log or printStackTrace"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK's code builds raw SQL by string concatenation"
+              },
+              "help": {
+                "text": "Use parameterised queries (selection arguments or compiled statements)"
+              },
+              "id": "apk-code-raw-sql",
+              "name": "apk-code-raw-sql",
+              "shortDescription": {
+                "text": "An APK's code builds raw SQL by string concatenation"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An APK never sets FLAG_SECURE"
+              },
+              "help": {
+                "text": "Set WindowManager.LayoutParams.FLAG_SECURE on screens that show sensitive data"
+              },
+              "id": "apk-code-screenshot",
+              "name": "apk-code-screenshot",
+              "shortDescription": {
+                "text": "An APK never sets FLAG_SECURE"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "An APK's code weakens TLS validation (trust-all TrustManager, accept-all HostnameVerifier, ignored WebView SSL errors)"
+              },
+              "help": {
+                "text": "Remove the custom check and rely on the platform trust store; pin certificates through the network security config"
+              },
+              "id": "apk-code-ssl-trust",
+              "name": "apk-code-ssl-trust",
+              "shortDescription": {
+                "text": "An APK's code weakens TLS validation (trust-all TrustManager, accept-all HostnameVerifier, ignored WebView SSL errors)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "No tapjacking protection was found in an APK's code"
+              },
+              "help": {
+                "text": "Call setFilterTouchesWhenObscured(true) on sensitive views or set android:filterTouchesWhenObscured"
+              },
+              "id": "apk-code-tapjacking",
+              "name": "apk-code-tapjacking",
+              "shortDescription": {
+                "text": "No tapjacking protection was found in an APK's code"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "The code rules could not run on an APK's dex (too large, unreadable or unsupported)"
+              },
+              "help": {
+                "text": "Inspect the APK with the dex command or another tool; this is not a pass"
+              },
+              "id": "apk-code-unscanned",
+              "name": "apk-code-unscanned",
+              "shortDescription": {
+                "text": "The code rules could not run on an APK's dex (too large, unreadable or unsupported)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK's code uses weak cryptography (MD5/SHA-1, DES/RC4, AES-ECB, unpadded RSA, setSeed)"
+              },
+              "help": {
+                "text": "Use SHA-256 or better, AES-GCM or ChaCha20-Poly1305, OAEP padding, and an unseeded SecureRandom"
+              },
+              "id": "apk-code-weak-crypto",
+              "name": "apk-code-weak-crypto",
+              "shortDescription": {
+                "text": "An APK's code uses weak cryptography (MD5/SHA-1, DES/RC4, AES-ECB, unpadded RSA, setSeed)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK's code configures a WebView unsafely (JavaScript bridge, file access, debugging, mixed content)"
+              },
+              "help": {
+                "text": "Drop addJavascriptInterface and file-URL access, load only https content, and keep remote debugging off in release builds"
+              },
+              "id": "apk-code-webview",
+              "name": "apk-code-webview",
+              "shortDescription": {
+                "text": "An APK's code configures a WebView unsafely (JavaScript bridge, file access, debugging, mixed content)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "An APK's code creates files, preferences or databases readable or writable by other apps"
+              },
+              "help": {
+                "text": "Use MODE_PRIVATE and share data through a FileProvider or ContentProvider"
+              },
+              "id": "apk-code-world-accessible",
+              "name": "apk-code-world-accessible",
+              "shortDescription": {
+                "text": "An APK's code creates files, preferences or databases readable or writable by other apps"
               }
             },
             {

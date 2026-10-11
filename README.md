@@ -316,6 +316,36 @@ android-doctor doctor scan fw --json
 | Quality | Missing partitions, duplicate properties, SELinux label gaps, mode anomalies, init service hygiene, debug leftovers |
 | Staleness | Security patch level age from OTA metadata: `ok`, `stale` (over 90 days), `very stale` (over 365) |
 
+### APK code rules
+
+`audit` also reads each APK's `classes*.dex` (see `dex`) and reports risky API use, one finding per
+rule and severity per APK listing the first sites. Calls are matched by name and prototype on any
+class; an argument counts only when the code sets it as a constant just before the call (so
+`Cipher.getInstance("DES")` is judged, `Cipher.getInstance(algo)` is not guessed). Modelled on
+MobSF `android_apis` / `android_rules` and qark, not a copy of either rule set.
+
+| Rule | Severity | Fires on |
+| --- | --- | --- |
+| `apk-code-webview` | high / medium / low | file: URLs allowed to read any origin (high); `addJavascriptInterface`, file access, remote debugging, mixed content (medium); JavaScript enabled, cleartext `http://` load (low) |
+| `apk-code-weak-crypto` | high / medium / low | DES, RC2, RC4, Blowfish (high); MD5, AES/ECB or bare `AES`, unpadded RSA, `SecureRandom.setSeed` (medium); SHA-1 (low) |
+| `apk-code-insecure-random` | low | `java.util.Random`, `Math.random` |
+| `apk-code-logging` | medium / info | a `Log` message naming a password, token or secret (medium); any `Log` call or `printStackTrace` (info) |
+| `apk-code-world-accessible` | high / medium | `MODE_WORLD_READABLE/WRITEABLE` passed to `openFileOutput`, `getSharedPreferences`, `getDir`, `openOrCreateDatabase` (high); `File.setReadable/setWritable(true, false)` (medium) |
+| `apk-code-external-storage` | low | `Environment.getExternalStorageDirectory/PublicDirectory` |
+| `apk-code-ssl-trust` | high / low | a `X509TrustManager` whose `check*Trusted` is empty, a `HostnameVerifier.verify` that only returns true, `ALLOW_ALL_HOSTNAME_VERIFIER`, `SslErrorHandler.proceed()` (high); a custom `HostnameVerifier` installed (low) |
+| `apk-code-dynamic-loading` | medium / low | `DexClassLoader`, `PathClassLoader`, `InMemoryDexClassLoader` (medium); `System.load(path)` (low) |
+| `apk-code-raw-sql` | medium | `rawQuery`/`execSQL` with a non-constant statement in a method that also concatenates strings |
+| `apk-code-command-exec` | medium | `Runtime.exec`, `ProcessBuilder.start` |
+| `apk-code-tapjacking` | info | the APK has activities and never calls `setFilterTouchesWhenObscured(true)` |
+| `apk-code-screenshot` | info | the APK has activities and never sets `FLAG_SECURE` |
+| `apk-code-anti-analysis` | info | root, emulator or frida marker strings, `Debug.isDebuggerConnected` |
+| `apk-code-unscanned` | info | a dex was too large, unreadable or unsupported (not a pass) |
+
+Limits: no data flow beyond constants set in the same straight-line stretch (registers are
+forgotten at branch targets and catch handlers), so a value passed in from a caller is not judged;
+the raw-SQL and tapjacking/screenshot rules are heuristics (concatenation in the same method; absence
+in the code, not in layout XML); obfuscated or reflective calls are not seen.
+
 ### APK manifest rules
 
 `audit` reads each APK's binary `AndroidManifest.xml` and reports hardening problems, one finding

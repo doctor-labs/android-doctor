@@ -1,0 +1,101 @@
+{
+  "audit": [
+    {
+      "id": "apk-code-anti-analysis",
+      "severity": "info",
+      "subject": "system"
+    },
+    {
+      "id": "apk-code-command-exec",
+      "severity": "medium",
+      "subject": "system"
+    },
+    {
+      "id": "apk-code-dynamic-loading",
+      "severity": "medium",
+      "subject": "system"
+    },
+    {
+      "id": "apk-code-external-storage",
+      "severity": "warn",
+      "subject": "system"
+    },
+    {
+      "id": "apk-code-insecure-random",
+      "severity": "warn",
+      "subject": "system"
+    },
+    {
+      "id": "apk-code-logging",
+      "severity": "info",
+      "subject": "system"
+    },
+    {
+      "id": "apk-code-logging",
+      "severity": "medium",
+      "subject": "system"
+    },
+    {
+      "id": "apk-code-raw-sql",
+      "severity": "medium",
+      "subject": "system"
+    },
+    {
+      "id": "apk-code-ssl-trust",
+      "severity": "high",
+      "subject": "system"
+    },
+    {
+      "id": "apk-code-weak-crypto",
+      "severity": "high",
+      "subject": "system"
+    },
+    {
+      "id": "apk-code-weak-crypto",
+      "severity": "medium",
+      "subject": "system"
+    },
+    {
+      "id": "apk-code-webview",
+      "severity": "high",
+      "subject": "system"
+    },
+    {
+      "id": "apk-code-webview",
+      "severity": "medium",
+      "subject": "system"
+    },
+    {
+      "id": "apk-code-webview",
+      "severity": "warn",
+      "subject": "system"
+    },
+    {
+      "id": "apk-code-world-accessible",
+      "severity": "high",
+      "subject": "system"
+    }
+  ],
+  "doctor": [
+    {
+      "id": "avb_signature",
+      "severity": "info",
+      "subject": "vbmeta.img"
+    },
+    {
+      "id": "partition_coverage",
+      "severity": "warn",
+      "subject": "boot.img"
+    },
+    {
+      "id": "partition_coverage",
+      "severity": "warn",
+      "subject": "vendor.img"
+    },
+    {
+      "id": "selinux_label_gaps",
+      "severity": "info",
+      "subject": "system"
+    }
+  ]
+}
