@@ -215,8 +215,13 @@ pub struct ManifestAttrs {
     pub allow_backup: Option<bool>,
     pub test_only: Option<bool>,
     pub has_network_security_config: bool,
+    /// `<application android:allowTaskReparenting>` when it is a literal boolean.
+    pub task_reparenting: bool,
     /// `<application android:permission>`: the default guard for every component.
     pub app_permission: bool,
+    /// `<application android:taskAffinity>`: inherited by activities unless overridden.
+    /// `None` means absent; an empty string is the StrandHogg mitigation and is kept.
+    pub app_task_affinity: Option<String>,
     /// Activities, services, receivers and providers declared under `<application>`.
     pub components: Vec<Component>,
 }
@@ -236,7 +241,14 @@ pub struct Component {
     pub has_intent_filter: bool,
     /// An intent filter handles `android.intent.action.MAIN` (a launcher entry point).
     pub main_action: bool,
-    /// Every `<intent-filter>` under this component, with its actions, categories and data.
+    /// `android:launchMode` on this activity (integer data). `None` when absent.
+    pub launch_mode: Option<u32>,
+    /// `android:taskAffinity` on this activity, or inherited from the application. `None`
+    /// when unset anywhere; an empty string is the StrandHogg mitigation and is kept.
+    pub task_affinity: Option<String>,
+    /// `android:allowTaskReparenting` on this activity, or inherited from the application.
+    pub task_reparenting: bool,
+    /// Every `<intent-filter>` under this component, with its activities, categories and data.
     pub intent_filters: Vec<IntentFilter>,
 }
 
@@ -559,12 +571,15 @@ const ANDROID_ATTRS: &[(u32, &str)] = &[
     (0x0101_0007, "readPermission"),
     (0x0101_0008, "writePermission"),
     (0x0101_000b, "sharedUserId"),
+    (0x0101_0012, "taskAffinity"),
+    (0x0101_001d, "launchMode"),
     (0x0101_000e, "enabled"),
     (0x0101_000f, "debuggable"),
     (0x0101_0010, "exported"),
     (0x0101_0270, "targetSdkVersion"),
     (0x0101_0272, "testOnly"),
     (0x0101_0280, "allowBackup"),
+    (0x0101_0204, "allowTaskReparenting"),
     (0x0101_04ec, "usesCleartextTraffic"),
     (0x0101_0527, "networkSecurityConfig"),
     (0x0101_0026, "mimeType"),
@@ -632,6 +647,10 @@ fn read_tag(
             ("application", "testOnly") => out.test_only = a.as_bool(),
             ("application", "networkSecurityConfig") => out.has_network_security_config = true,
             ("application", "permission") => out.app_permission = !a.value.is_empty(),
+            ("application", "allowTaskReparenting") => {
+                out.task_reparenting = a.as_bool() == Some(true)
+            }
+            ("application", "taskAffinity") => out.app_task_affinity = Some(a.value.clone()),
             _ if is_component && in_app => match name {
                 "name" => c.name = a.value.clone(),
                 "exported" => c.exported = a.as_bool(),
@@ -639,6 +658,11 @@ fn read_tag(
                 "permission" => c.guarded = !a.value.is_empty(),
                 "readPermission" => read_perm = !a.value.is_empty(),
                 "writePermission" => write_perm = !a.value.is_empty(),
+                "launchMode" if (0x10..=0x1f).contains(&a.data_type) => {
+                    c.launch_mode = Some(a.data)
+                }
+                "taskAffinity" => c.task_affinity = Some(a.value.clone()),
+                "allowTaskReparenting" => c.task_reparenting = a.as_bool() == Some(true),
                 _ => {}
             },
             _ => {}
@@ -647,6 +671,11 @@ fn read_tag(
     if is_component && in_app {
         if out.components.len() < MAX_COMPONENTS {
             c.guarded |= read_perm && write_perm;
+            // Inherit application-level taskAffinity and allowTaskReparenting
+            // when the activity does not set its own.
+            if c.task_affinity.is_none() {
+                c.task_affinity = out.app_task_affinity.clone();
+            }
             out.components.push(c);
             *comp_slot = Some(out.components.len() - 1);
         }
@@ -778,6 +807,54 @@ fn manifest_issues(m: &ManifestAttrs) -> Vec<ManifestIssue> {
                 "{} exported without a permission: {shown}{tail}",
                 names.len()
             ),
+        );
+    }
+    // StrandHogg-style task-hijacking attributes, reported per activity.
+    for c in &m.components {
+        if c.kind != "activity" {
+            continue;
+        }
+        if let Some(mode) = c.launch_mode {
+            // 2 = singleTask, 3 = singleInstance.
+            if mode == 2 || mode == 3 {
+                issue(
+                    "apk-launch-mode-singletask",
+                    Medium,
+                    format!(
+                        "activity {} uses launchMode singleTask/singleInstance: StrandHogg-style task hijacking",
+                        c.name
+                    ),
+                );
+            }
+        }
+        if let Some(a) = &c.task_affinity
+            && !a.is_empty()
+        {
+            issue(
+                "apk-task-affinity",
+                Medium,
+                format!(
+                    "activity {} sets taskAffinity {}: another app's task can host it",
+                    c.name, a
+                ),
+            );
+        }
+        if c.task_reparenting {
+            issue(
+                "apk-task-reparenting",
+                Medium,
+                format!(
+                    "activity {} allowTaskReparenting: the activity can move into another app's task",
+                    c.name
+                ),
+            );
+        }
+    }
+    if m.task_reparenting {
+        issue(
+            "apk-task-reparenting",
+            Medium,
+            "application android:allowTaskReparenting: an activity can move into another app's task".into(),
         );
     }
     if m.debuggable == Some(true) {
@@ -1997,6 +2074,76 @@ mod tests {
                     mime_type: None,
                 }]
             );
+        }
+    }
+
+    #[test]
+    fn task_hijacking_attributes_are_reported() {
+        let has = |m: &El, rule: &str| {
+            issues(m)
+                .iter()
+                .any(|(r, s)| *r == rule && *s == Severity::Medium)
+        };
+        let single = manifest(
+            vec![],
+            27,
+            vec![],
+            vec![comp(
+                "activity",
+                vec![a("exported", f()), a("launchMode", V::Int(2))],
+                vec![],
+            )],
+        );
+        assert!(has(&single, "apk-launch-mode-singletask"));
+        let instance = manifest(
+            vec![],
+            27,
+            vec![],
+            vec![comp(
+                "activity",
+                vec![a("exported", f()), a("launchMode", V::Int(3))],
+                vec![],
+            )],
+        );
+        assert!(has(&instance, "apk-launch-mode-singletask"));
+        let affinity = manifest(
+            vec![],
+            27,
+            vec![],
+            vec![comp(
+                "activity",
+                vec![
+                    a("exported", f()),
+                    a("taskAffinity", V::Str("com.evil.task")),
+                ],
+                vec![],
+            )],
+        );
+        assert!(has(&affinity, "apk-task-affinity"));
+        let reparent = manifest(vec![], 27, vec![a("allowTaskReparenting", t())], vec![]);
+        assert!(has(&reparent, "apk-task-reparenting"));
+        // standard launch mode, the empty-affinity mitigation, no reparenting: none of the three
+        let clean = manifest(
+            vec![],
+            27,
+            vec![a("taskAffinity", V::Str(""))],
+            vec![comp(
+                "activity",
+                vec![
+                    a("exported", f()),
+                    a("launchMode", V::Int(0)),
+                    a("taskAffinity", V::Str("")),
+                ],
+                vec![],
+            )],
+        );
+        let rules: Vec<_> = issues(&clean).into_iter().map(|(r, _)| r).collect();
+        for r in [
+            "apk-launch-mode-singletask",
+            "apk-task-affinity",
+            "apk-task-reparenting",
+        ] {
+            assert!(!rules.contains(&r), "{r} in {rules:?}");
         }
     }
 

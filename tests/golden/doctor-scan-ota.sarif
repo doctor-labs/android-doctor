@@ -25,7 +25,7 @@
             "severity": "low"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 57
+          "ruleIndex": 60
         },
         {
           "level": "note",
@@ -50,7 +50,7 @@
             "severity": "info"
           },
           "ruleId": "avb_signature",
-          "ruleIndex": 33
+          "ruleIndex": 36
         },
         {
           "level": "note",
@@ -66,7 +66,7 @@
             "severity": "info"
           },
           "ruleId": "duplicate_properties",
-          "ruleIndex": 44
+          "ruleIndex": 47
         },
         {
           "level": "note",
@@ -82,7 +82,7 @@
             "severity": "info"
           },
           "ruleId": "selinux_label_gaps",
-          "ruleIndex": 59
+          "ruleIndex": 62
         },
         {
           "level": "note",
@@ -107,7 +107,7 @@
             "severity": "info"
           },
           "ruleId": "mode_anomalies",
-          "ruleIndex": 56
+          "ruleIndex": 59
         },
         {
           "level": "note",
@@ -123,7 +123,7 @@
             "severity": "info"
           },
           "ruleId": "init_service_hygiene",
-          "ruleIndex": 53
+          "ruleIndex": 56
         },
         {
           "level": "note",
@@ -148,7 +148,7 @@
             "severity": "info"
           },
           "ruleId": "debug_leftovers",
-          "ruleIndex": 37
+          "ruleIndex": 40
         }
       ],
       "tool": {
@@ -609,6 +609,22 @@
                 "level": "warning"
               },
               "fullDescription": {
+                "text": "An APK activity uses launchMode singleTask or singleInstance"
+              },
+              "help": {
+                "text": "Use the standard launch mode or set taskAffinity=\"\""
+              },
+              "id": "apk-launch-mode-singletask",
+              "name": "apk-launch-mode-singletask",
+              "shortDescription": {
+                "text": "An APK activity uses launchMode singleTask or singleInstance"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
                 "text": "An APK uses android:sharedUserId"
               },
               "help": {
@@ -650,6 +666,38 @@
               "name": "apk-signature-unverified",
               "shortDescription": {
                 "text": "An APK signature could not be verified (unsupported algorithm or curve)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK activity sets a custom taskAffinity"
+              },
+              "help": {
+                "text": "Set taskAffinity=\"\" unless the task sharing is intended"
+              },
+              "id": "apk-task-affinity",
+              "name": "apk-task-affinity",
+              "shortDescription": {
+                "text": "An APK activity sets a custom taskAffinity"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK activity or application sets allowTaskReparenting"
+              },
+              "help": {
+                "text": "Remove allowTaskReparenting"
+              },
+              "id": "apk-task-reparenting",
+              "name": "apk-task-reparenting",
+              "shortDescription": {
+                "text": "An APK activity or application sets allowTaskReparenting"
               }
             },
             {

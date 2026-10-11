@@ -344,6 +344,21 @@ pub fn help(rule: &str) -> Option<Help> {
             "Set android:exported=\"false\", or require a signature-level permission (or separate read and write permissions)",
             High,
         ),
+        "apk-launch-mode-singletask" => (
+            "An APK activity uses launchMode singleTask or singleInstance",
+            "Use the standard launch mode or set taskAffinity=\"\"",
+            Medium,
+        ),
+        "apk-task-affinity" => (
+            "An APK activity sets a custom taskAffinity",
+            "Set taskAffinity=\"\" unless the task sharing is intended",
+            Medium,
+        ),
+        "apk-task-reparenting" => (
+            "An APK activity or application sets allowTaskReparenting",
+            "Remove allowTaskReparenting",
+            Medium,
+        ),
         "apk-debuggable" => (
             "An APK is marked android:debuggable",
             "Remove android:debuggable from the release manifest",
@@ -770,6 +785,9 @@ const KNOWN_RULES: &[&str] = &[
     "elf-no-fortify",
     "apk-exported-component",
     "apk-exported-provider",
+    "apk-launch-mode-singletask",
+    "apk-task-affinity",
+    "apk-task-reparenting",
     "apk-debuggable",
     "apk-cleartext-traffic",
     "apk-shared-user-id",
