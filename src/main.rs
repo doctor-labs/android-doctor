@@ -27,6 +27,7 @@ mod f2fsfs;
 mod fec;
 mod findings;
 mod fix;
+mod fstab;
 mod fwdiff;
 mod hashtree;
 mod huawei;
