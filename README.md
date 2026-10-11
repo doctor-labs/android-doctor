@@ -98,7 +98,7 @@ Action pins the binary. (Writing output needs a writable mount, e.g.
 | `ci install` | write a GitHub Actions workflow that runs the action |
 | `mcp` | serve over the Model Context Protocol (stdio) |
 
-Other commands (`info`, `ls`, `cat`, `files`, `vbmeta`, `partitions`, `unpack`, `ramdisk`, `dt`, `amlogic`, `unsparse`, `report`, `hash-tree`) are in the [CLI reference](#cli-reference).
+Other commands (`info`, `ls`, `cat`, `files`, `vbmeta`, `partitions`, `unpack`, `ramdisk`, `dt`, `dex`, `amlogic`, `unsparse`, `report`, `hash-tree`) are in the [CLI reference](#cli-reference).
 
 ## Contents
 
@@ -689,6 +689,7 @@ Every subcommand takes `--help`. `--no-color` (or `NO_COLOR`) disables colour.
 | `info <ota> [--json]` / `report <ota> [--json]` | Build metadata / staleness verdict |
 | `verify-ota <ota.zip\|payload.bin\|dir> [--cert FILE] [--json]` | Checks the signapk whole-file zip signature and the payload's metadata and payload signatures (RSA PKCS#1 v1.5 SHA-256). Without `--cert` the package's own `otacert` is the key, which proves integrity only; with it, a signature by another key is `invalid`. Exit 1 if any signature is invalid |
 | `dt <file> [--json]` | Device tree, dtbo table or container header |
+| `dex <apk\|file.dex> [--classes] [--methods] [--fields] [--strings] [--refs] [--code TEXT] [--grep TEXT] [--json]` | DEX header (adler32 checksum and SHA-1 signature checked), counts, and with the flags the class, method, field and string tables, the methods/fields/strings/types each method's code references, and a disassembly. Reads every `classes*.dex` of an APK |
 | `amlogic <file>` | Describe an Amlogic image container |
 | `partitions <dir> [--json] [--sector-size N]` | Qualcomm `rawprogram*.xml` / MediaTek `scatter.txt` flash manifest |
 | `fec generate <file> -o <fec> [--roots 2..24]`, `fec verify <file> <fec> [--json]`, `fec repair <file> <fec> -o <out> [--json]` | dm-verity forward error correction in AOSP's FEC file format (Reed-Solomon, 4096-byte blocks, interleaved; header block with the SHA-256 of the parity): generate parity, check a file against it (exit 1 on damage), write a repaired copy (corrects up to roots/2 wrong bytes per RS block; beyond that a block is counted as uncorrectable and a few such errors can be mis-corrected, as with any RS code). Output is byte-identical to `avbroot fec generate` |
@@ -774,6 +775,7 @@ Status: **verified** = checked against an independent reference tool on real fir
 | Oppo/Realme `.ozip` (AES-128-ECB encrypted zip) | synthetic | Decrypts to the inner zip using a per-model key table (adapted from B. Kerler's `oppo_ozip_decrypt`, MIT); tested with generated fixtures, not yet verified on real firmware |
 | Qualcomm `rawprogram*.xml` and MediaTek `scatter.txt` flash manifests | synthetic | Parsed and checked against the image files present (`partitions` command); tested with generated fixtures |
 | OTA signatures (`verify-ota`) | verified | The zip footer signature (made by `openssl cms`) and RSA payload signatures (made by python-cryptography) in `tests/fixtures/ota/make.py` verify; any changed byte, or a different trusted cert, is `invalid`. RSA keys only for payload signatures (EC keys are `not-checked`); no certificate chain or revocation check |
+| DEX files (`dex`) | verified | Header, tables and 82,896 decoded instructions (145 opcodes) of a real dex match `dexdump -d` (build-tools 37.0.0) offset for offset; versions 035-039, little-endian; compact dex (cdex) and the v41 container are refused |
 | Device tree / dtbo tables (`dt`) | synthetic | Parses and displays the device tree blob and dtbo table headers; tested on AOSP `mkdtboimg` output |
 | Other vendor containers (Amlogic, ...) | planned | Without real samples these will be marked unverified |
 | Spreadtrum/MediaTek `.pac` containers | synthetic | Parser and extractor (adapted from SR Labs PacHandler, Apache-2.0); tested with generated fixtures, not yet verified on real firmware |

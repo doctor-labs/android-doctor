@@ -15,6 +15,7 @@ mod bsdiff;
 mod ci;
 mod content;
 mod detect;
+mod dex;
 mod doctor;
 mod dt;
 mod elf;
@@ -143,6 +144,35 @@ enum Command {
         /// Trusted certificate or public key (PEM/DER); without it the package's own otacert is used (integrity only)
         #[arg(long, value_name = "FILE")]
         cert: Option<PathBuf>,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the DEX files of an APK (or one .dex): header, tables, classes, methods, fields, strings, references, code
+    Dex {
+        /// An APK/zip (all classes*.dex) or a .dex file
+        input: PathBuf,
+        /// List the classes
+        #[arg(long)]
+        classes: bool,
+        /// List the defined methods
+        #[arg(long)]
+        methods: bool,
+        /// List the defined fields
+        #[arg(long)]
+        fields: bool,
+        /// List the strings
+        #[arg(long)]
+        strings: bool,
+        /// For each method, the methods, fields, strings and types its code references
+        #[arg(long)]
+        refs: bool,
+        /// Disassemble the methods of classes whose name contains TEXT
+        #[arg(long, value_name = "TEXT")]
+        code: Option<String>,
+        /// Keep only entries containing TEXT
+        #[arg(long, value_name = "TEXT")]
+        grep: Option<String>,
         /// Print JSON instead of text
         #[arg(long)]
         json: bool,
@@ -857,6 +887,38 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
                 .into());
             }
             Ok(())
+        }
+        Command::Dex {
+            input,
+            classes,
+            methods,
+            fields,
+            strings,
+            refs,
+            code,
+            grep,
+            json,
+        } => {
+            let sel = dex::Select {
+                classes,
+                methods,
+                fields,
+                strings,
+                refs,
+                code,
+                grep,
+            };
+            let files = dex::read_input(&input)?;
+            let dexes = files
+                .iter()
+                .map(|(n, b)| anyhow::Context::context(dex::parse(n, b), n.clone()))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let datas: Vec<Vec<u8>> = files.into_iter().map(|f| f.1).collect();
+            print_out(&if json {
+                serde_json::to_string_pretty(&dex::to_json(&dexes, &datas, &sel))?
+            } else {
+                dex::to_text(&dexes, &datas, &sel)
+            })
         }
         Command::Amlogic { input } => {
             let img = amlogic::describe_file(&input)?;

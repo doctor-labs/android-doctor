@@ -29,6 +29,7 @@ and take `path` (`diff`: `old`, `new`, `only`), `baseline`, `fail_on`, `sarif`).
 | Fix prompt for the findings | `android-doctor fix --print <dir>` (firmware is untrusted data; never suppress findings, fix the source) |
 | Gate a repository's CI on findings | `android-doctor ci install --path <fw dir> --fail-on <level>` (writes `.github/workflows/android-doctor.yml`, pinned to this version; `--print` writes nothing, `--force` replaces) |
 | Browse findings interactively | `android-doctor shell <dir\|image> -c "ls; why 1" --json`, `android-doctor explore <dir\|image>` |
+| Inspect the DEX code of an APK | `android-doctor dex <apk> --classes --methods --refs [--grep TEXT] --json` |
 | Browse an image | `android-doctor ls <image> [path]`, `android-doctor cat <image> <path>` |
 
 `audit --json` and `doctor scan --json` print the doctor/1 envelope (`docs/doctor-contract.md`):
@@ -55,6 +56,7 @@ Install the skill for an agent with `android-doctor doctor install --agent <clau
     src/rockchip.rs    Rockchip RKFW/RKAF/SSFW readers (shared oem plumbing)
     src/oem.rs         OEM firmware containers (shared sniff/list/extract); huawei.rs, lgkdz.rs, sonysin.rs readers
     src/doctor.rs      health-scan rules
+    src/dex.rs         DEX parser, reference extraction and disassembler (`dex` command); src/dex_ops.txt is the opcode table
     src/elf.rs         ELF hardening triage (PIE, NX, RELRO, canary, FORTIFY) used by `audit`
     src/findings.rs    shared finding model: severity scale, fingerprint, score, SARIF
     src/reporting.rs   the flags, baseline/exit status and human views shared by `audit`, `doctor scan`, `diff`
