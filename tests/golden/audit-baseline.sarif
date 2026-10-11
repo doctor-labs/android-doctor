@@ -35,7 +35,7 @@
             "severity": "high"
           },
           "ruleId": "debuggable-build",
-          "ruleIndex": 51
+          "ruleIndex": 53
         },
         {
           "baselineState": "new",
@@ -61,7 +61,7 @@
             "severity": "high"
           },
           "ruleId": "insecure-adb",
-          "ruleIndex": 71
+          "ruleIndex": 73
         },
         {
           "baselineState": "new",
@@ -87,7 +87,7 @@
             "severity": "high"
           },
           "ruleId": "su-binary",
-          "ruleIndex": 79
+          "ruleIndex": 81
         }
       ],
       "tool": {
@@ -273,6 +273,22 @@
             },
             {
               "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "Cleartext http:// URLs are hardcoded in an APK's code"
+              },
+              "help": {
+                "text": "Use https:// for every endpoint and disallow cleartext in the network security config"
+              },
+              "id": "apk-code-cleartext-url",
+              "name": "apk-code-cleartext-url",
+              "shortDescription": {
+                "text": "Cleartext http:// URLs are hardcoded in an APK's code"
+              }
+            },
+            {
+              "defaultConfiguration": {
                 "level": "warning"
               },
               "fullDescription": {
@@ -317,6 +333,22 @@
               "name": "apk-code-external-storage",
               "shortDescription": {
                 "text": "An APK's code uses shared external storage"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "Public IP addresses are hardcoded in an APK's code"
+              },
+              "help": {
+                "text": "Resolve hosts by name over TLS and keep server addresses in configuration"
+              },
+              "id": "apk-code-hardcoded-ip",
+              "name": "apk-code-hardcoded-ip",
+              "shortDescription": {
+                "text": "Public IP addresses are hardcoded in an APK's code"
               }
             },
             {

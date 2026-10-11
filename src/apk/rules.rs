@@ -10,6 +10,7 @@
 
 use super::{ManifestIssue, Severity};
 use crate::dex::{self, Call, Dex, Val};
+use std::collections::BTreeSet;
 
 /// A method's bytecode with the class context the rules need.
 struct Site<'a> {
@@ -529,7 +530,130 @@ pub fn scan(dexes: &[(Dex, Vec<u8>)], activities: usize) -> Vec<ManifestIssue> {
             "APK",
         );
     }
-    group(c.hits)
+    let mut issues = group(c.hits);
+    issues.extend(endpoint_issues(dexes));
+    issues
+}
+
+/// Scan every dex's string table for hardcoded public IP addresses and cleartext http:// URLs in
+/// the dex string pool. Each distinct string is examined once.
+fn endpoint_issues(dexes: &[(Dex, Vec<u8>)]) -> Vec<ManifestIssue> {
+    let mut public_ips: Vec<String> = Vec::new();
+    let mut cleartext_urls: Vec<String> = Vec::new();
+    // one set across every dex: a string repeated in classes2.dex is still one hit
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for (dex, _) in dexes {
+        for s in &dex.strings {
+            if !seen.insert(s.as_str()) {
+                continue;
+            }
+            // Hardcoded public IPv4, optionally followed by ":port".
+            if let Some(ip) = parse_public_ip(s) {
+                public_ips.push(ip);
+            }
+            // Cleartext http:// URL with a non-private, non-namespace host.
+            if let Some(url) = parse_cleartext_url(s) {
+                cleartext_urls.push(url);
+            }
+        }
+    }
+    let mut out: Vec<ManifestIssue> = Vec::new();
+    if !public_ips.is_empty() {
+        public_ips.sort();
+        let shown: Vec<&str> = public_ips
+            .iter()
+            .take(MAX_HITS_PER_RULE)
+            .map(|s| s.as_str())
+            .collect();
+        let more = if public_ips.len() > MAX_HITS_PER_RULE {
+            format!(" (and {} more)", public_ips.len() - MAX_HITS_PER_RULE)
+        } else {
+            String::new()
+        };
+        out.push(ManifestIssue {
+            rule: "apk-code-hardcoded-ip",
+            severity: Severity::Info,
+            detail: format!(
+                "public IP addresses in the code: {}{more}",
+                shown.join(", ")
+            ),
+        });
+    }
+    if !cleartext_urls.is_empty() {
+        cleartext_urls.sort();
+        let shown: Vec<&str> = cleartext_urls
+            .iter()
+            .take(MAX_HITS_PER_RULE)
+            .map(|s| s.as_str())
+            .collect();
+        let more = if cleartext_urls.len() > MAX_HITS_PER_RULE {
+            format!(" (and {} more)", cleartext_urls.len() - MAX_HITS_PER_RULE)
+        } else {
+            String::new()
+        };
+        out.push(ManifestIssue {
+            rule: "apk-code-cleartext-url",
+            severity: Severity::Warn,
+            detail: format!(
+                "cleartext http:// URLs in the code: {}{more}",
+                shown.join(", ")
+            ),
+        });
+    }
+    out
+}
+
+/// If `s` is an IPv4 literal (optionally with ":port"), return the bare address when it is a
+/// globally-routable public address, else None.
+fn parse_public_ip(s: &str) -> Option<String> {
+    let addr = s.split(':').next()?;
+    let ip: std::net::Ipv4Addr = addr.parse().ok()?;
+    if !ip.is_private()
+        && !ip.is_loopback()
+        && !ip.is_link_local()
+        && !ip.is_unspecified()
+        && !ip.is_broadcast()
+    {
+        Some(ip.to_string())
+    } else {
+        None
+    }
+}
+
+/// If `s` starts with "http://" and its host is a cleartext, non-private, non-namespace host,
+/// return the full URL.
+fn parse_cleartext_url(s: &str) -> Option<String> {
+    if !s.starts_with("http://") {
+        return None;
+    }
+    let rest = &s["http://".len()..];
+    let host = rest.split(['/', '?', '#', ':']).next()?;
+    if host.is_empty() {
+        return None;
+    }
+    // Skip localhost / private IP ranges.
+    if host == "localhost" {
+        return None;
+    }
+    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+        if ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() {
+            return None;
+        }
+    } else {
+        // Not an IP: must not be a private/dotted name that looks like a LAN host,
+        // and must not be one of the XML namespace hosts we allow to use http.
+        let ns = [
+            "schemas.android.com",
+            "www.w3.org",
+            "ns.adobe.com",
+            "xmlpull.org",
+            "schemas.xmlsoap.org",
+        ];
+        if ns.contains(&host) {
+            return None;
+        }
+    }
+    Some(s.to_string())
 }
 
 /// One issue per (rule, severity): the count and the first few places.
@@ -576,6 +700,7 @@ mod tests {
     /// javac + d8 over tests/fixtures/dex/Risky.java (source included).
     const RISKY: &[u8] = include_bytes!("../../tests/fixtures/dex/risky.dex");
     const CLEAN: &[u8] = include_bytes!("../../tests/fixtures/dex/demo.dex");
+    const ENDPOINTS: &[u8] = include_bytes!("../../tests/fixtures/dex/endpoints.dex");
 
     fn run(bytes: &[u8], activities: usize) -> Vec<ManifestIssue> {
         let d = dex::parse("classes.dex", bytes).unwrap();
@@ -588,6 +713,32 @@ mod tests {
             .unwrap_or_else(|| panic!("{rule} {sev:?} missing from {v:#?}"))
             .detail
             .as_str()
+    }
+
+    #[test]
+    fn hardcoded_public_ips_and_cleartext_urls_are_found() {
+        // endpoints.dex (tests/fixtures/dex/Endpoints.java): one string of each kind
+        let v = run(ENDPOINTS, 0);
+        let ip = detail(&v, "apk-code-hardcoded-ip", Severity::Info);
+        assert!(ip.contains("8.8.8.8") && ip.contains("203.0.113.7"), "{ip}");
+        assert!(
+            !ip.contains("192.168.1.10") && !ip.contains("1.2.3.4"),
+            "private and version strings are not IPs: {ip}"
+        );
+        let url = detail(&v, "apk-code-cleartext-url", Severity::Warn);
+        assert!(url.contains("http://api.example.com/v1/login"), "{url}");
+        assert!(
+            !url.contains("127.0.0.1")
+                && !url.contains("schemas.android.com")
+                && !url.contains("https://"),
+            "loopback, XML namespaces and https are not cleartext endpoints: {url}"
+        );
+        assert!(
+            run(CLEAN, 0)
+                .iter()
+                .all(|i| i.rule != "apk-code-hardcoded-ip" && i.rule != "apk-code-cleartext-url"),
+            "demo.dex has no hardcoded endpoints"
+        );
     }
 
     #[test]

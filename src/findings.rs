@@ -599,6 +599,16 @@ pub fn help(rule: &str) -> Option<Help> {
             "Informational: such checks slow analysis but are easy to bypass; do not rely on them",
             Info,
         ),
+        "apk-code-hardcoded-ip" => (
+            "Public IP addresses are hardcoded in an APK's code",
+            "Resolve hosts by name over TLS and keep server addresses in configuration",
+            Info,
+        ),
+        "apk-code-cleartext-url" => (
+            "Cleartext http:// URLs are hardcoded in an APK's code",
+            "Use https:// for every endpoint and disallow cleartext in the network security config",
+            Low,
+        ),
         "apk-packer" => (
             "An APK is packed or protected by a known packer",
             "Unpack the APK (run it and dump the decrypted dex) before trusting code findings; a packer is not a vulnerability by itself",
@@ -902,6 +912,8 @@ const KNOWN_RULES: &[&str] = &[
     "apk-code-tapjacking",
     "apk-code-screenshot",
     "apk-code-anti-analysis",
+    "apk-code-hardcoded-ip",
+    "apk-code-cleartext-url",
     "apk-packer",
     "apk-code-unscanned",
     "partition_coverage",

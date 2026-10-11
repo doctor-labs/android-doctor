@@ -25,7 +25,7 @@
             "severity": "low"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 74
+          "ruleIndex": 76
         },
         {
           "level": "note",
@@ -50,7 +50,7 @@
             "severity": "info"
           },
           "ruleId": "avb_signature",
-          "ruleIndex": 46
+          "ruleIndex": 48
         },
         {
           "level": "note",
@@ -66,7 +66,7 @@
             "severity": "info"
           },
           "ruleId": "duplicate_properties",
-          "ruleIndex": 57
+          "ruleIndex": 59
         },
         {
           "level": "note",
@@ -82,7 +82,7 @@
             "severity": "info"
           },
           "ruleId": "selinux_label_gaps",
-          "ruleIndex": 76
+          "ruleIndex": 78
         },
         {
           "level": "note",
@@ -107,7 +107,7 @@
             "severity": "info"
           },
           "ruleId": "mode_anomalies",
-          "ruleIndex": 73
+          "ruleIndex": 75
         },
         {
           "level": "note",
@@ -123,7 +123,7 @@
             "severity": "info"
           },
           "ruleId": "init_service_hygiene",
-          "ruleIndex": 70
+          "ruleIndex": 72
         },
         {
           "level": "note",
@@ -148,7 +148,7 @@
             "severity": "info"
           },
           "ruleId": "debug_leftovers",
-          "ruleIndex": 50
+          "ruleIndex": 52
         }
       ],
       "tool": {
@@ -334,6 +334,22 @@
             },
             {
               "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "Cleartext http:// URLs are hardcoded in an APK's code"
+              },
+              "help": {
+                "text": "Use https:// for every endpoint and disallow cleartext in the network security config"
+              },
+              "id": "apk-code-cleartext-url",
+              "name": "apk-code-cleartext-url",
+              "shortDescription": {
+                "text": "Cleartext http:// URLs are hardcoded in an APK's code"
+              }
+            },
+            {
+              "defaultConfiguration": {
                 "level": "warning"
               },
               "fullDescription": {
@@ -378,6 +394,22 @@
               "name": "apk-code-external-storage",
               "shortDescription": {
                 "text": "An APK's code uses shared external storage"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "Public IP addresses are hardcoded in an APK's code"
+              },
+              "help": {
+                "text": "Resolve hosts by name over TLS and keep server addresses in configuration"
+              },
+              "id": "apk-code-hardcoded-ip",
+              "name": "apk-code-hardcoded-ip",
+              "shortDescription": {
+                "text": "Public IP addresses are hardcoded in an APK's code"
               }
             },
             {

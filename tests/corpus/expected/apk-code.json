@@ -6,6 +6,11 @@
       "subject": "system"
     },
     {
+      "id": "apk-code-cleartext-url",
+      "severity": "warn",
+      "subject": "system"
+    },
+    {
       "id": "apk-code-command-exec",
       "severity": "medium",
       "subject": "system"
