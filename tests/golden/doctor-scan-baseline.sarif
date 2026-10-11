@@ -26,7 +26,7 @@
             "severity": "critical"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 65
+          "ruleIndex": 69
         },
         {
           "baselineState": "new",
@@ -52,7 +52,7 @@
             "severity": "info"
           },
           "ruleId": "avb_signature",
-          "ruleIndex": 41
+          "ruleIndex": 45
         }
       ],
       "tool": {
@@ -497,6 +497,38 @@
                 "level": "warning"
               },
               "fullDescription": {
+                "text": "Dialer secret code"
+              },
+              "help": {
+                "text": "Remove secret dialer codes from release builds or guard what they open"
+              },
+              "id": "apk-dialer-secret-code",
+              "name": "apk-dialer-secret-code",
+              "shortDescription": {
+                "text": "Dialer secret code"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "Direct-boot aware component"
+              },
+              "help": {
+                "text": "Only mark components directBootAware when they must run before unlock, and keep their data in device-protected storage only when needed"
+              },
+              "id": "apk-direct-boot-aware",
+              "name": "apk-direct-boot-aware",
+              "shortDescription": {
+                "text": "Direct-boot aware component"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
                 "text": "An APK exports an activity, service or receiver with no permission"
               },
               "help": {
@@ -538,6 +570,22 @@
               "name": "apk-exported-weak-permission",
               "shortDescription": {
                 "text": "An APK exports a component behind a permission it declares as normal or dangerous"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "High intent-filter priority"
+              },
+              "help": {
+                "text": "Keep intent-filter priorities at or below 100 unless the app must pre-empt the default handler"
+              },
+              "id": "apk-intent-priority-high",
+              "name": "apk-intent-priority-high",
+              "shortDescription": {
+                "text": "High intent-filter priority"
               }
             },
             {
@@ -650,6 +698,22 @@
               "name": "apk-signature-unverified",
               "shortDescription": {
                 "text": "An APK signature could not be verified (unsupported algorithm or curve)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "Binary SMS port receiver"
+              },
+              "help": {
+                "text": "Validate binary SMS payloads and their sender; prefer a server push channel"
+              },
+              "id": "apk-sms-port-receiver",
+              "name": "apk-sms-port-receiver",
+              "shortDescription": {
+                "text": "Binary SMS port receiver"
               }
             },
             {
