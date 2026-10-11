@@ -35,7 +35,7 @@
             "severity": "high"
           },
           "ruleId": "debuggable-build",
-          "ruleIndex": 20
+          "ruleIndex": 22
         },
         {
           "baselineState": "new",
@@ -61,7 +61,7 @@
             "severity": "high"
           },
           "ruleId": "insecure-adb",
-          "ruleIndex": 36
+          "ruleIndex": 38
         },
         {
           "baselineState": "new",
@@ -87,7 +87,7 @@
             "severity": "high"
           },
           "ruleId": "su-binary",
-          "ruleIndex": 43
+          "ruleIndex": 45
         }
       ],
       "tool": {
@@ -301,6 +301,38 @@
               "name": "apk-shared-user-id",
               "shortDescription": {
                 "text": "An APK uses android:sharedUserId"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK signature does not verify (digest or signature mismatch)"
+              },
+              "help": {
+                "text": "Re-sign the APK; a mismatch means it changed after it was signed or the signature is forged"
+              },
+              "id": "apk-signature-invalid",
+              "name": "apk-signature-invalid",
+              "shortDescription": {
+                "text": "An APK signature does not verify (digest or signature mismatch)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An APK signature could not be verified (unsupported algorithm or curve)"
+              },
+              "help": {
+                "text": "Check the signature with apksigner verify"
+              },
+              "id": "apk-signature-unverified",
+              "name": "apk-signature-unverified",
+              "shortDescription": {
+                "text": "An APK signature could not be verified (unsupported algorithm or curve)"
               }
             },
             {

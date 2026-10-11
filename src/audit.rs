@@ -249,6 +249,12 @@ fn analyse_with(
         entries: entries.to_vec(),
         ..Default::default()
     };
+    // v4 signatures live in a `<apk>.idsig` sidecar next to the APK.
+    let idsigs: BTreeSet<&str> = entries
+        .iter()
+        .filter(|e| e.path.ends_with(".apk.idsig"))
+        .map(|e| e.path.as_str())
+        .collect();
     for e in entries {
         let label = label_of(e);
         if is_su_name(e) || has_domain(&label, "su_exec") || has_domain(&label, "su") {
@@ -266,8 +272,13 @@ fn analyse_with(
             && let Ok(bytes) = read(&e.path)
         {
             apk_bytes += bytes.len() as u64;
-            a.apks
-                .push(audit_apk_bytes(std::path::Path::new(&e.path), &bytes));
+            let mut apk = audit_apk_bytes(std::path::Path::new(&e.path), &bytes);
+            if let Some(info) = &mut apk.info
+                && idsigs.contains(format!("{}.idsig", e.path).as_str())
+            {
+                info.verification.push(crate::apk::v4_detected());
+            }
+            a.apks.push(apk);
         }
         if e.mode & 0o6000 != 0 {
             a.setuid.push(special(e));
@@ -627,6 +638,10 @@ fn findings(a: &ImageAudit) -> Vec<(Finding, (String, String))> {
             let sev = match rule {
                 // A debug/test key is expected on a debug build, a defect on a production one.
                 "apk-debug-signing-cert" if !debug_build => Severity::High,
+                // The platform trusts /system apps without re-checking them, so a stale
+                // signature is a tamper signal, not a boot failure.
+                "apk-signature-invalid" => Severity::Medium,
+                "apk-signature-unverified" => Severity::Info,
                 _ => Severity::Medium,
             };
             add(
@@ -758,6 +773,10 @@ fn apk_json(a: &ApkAudit) -> Value {
         },
         "issues": info.issues().iter().map(|i| json!({
             "severity": i.severity.name(), "rule": i.rule, "detail": i.detail,
+        })).collect::<Vec<Value>>(),
+        "verification": info.verification.iter().map(|c| json!({
+            "scheme": c.scheme, "verdict": c.verdict.name(), "detail": c.detail,
+            "min_sdk": c.min_sdk, "max_sdk": c.max_sdk,
         })).collect::<Vec<Value>>(),
         "signers": info.signers.iter().map(|s| json!({
             "scheme": s.scheme,
@@ -1698,5 +1717,49 @@ service plain /system/bin/plain
         let j = apk_json(&a.apks[0]);
         assert_eq!(j["manifest"]["debuggable"], true);
         assert_eq!(j["issues"].as_array().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn apk_verification_reaches_the_audit_and_a_v4_sidecar_is_detected() {
+        let v23 = include_bytes!("../tests/fixtures/apk/v23.apk").to_vec();
+        let mut bad = v23.clone();
+        let at = bad.windows(11).position(|w| w == b"hello world").unwrap();
+        bad[at] ^= 1;
+        let entries = vec![
+            file("/system/app/Good.apk", 0o644),
+            file("/system/app/Good.apk.idsig", 0o644),
+            file("/system/app/Bad.apk", 0o644),
+        ];
+        let a = analyse_with(
+            "system",
+            &entries,
+            &mut |p| {
+                Ok(if p.contains("Bad") {
+                    bad.clone()
+                } else {
+                    v23.clone()
+                })
+            },
+            10,
+            1 << 20,
+        )
+        .unwrap();
+        let ok = a.apks[0].info.as_ref().unwrap();
+        let schemes: Vec<_> = ok.verification.iter().map(|c| c.scheme).collect();
+        assert_eq!(schemes, ["v2", "v3", "v4"]);
+        let invalid: Vec<_> = a
+            .findings
+            .iter()
+            .filter(|f| f.rule == "apk-signature-invalid")
+            .collect();
+        assert!(!invalid.is_empty());
+        assert!(
+            invalid.iter().all(|f| f.detail.contains("Bad.apk")),
+            "{invalid:?}"
+        );
+        assert_eq!(
+            apk_json(&a.apks[1])["verification"][0]["verdict"],
+            "invalid"
+        );
     }
 }

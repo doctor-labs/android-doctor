@@ -26,7 +26,7 @@
             "severity": "low"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 38
+          "ruleIndex": 40
         },
         {
           "baselineState": "new",
@@ -52,7 +52,7 @@
             "severity": "info"
           },
           "ruleId": "avb_signature",
-          "ruleIndex": 15
+          "ruleIndex": 17
         },
         {
           "baselineState": "new",
@@ -69,7 +69,7 @@
             "severity": "info"
           },
           "ruleId": "duplicate_properties",
-          "ruleIndex": 26
+          "ruleIndex": 28
         },
         {
           "baselineState": "new",
@@ -86,7 +86,7 @@
             "severity": "info"
           },
           "ruleId": "selinux_label_gaps",
-          "ruleIndex": 40
+          "ruleIndex": 42
         },
         {
           "baselineState": "new",
@@ -112,7 +112,7 @@
             "severity": "info"
           },
           "ruleId": "mode_anomalies",
-          "ruleIndex": 37
+          "ruleIndex": 39
         },
         {
           "baselineState": "new",
@@ -129,7 +129,7 @@
             "severity": "info"
           },
           "ruleId": "init_service_hygiene",
-          "ruleIndex": 35
+          "ruleIndex": 37
         },
         {
           "baselineState": "new",
@@ -155,7 +155,7 @@
             "severity": "info"
           },
           "ruleId": "debug_leftovers",
-          "ruleIndex": 19
+          "ruleIndex": 21
         }
       ],
       "tool": {
@@ -369,6 +369,38 @@
               "name": "apk-shared-user-id",
               "shortDescription": {
                 "text": "An APK uses android:sharedUserId"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK signature does not verify (digest or signature mismatch)"
+              },
+              "help": {
+                "text": "Re-sign the APK; a mismatch means it changed after it was signed or the signature is forged"
+              },
+              "id": "apk-signature-invalid",
+              "name": "apk-signature-invalid",
+              "shortDescription": {
+                "text": "An APK signature does not verify (digest or signature mismatch)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An APK signature could not be verified (unsupported algorithm or curve)"
+              },
+              "help": {
+                "text": "Check the signature with apksigner verify"
+              },
+              "id": "apk-signature-unverified",
+              "name": "apk-signature-unverified",
+              "shortDescription": {
+                "text": "An APK signature could not be verified (unsupported algorithm or curve)"
               }
             },
             {
