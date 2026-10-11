@@ -34,7 +34,7 @@
             "severity": "high"
           },
           "ruleId": "debuggable-build",
-          "ruleIndex": 50
+          "ruleIndex": 51
         },
         {
           "level": "error",
@@ -59,7 +59,7 @@
             "severity": "high"
           },
           "ruleId": "insecure-adb",
-          "ruleIndex": 66
+          "ruleIndex": 67
         },
         {
           "level": "error",
@@ -84,7 +84,7 @@
             "severity": "high"
           },
           "ruleId": "su-binary",
-          "ruleIndex": 74
+          "ruleIndex": 75
         }
       ],
       "tool": {
@@ -650,6 +650,22 @@
               "name": "apk-min-sdk-old",
               "shortDescription": {
                 "text": "Old minimum SDK"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An APK is packed or protected by a known packer"
+              },
+              "help": {
+                "text": "Unpack the APK (run it and dump the decrypted dex) before trusting code findings; a packer is not a vulnerability by itself"
+              },
+              "id": "apk-packer",
+              "name": "apk-packer",
+              "shortDescription": {
+                "text": "An APK is packed or protected by a known packer"
               }
             },
             {

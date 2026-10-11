@@ -579,6 +579,11 @@ pub fn help(rule: &str) -> Option<Help> {
             "Informational: such checks slow analysis but are easy to bypass; do not rely on them",
             Info,
         ),
+        "apk-packer" => (
+            "An APK is packed or protected by a known packer",
+            "Unpack the APK (run it and dump the decrypted dex) before trusting code findings; a packer is not a vulnerability by itself",
+            Low,
+        ),
         "apk-code-unscanned" => (
             "The code rules could not run on an APK's dex (too large, unreadable or unsupported)",
             "Inspect the APK with the dex command or another tool; this is not a pass",
@@ -873,6 +878,7 @@ const KNOWN_RULES: &[&str] = &[
     "apk-code-tapjacking",
     "apk-code-screenshot",
     "apk-code-anti-analysis",
+    "apk-packer",
     "apk-code-unscanned",
     "partition_coverage",
     "unhandled_input",

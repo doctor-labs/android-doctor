@@ -25,7 +25,7 @@
             "severity": "critical"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 69
+          "ruleIndex": 70
         },
         {
           "level": "note",
@@ -50,7 +50,7 @@
             "severity": "info"
           },
           "ruleId": "avb_signature",
-          "ruleIndex": 45
+          "ruleIndex": 46
         }
       ],
       "tool": {
@@ -616,6 +616,22 @@
               "name": "apk-min-sdk-old",
               "shortDescription": {
                 "text": "Old minimum SDK"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An APK is packed or protected by a known packer"
+              },
+              "help": {
+                "text": "Unpack the APK (run it and dump the decrypted dex) before trusting code findings; a packer is not a vulnerability by itself"
+              },
+              "id": "apk-packer",
+              "name": "apk-packer",
+              "shortDescription": {
+                "text": "An APK is packed or protected by a known packer"
               }
             },
             {
