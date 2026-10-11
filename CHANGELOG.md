@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- ELF audit reports RPATH/RUNPATH entries outside read-only system locations (#189).
 - APK audit names known packers and protectors (Jiagu, Bangcle, SecNeo, Tencent Legu, Baidu, Alibaba, Ijiami) from their stub libraries (#195).
 - Image audit parses fstab files and reports system partitions without dm-verity and /data without (or with optional) encryption (#192).
 - APK audit reports high intent-filter priorities, binary SMS port receivers, dialer secret codes and directBootAware components (#210).

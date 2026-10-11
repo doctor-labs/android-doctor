@@ -59,7 +59,7 @@
             "severity": "high"
           },
           "ruleId": "insecure-adb",
-          "ruleIndex": 70
+          "ruleIndex": 71
         },
         {
           "level": "error",
@@ -84,7 +84,7 @@
             "severity": "high"
           },
           "ruleId": "su-binary",
-          "ruleIndex": 78
+          "ruleIndex": 79
         }
       ],
       "tool": {
@@ -1099,6 +1099,22 @@
               "name": "elf-partial-relro",
               "shortDescription": {
                 "text": "Partial RELRO: RELRO is set but relocations are lazy"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "A native library has an unsafe RPATH/RUNPATH"
+              },
+              "help": {
+                "text": "Remove RPATH/RUNPATH, or point it only at /system, /vendor, /apex or $ORIGIN"
+              },
+              "id": "elf-rpath-unsafe",
+              "name": "elf-rpath-unsafe",
+              "shortDescription": {
+                "text": "A native library has an unsafe RPATH/RUNPATH"
               }
             },
             {

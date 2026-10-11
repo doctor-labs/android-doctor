@@ -28,6 +28,8 @@ const PT_GNU_RELRO: u32 = 0x6474_e552;
 const PF_X: u32 = 1;
 const DT_NULL: u64 = 0;
 const DT_STRTAB: u64 = 5;
+const DT_RPATH: u64 = 15;
+const DT_RUNPATH: u64 = 29;
 const DT_STRSZ: u64 = 10;
 const DT_BIND_NOW: u64 = 24;
 const DT_FLAGS: u64 = 30;
@@ -55,6 +57,8 @@ pub struct ElfInfo {
     /// `None` when there is no dynamic section to judge from.
     pub canary: Option<bool>,
     pub fortify: Option<bool>,
+    /// RPATH/RUNPATH entries that point outside read-only system locations.
+    pub unsafe_rpaths: Vec<String>,
 }
 
 struct Rd<'a> {
@@ -190,6 +194,7 @@ pub fn parse(d: &[u8]) -> Result<Option<ElfInfo>> {
         },
         canary: None,
         fortify: None,
+        unsafe_rpaths: Vec::new(),
     };
     if let Some(dynh) = ph.iter().find(|h| h.kind == PT_DYNAMIC) {
         dynamic(&r, &ph, dynh, &mut info).context("reading the dynamic section")?;
@@ -200,6 +205,7 @@ pub fn parse(d: &[u8]) -> Result<Option<ElfInfo>> {
 fn dynamic(r: &Rd, ph: &[Phdr], dynh: &Phdr, info: &mut ElfInfo) -> Result<()> {
     let esz: u64 = if r.is64 { 16 } else { 8 };
     let (mut now, mut strtab, mut strsz) = (false, None, 0u64);
+    let mut rpath_offsets: Vec<u64> = Vec::new();
     for i in 0..dynh.filesz / esz {
         let o = dynh
             .offset
@@ -213,6 +219,7 @@ fn dynamic(r: &Rd, ph: &[Phdr], dynh: &Phdr, info: &mut ElfInfo) -> Result<()> {
             DT_FLAGS_1 if val & DF_1_NOW != 0 => now = true,
             DT_STRTAB => strtab = Some(val),
             DT_STRSZ => strsz = val,
+            DT_RPATH | DT_RUNPATH => rpath_offsets.push(val),
             _ => {}
         }
     }
@@ -240,7 +247,64 @@ fn dynamic(r: &Rd, ph: &[Phdr], dynh: &Phdr, info: &mut ElfInfo) -> Result<()> {
     info.fortify = Some(names.iter().any(|n| {
         n.len() > 6 && n.starts_with(b"__") && n.ends_with(b"_chk") && *n != b"__stack_chk_fail"
     }));
+    // Resolve RPATH/RUNPATH entries from the string table. Each value is a
+    // NUL-terminated string offset within the table.
+    let table = &r.d[start..start + len];
+    for off in rpath_offsets {
+        let usize_off = match usize::try_from(off) {
+            Ok(o) => o,
+            Err(_) => continue,
+        };
+        if usize_off >= table.len() {
+            continue;
+        }
+        let rest = &table[usize_off..];
+        let end = rest.iter().position(|b| *b == 0).unwrap_or(rest.len());
+        let s = &rest[..end];
+        let text = match std::str::from_utf8(s) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        for entry in text.split(':') {
+            if !is_safe_rpath(entry) && !info.unsafe_rpaths.contains(&entry.to_string()) {
+                info.unsafe_rpaths.push(entry.to_string());
+            }
+        }
+    }
     Ok(())
+}
+
+/// A safe RPATH/RUNPATH entry points at a read-only system directory, or uses the
+/// loader's `$ORIGIN` token. Everything else is hijackable: a writable path, any
+/// absolute path outside the system roots, a relative path (resolved from the
+/// caller's working directory), or an empty entry.
+fn is_safe_rpath(entry: &str) -> bool {
+    if entry.is_empty() {
+        return false;
+    }
+    // `..` can climb out of a safe root (/system/../data/...): never safe.
+    if entry.split('/').any(|c| c == "..") {
+        return false;
+    }
+    if entry.starts_with("$ORIGIN") {
+        return true;
+    }
+    const SAFE_ROOTS: [&str; 6] = [
+        "/system/",
+        "/vendor/",
+        "/product/",
+        "/odm/",
+        "/system_ext/",
+        "/apex/",
+    ];
+    // Exact root match (no trailing slash) or a path under a safe root.
+    if SAFE_ROOTS
+        .iter()
+        .any(|r| entry == &r[..r.len() - 1] || entry.starts_with(r))
+    {
+        return true;
+    }
+    false
 }
 
 /// Rules an object trips: severity, rule id, why.
@@ -285,6 +349,13 @@ pub fn issues(i: &ElfInfo) -> Vec<(Severity, &'static str, &'static str)> {
             Severity::Info,
             "elf-no-fortify",
             "no *_chk imports (heuristic, from the dynamic string table)",
+        ));
+    }
+    if !i.unsafe_rpaths.is_empty() {
+        v.push((
+            Severity::Medium,
+            "elf-rpath-unsafe",
+            "RPATH/RUNPATH searches a writable or relative directory before the system libraries (library hijacking)",
         ));
     }
     v
@@ -388,6 +459,7 @@ pub fn to_json(a: &ElfAudit) -> Value {
             "no_pie": i.no_pie, "exec_stack": i.exec_stack,
             "relro": match i.relro { Relro::None => "none", Relro::Partial => "partial", Relro::Full => "full" },
             "stack_canary": i.canary, "fortify": i.fortify,
+            "unsafe_rpaths": i.unsafe_rpaths,
             "issues": issues(i).iter().map(|x| x.1).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "errors": a.errors.iter().map(|(p, e)| json!({"path": p, "error": e})).collect::<Vec<_>>(),
@@ -409,6 +481,8 @@ pub(crate) mod tests {
         now: Option<(u64, u64)>, // dynamic tag and value that give BIND_NOW
         strings: Vec<&'static str>,
         dynamic: bool,
+        /// DT_RPATH / DT_RUNPATH tags: (tag, path string), the string is appended to the string table.
+        paths: Vec<(u64, &'static str)>,
     }
 
     fn base() -> Spec {
@@ -421,6 +495,7 @@ pub(crate) mod tests {
             now: Some((DT_FLAGS, DF_BIND_NOW)),
             strings: vec!["__stack_chk_fail", "__memcpy_chk"],
             dynamic: true,
+            paths: vec![],
         }
     }
     fn unhardened() -> Spec {
@@ -432,6 +507,52 @@ pub(crate) mod tests {
             strings: vec!["memcpy"],
             ..base()
         }
+    }
+
+    #[test]
+    fn rpath_and_runpath_outside_system_locations_are_reported() {
+        let info = |paths: Vec<(u64, &'static str)>| {
+            parse(&build(&Spec { paths, ..base() })).unwrap().unwrap()
+        };
+        let has_rule = |i: &ElfInfo| {
+            issues(i)
+                .iter()
+                .any(|(_, rule, _)| *rule == "elf-rpath-unsafe")
+        };
+        // DT_RUNPATH = 29, DT_RPATH = 15
+        let i = info(vec![(29, "/data/local/tmp/lib:/system/lib64")]);
+        assert_eq!(
+            i.unsafe_rpaths,
+            ["/data/local/tmp/lib"],
+            "only the unsafe entry is kept"
+        );
+        assert!(has_rule(&i));
+        let i = info(vec![(15, "lib")]);
+        assert_eq!(
+            i.unsafe_rpaths,
+            ["lib"],
+            "a relative RPATH is resolved from the working directory"
+        );
+        assert!(has_rule(&i));
+        let i = info(vec![(
+            29,
+            "/system/lib64:/vendor/lib64:/apex/com.android.runtime/lib64:$ORIGIN",
+        )]);
+        assert!(
+            i.unsafe_rpaths.is_empty() && !has_rule(&i),
+            "{:?}",
+            i.unsafe_rpaths
+        );
+        let i = info(vec![(29, "/system/../data/local/tmp")]);
+        assert_eq!(
+            i.unsafe_rpaths,
+            ["/system/../data/local/tmp"],
+            "`..` climbs out of /system"
+        );
+        assert!(
+            !has_rule(&parse(&build(&base())).unwrap().unwrap()),
+            "no RPATH, no finding"
+        );
     }
 
     /// A shared object with none of the hardening (for other modules' tests).
@@ -467,12 +588,19 @@ pub(crate) mod tests {
             strtab.extend(n.as_bytes());
             strtab.push(0);
         }
+        let mut path_tags = Vec::new();
+        for (tag, p) in &s.paths {
+            path_tags.push((*tag, strtab.len() as u64));
+            strtab.extend(p.as_bytes());
+            strtab.push(0);
+        }
         let (dyn_off, str_off) = (0x200u64, 0x300u64);
         let mut tags = vec![
             (DT_STRTAB, 0x1000 + str_off),
             (DT_STRSZ, strtab.len() as u64),
         ];
         tags.extend(s.now);
+        tags.extend(path_tags);
         tags.push((DT_NULL, 0));
         let dyn_len = tags.len() as u64 * esz;
         // type, flags, offset, vaddr, filesz
