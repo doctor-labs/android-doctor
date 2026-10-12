@@ -829,16 +829,27 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             json,
             force,
         } => {
-            let image = bootimg::read(&input)?;
-            if let Some(dir) = &output {
-                bootimg::write_sections(&input, &image, dir, force)?;
-            }
-            let text = if json {
-                serde_json::to_string_pretty(&bootimg::to_json(&image))?
+            // A 32-bit ARM zImage is not a boot image, but it has a header the bootloader reads,
+            // so `unpack` reports it rather than refusing it as "not a boot image".
+            if let Some(info) = bootimg::zimage_info(&input)? {
+                let text = if json {
+                    serde_json::to_string_pretty(&bootimg::zimage_to_json(&info))?
+                } else {
+                    bootimg::zimage_to_text(&info)
+                };
+                print_out(&text)
             } else {
-                bootimg::to_text(&image)
-            };
-            print_out(&text)
+                let image = bootimg::read(&input)?;
+                if let Some(dir) = &output {
+                    bootimg::write_sections(&input, &image, dir, force)?;
+                }
+                let text = if json {
+                    serde_json::to_string_pretty(&bootimg::to_json(&image))?
+                } else {
+                    bootimg::to_text(&image)
+                };
+                print_out(&text)
+            }
         }
         Command::Ramdisk {
             input,

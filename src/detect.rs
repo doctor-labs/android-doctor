@@ -163,6 +163,18 @@ pub fn sniff(head: &[u8]) -> Option<Identified> {
     if at0(&[0x28, 0xB5, 0x2F, 0xFD]) {
         return found("zstd", "zstd compressed data");
     }
+    // 32-bit ARM zImage: magic at 0x24, "HdrS" at 0x28. The first 0x24 bytes are zero, so this
+    // does not clash with any offset-0 magic above.
+    if let Some(info) = crate::ramdisk::zimage_header(head) {
+        return found(
+            "zimage",
+            &format!(
+                "ARM zImage (32-bit little-endian): {}-byte payload at {:#x}",
+                info.kernel_size,
+                crate::ramdisk::ZIMAGE_PAYLOAD_OFFSET
+            ),
+        );
+    }
     // OEM full-firmware containers with a magic at offset 0 (the rest are by extension).
     use crate::oem::Kind;
     let oem = if at0(&crate::huawei::MAGIC) {
