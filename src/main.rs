@@ -38,6 +38,7 @@ mod hashtree;
 mod huawei;
 mod imgdiff;
 mod info;
+mod initrc;
 mod kit;
 mod lgkdz;
 mod libbrotli;

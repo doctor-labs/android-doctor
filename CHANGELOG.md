@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format follows
 ### Added
 - SQLite database files (`*.db`, `*.sqlite`) are recognized by magic bytes, and the `sqliteinfo` module parses the database header (page size, text encoding, page count, schema cookie, freelist) and reads the `sqlite_master` table (table/index names, root pages, CREATE statements) of a plain, non-WAL database, bounds-checked against hostile input (#188).
 - 32-bit ARM `zImage` kernel wrapper detection (#174): `identify` names the wrapper, `unpack` reports its header fields (`kernel_size`, `kernel_offset`, `header_size`), and `ramdisk` decompresses the gzip or LZMA payload to read the inner cpio.
+- init.rc grammar parser (imports, `on` actions with `&&`/`property:` triggers, services with class/user/group/capabilities/socket/seclabel and flags) as `initrc::parse`; not yet wired into audit findings (#193).
 - APK code audit reports hardcoded public IP addresses and cleartext http:// URLs (#197).
 - APK audit reads the v3 `SigningCertificateLineage` (key rotation) and exposes it via `signing_lineage` as an oldest-first list of `LineageEntry` (`subject_cn`, `cert_sha256`, `rotated_to`, `proof_of_rotation`); an APK with a single signer certificate reports no lineage (#202).
 - ELF audit reports RPATH/RUNPATH entries outside read-only system locations (#189).
