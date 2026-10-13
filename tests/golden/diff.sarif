@@ -34,7 +34,7 @@
             "severity": "high"
           },
           "ruleId": "diff-debuggable-build",
-          "ruleIndex": 54
+          "ruleIndex": 56
         },
         {
           "level": "error",
@@ -59,7 +59,7 @@
             "severity": "high"
           },
           "ruleId": "diff-insecure-adb",
-          "ruleIndex": 55
+          "ruleIndex": 57
         },
         {
           "level": "error",
@@ -84,7 +84,7 @@
             "severity": "high"
           },
           "ruleId": "diff-su-binary",
-          "ruleIndex": 61
+          "ruleIndex": 63
         },
         {
           "level": "error",
@@ -109,7 +109,7 @@
             "severity": "high"
           },
           "ruleId": "diff-new-setuid",
-          "ruleIndex": 57
+          "ruleIndex": 59
         },
         {
           "level": "note",
@@ -134,7 +134,7 @@
             "severity": "info"
           },
           "ruleId": "diff-prop-changed",
-          "ruleIndex": 58
+          "ruleIndex": 60
         },
         {
           "level": "note",
@@ -159,7 +159,7 @@
             "severity": "info"
           },
           "ruleId": "diff-prop-changed",
-          "ruleIndex": 58
+          "ruleIndex": 60
         }
       ],
       "tool": {
@@ -757,6 +757,38 @@
               "name": "apk-min-sdk-old",
               "shortDescription": {
                 "text": "Old minimum SDK"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK's network-security-config permits cleartext (HTTP) traffic for a domain or globally"
+              },
+              "help": {
+                "text": "Set cleartextTrafficPermitted to false, or scope exceptions to specific non-sensitive domains over HTTPS"
+              },
+              "id": "apk-nsc-cleartext",
+              "name": "apk-nsc-cleartext",
+              "shortDescription": {
+                "text": "An APK's network-security-config permits cleartext (HTTP) traffic for a domain or globally"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK's network-security-config has no <pin-set>: no certificate pinning"
+              },
+              "help": {
+                "text": "Add a <pin-set> with at least one SHA-256 pin, or document that the app trusts the full CA store"
+              },
+              "id": "apk-nsc-no-pinning",
+              "name": "apk-nsc-no-pinning",
+              "shortDescription": {
+                "text": "An APK's network-security-config has no <pin-set>: no certificate pinning"
               }
             },
             {
