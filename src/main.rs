@@ -187,6 +187,17 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Audit one APK file: manifest, package, version, signers, code, issues
+    Apk {
+        /// An APK file (or a .dex file in the case of --dex)
+        input: PathBuf,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+        /// Run the DEX code rules over classes*.dex
+        #[arg(long)]
+        dex: bool,
+    },
     /// Show a flash manifest (Qualcomm rawprogram*.xml or MediaTek scatter.txt) and check it
     /// against the image files actually present
     Partitions {
@@ -953,6 +964,7 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
                 dex::to_text(&dexes, &datas, &sel)
             })
         }
+        Command::Apk { input, json, dex } => apk_command(&input, json, dex),
         Command::Amlogic { input } => {
             let img = amlogic::describe_file(&input)?;
             print_out(&amlogic::to_text(&img, &display_name(&input)))
@@ -1398,6 +1410,36 @@ fn cat_command(image: &std::path::Path, path: &str) -> anyhow::Result<()> {
         }
         r => r,
     }
+}
+
+fn apk_command(input: &std::path::Path, json: bool, _run_dex: bool) -> anyhow::Result<()> {
+    use std::fs::File;
+    use std::io::Read;
+
+    // Refuse directories
+    if input.is_dir() {
+        anyhow::bail!("{} is a directory, not an APK file", input.display());
+    }
+
+    // Read the APK bytes
+    let mut bytes = Vec::new();
+    let mut f = File::open(input).with_context(|| format!("reading {}", input.display()))?;
+    f.read_to_end(&mut bytes)
+        .with_context(|| format!("reading {}", input.display()))?;
+
+    // Audit the APK
+    let audit = apk::audit_apk_bytes(input, &bytes);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+
+    let text = if json {
+        serde_json::to_string_pretty(&apk::to_json(&audit, now))?
+    } else {
+        apk::to_text(&audit, now)
+    };
+    print_out(&text)
 }
 
 fn audit_command(
