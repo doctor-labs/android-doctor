@@ -297,6 +297,14 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Show one path's metadata (type, inode, mode, owner, size, links, mtime, link target, xattrs and SELinux label) inside an ext2/3/4, erofs or f2fs image, without extracting it; symlinks are not followed
+    Stat {
+        image: PathBuf,
+        path: String,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
     /// Security posture of firmware images: ADB properties, setuid files, su binaries, init services
     Audit {
         /// Image files (ext2/3/4, erofs or f2fs), or a directory of them (such as an `extract` output)
@@ -1153,6 +1161,7 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             },
             json,
         ),
+        Command::Stat { image, path, json } => stat_command(&image, &path, json),
         Command::Audit {
             images,
             json,
@@ -2290,6 +2299,36 @@ fn find_command(image: &std::path::Path, q: find::Query, json: bool) -> anyhow::
         .map(|e| term::sanitize(&format!("/{}", e.path)))
         .collect::<Vec<_>>()
         .join("\n");
+    print_out(&text)
+}
+
+fn stat_command(image: &std::path::Path, path: &str, json: bool) -> anyhow::Result<()> {
+    let e = tree::Tree::open(image)?.stat(path)?;
+    let text = if json {
+        serde_json::to_string_pretty(&tree::entry_json(&e))?
+    } else {
+        let mut lines = vec![
+            format!("path: /{}", e.path),
+            format!("type: {}", e.kind.name()),
+            format!("inode: {}", e.ino),
+            format!("mode: {:04o}", e.mode),
+            format!("uid: {}", e.uid),
+            format!("gid: {}", e.gid),
+            format!("size: {}", e.size),
+            format!("nlink: {}", e.nlink),
+            format!("mtime: {}", e.mtime),
+        ];
+        if let Some(l) = &e.link {
+            lines.push(format!("link: {l}"));
+        }
+        if let Some((major, minor)) = e.rdev {
+            lines.push(format!("rdev: {major}:{minor}"));
+        }
+        for (k, v) in &e.xattrs {
+            lines.push(format!("xattr {k}: {v}"));
+        }
+        lines.join("\n")
+    };
     print_out(&text)
 }
 

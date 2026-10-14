@@ -1325,6 +1325,10 @@ impl TreeSource for Fs {
             .collect())
     }
 
+    fn stat(&self, path: &str) -> Result<Entry> {
+        Ok(self.lookup(path)?.0)
+    }
+
     fn cat_path(&self, path: &str, out: &mut dyn Write) -> Result<()> {
         let (entry, inode) = self.lookup(path)?;
         check_cat(&entry)?;
@@ -2177,6 +2181,20 @@ mod tests {
         let mut out = Vec::new();
         fs.cat(&inode, &mut out).unwrap();
         out
+    }
+
+    #[test]
+    fn stat_describes_the_one_path_it_is_given() {
+        for (isz, ext) in [(256, true), (128, false)] {
+            let fs = sample(isz, ext).fs();
+            let a = fs.stat("a").unwrap();
+            assert_eq!((a.kind, a.ino, a.size), (Kind::File, 11, 6));
+            let d = fs.stat("/d/").unwrap();
+            assert_eq!((d.path.as_str(), d.kind, d.ino), ("d", Kind::Dir, 12));
+            let s = fs.stat("s").unwrap();
+            assert_eq!((s.kind, s.link.as_deref()), (Kind::Symlink, Some("a")));
+            assert!(fs.stat("zzz").is_err());
+        }
     }
 
     #[test]

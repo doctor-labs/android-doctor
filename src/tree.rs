@@ -95,6 +95,9 @@ pub(crate) trait TreeSource {
     /// The entries of the directory at `path` (not recursive), or the entry itself for a file.
     fn list_dir(&self, path: &str) -> Result<Vec<Entry>>;
 
+    /// The entry at `path` itself, whatever its type (symlinks are not followed).
+    fn stat(&self, path: &str) -> Result<Entry>;
+
     /// Write a regular file's contents to `out` (holes as zeros). Symlinks are not followed.
     fn cat_path(&self, path: &str, out: &mut dyn std::io::Write) -> Result<()>;
 }
@@ -163,6 +166,14 @@ impl Tree {
             Tree::Ext(f) => TreeSource::list_dir(f, path),
             Tree::Erofs(f) => TreeSource::list_dir(f.as_ref(), path),
             Tree::F2fs(f) => TreeSource::list_dir(f.as_ref(), path),
+        }
+    }
+
+    pub(crate) fn stat(&self, path: &str) -> Result<Entry> {
+        match self {
+            Tree::Ext(f) => TreeSource::stat(f, path),
+            Tree::Erofs(f) => TreeSource::stat(f.as_ref(), path),
+            Tree::F2fs(f) => TreeSource::stat(f.as_ref(), path),
         }
     }
 

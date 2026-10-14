@@ -83,6 +83,10 @@ fn invocations(d: &Path) -> Vec<Vec<String>> {
             "--grep".into(),
             "x".into(),
             "--json".into(),
+        vec![
+            "stat".into(),
+            img.display().to_string(),
+            "/etc/hosts".into(),
         ],
         vec!["files".into(), img.display().to_string()],
         vec!["audit".into(), img.display().to_string()],

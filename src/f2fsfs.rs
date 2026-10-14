@@ -1208,6 +1208,10 @@ impl TreeSource for Fs {
             .collect()
     }
 
+    fn stat(&self, path: &str) -> Result<Entry> {
+        Ok(self.lookup(path)?.0)
+    }
+
     fn cat_path(&self, path: &str, out: &mut dyn Write) -> Result<()> {
         let (entry, ino) = self.lookup(path)?;
         check_cat(&entry)?;

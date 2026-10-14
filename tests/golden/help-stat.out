@@ -1,0 +1,12 @@
+Show one path's metadata (type, inode, mode, owner, size, links, mtime, link target, xattrs and SELinux label) inside an ext2/3/4, erofs or f2fs image, without extracting it; symlinks are not followed
+
+Usage: android-doctor stat [OPTIONS] <IMAGE> <PATH>
+
+Arguments:
+  <IMAGE>  
+  <PATH>   
+
+Options:
+      --json      Print JSON instead of text
+      --no-color  Never emit colour, even on a terminal (also honours the NO_COLOR environment variable)
+  -h, --help      Print help
