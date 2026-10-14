@@ -1038,6 +1038,7 @@ const KNOWN_RULES: &[&str] = &[
     "diff-avb-security-state",
     "diff-avb-hash-algorithm",
     "diff-avb-descriptor",
+    "diff-avb-unchecked",
 ];
 
 #[cfg(test)]

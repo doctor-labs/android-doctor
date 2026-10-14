@@ -308,6 +308,51 @@ fn avb_changes(name: &str, old: &Vbmeta, new: &Vbmeta) -> Vec<AvbChange> {
     out
 }
 
+/// Whether a file carries an AVB header (`AVB0` at the start) or footer (`AVBf` in its last 64
+/// bytes). Plain filesystem images carry neither, so they are not AVB images at all.
+fn has_avb_marker(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut head = [0u8; 4];
+    if f.read_exact(&mut head).is_ok() && &head == b"AVB0" {
+        return true;
+    }
+    let Ok(len) = f.seek(SeekFrom::End(0)) else {
+        return false;
+    };
+    let mut tail = [0u8; 4];
+    len >= 64
+        && f.seek(SeekFrom::End(-64)).is_ok()
+        && f.read_exact(&mut tail).is_ok()
+        && &tail == b"AVBf"
+}
+
+/// The AVB changes of one image pair. An image whose vbmeta cannot be read is noted as
+/// `diff-avb-unchecked` when it has an AVB marker, so its AVB state is never silently skipped;
+/// an image with no AVB marker is not an AVB image and is left out.
+fn avb_pair(name: &str, old: &Path, new: &Path) -> Vec<AvbChange> {
+    match (avb::read_input(old, None), avb::read_input(new, None)) {
+        (Ok(x), Ok(y)) => avb_changes(name, &x, &y),
+        (x, y) => [("old", old, x.err()), ("new", new, y.err())]
+            .into_iter()
+            .filter_map(|(side, path, err)| {
+                let err = err?;
+                has_avb_marker(path).then(|| AvbChange {
+                    rule: "diff-avb-unchecked",
+                    severity: Severity::Info,
+                    subject: format!("{name} ({side})"),
+                    message: format!(
+                        "the {side} image's AVB vbmeta could not be read, so AVB was not checked: {err:#}"
+                    ),
+                    remedy: "Fix or re-sign the image so its vbmeta parses, then diff again",
+                })
+            })
+            .collect(),
+    }
+}
+
 /// What the new build does worse than the old one.
 fn security_findings(
     old: &ImageAudit,
@@ -506,11 +551,7 @@ pub fn run(old: &Path, new: &Path) -> Result<Outcome> {
             services: diff_services(&a, &b),
         };
         let avb_diffs = match (&o, &n) {
-            (Some(p), Some(q)) => match (avb::read_input(p, None), avb::read_input(q, None)) {
-                (Ok(x), Ok(y)) => avb_changes(&name, &x, &y),
-                // Not an AVB image (or unreadable as one): nothing to compare.
-                _ => Vec::new(),
-            },
+            (Some(p), Some(q)) => avb_pair(&name, p, q),
             _ => Vec::new(),
         };
         all.extend(security_findings(&a, &b, &d, &avb_diffs));
@@ -655,6 +696,35 @@ mod tests {
                 ("diff-avb-descriptor", Severity::Medium),
             ]
         );
+    }
+
+    #[test]
+    fn an_unreadable_vbmeta_with_an_avb_marker_is_noted_not_skipped() {
+        let d = crate::testutil::Scratch::new("avb-unchecked");
+        let plain = d.join("plain.img");
+        let broken = d.join("broken.img");
+        std::fs::write(&plain, vec![0u8; 4096]).unwrap();
+        // A footer that points at a vbmeta block with no AVB0 magic.
+        let mut img = vec![0u8; 128];
+        let mut footer = vec![0u8; 64];
+        footer[..4].copy_from_slice(b"AVBf");
+        footer[20..28].copy_from_slice(&0u64.to_be_bytes());
+        footer[28..36].copy_from_slice(&64u64.to_be_bytes());
+        img.truncate(64);
+        img.extend_from_slice(&footer);
+        std::fs::write(&broken, img).unwrap();
+        // The plain image is no AVB image: nothing to say.
+        assert!(avb_pair("system", &plain, &plain).is_empty());
+        let found = avb_pair("system", &plain, &broken);
+        assert_eq!(
+            found.len(),
+            1,
+            "{:?}",
+            found.iter().map(|c| c.rule).collect::<Vec<_>>()
+        );
+        assert_eq!(found[0].rule, "diff-avb-unchecked");
+        assert_eq!(found[0].severity, Severity::Info);
+        assert!(found[0].subject.contains("new"));
     }
 
     #[test]
