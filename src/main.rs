@@ -2561,6 +2561,13 @@ fn deleted_command(
     let rows: Vec<serde_json::Value> = inodes
         .iter()
         .map(|d| {
+            // Check recoverability: an inode whose block map was cleared on delete
+            // (extent entries == 0, or all block pointers zero) has no recoverable data.
+            let status = fs
+                .inode(d.ino)
+                .ok()
+                .filter(|i| fs.has_data(i))
+                .map_or("unrecoverable", |_| "deleted");
             serde_json::json!({
                 "inode": d.ino,
                 "mode": format!("{:04o}", d.mode),
@@ -2568,6 +2575,7 @@ fn deleted_command(
                 "gid": d.gid,
                 "size": d.size,
                 "mtime": d.mtime,
+                "status": status,
             })
         })
         .collect();
@@ -2675,13 +2683,19 @@ fn deleted_command(
             serde_json::to_string_pretty(&serde_json::json!({ "inodes": rows }))?
         } else {
             let mut lines = vec![format!("{} deleted inode(s)", inodes.len())];
-            for d in &inodes {
+            for (d, row) in inodes.iter().zip(&rows) {
                 let kind = crate::tree::Kind::from_mode(d.mode)
                     .map(|k| k.name())
                     .unwrap_or("?");
+                let status = row["status"].as_str().unwrap_or("unknown");
+                let mark = if status == "deleted" {
+                    ""
+                } else {
+                    "  (block map cleared)"
+                };
                 lines.push(format!(
-                    "  ino {:>8} {:4} {:>5}:{:>5} {:>12} {}",
-                    d.ino, kind, d.uid, d.gid, d.size, d.mtime
+                    "  ino {:>8} {:4} {:>5}:{:>5} {:>12} {}{}",
+                    d.ino, kind, d.uid, d.gid, d.size, d.mtime, mark
                 ));
             }
             lines.join("\n")
