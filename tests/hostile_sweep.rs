@@ -168,6 +168,15 @@ fn invocations(d: &Path) -> Vec<Vec<String>> {
         vec!["vbmeta".into(), img.display().to_string()],
         vec!["vbkernel".into(), img.display().to_string()],
         vec![
+            "avbmake".into(),
+            "-o".into(),
+            d.join("made.img").display().to_string(),
+            "--algorithm".into(),
+            "SHA256_RSA2048".into(),
+            "--key".into(),
+            img.display().to_string(),
+        ],
+        vec![
             "vbmeta".into(),
             img.display().to_string(),
             "--vbmeta".into(),
