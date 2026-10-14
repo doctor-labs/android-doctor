@@ -99,6 +99,13 @@ fn invocations(d: &Path) -> Vec<Vec<String>> {
         vec!["prop".into(), img.display().to_string(), "ro.secure".into()],
         vec!["init".into(), img.display().to_string(), "adbd".into()],
         vec!["files".into(), img.display().to_string()],
+        vec!["deleted".into(), img.display().to_string()],
+        vec![
+            "deleted".into(),
+            img.display().to_string(),
+            "-o".into(),
+            d.join("deleted-out").display().to_string(),
+        ],
         vec!["audit".into(), img.display().to_string()],
         vec!["doctor".into(), ota.display().to_string()],
         // the interactive commands run the same scans (explore needs a terminal, so it is not here)
@@ -358,6 +365,7 @@ fn a_fifo_never_blocks_a_reader() {
         "dex",
         "vbmeta",
         "vbkernel",
+        "deleted",
     ] {
         let args = vec![cmd.to_string(), d.join("pipe.img").display().to_string()];
         let err = run(&args);

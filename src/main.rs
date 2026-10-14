@@ -350,6 +350,19 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// List deleted inodes in an ext2/3/4 image (like debugfs lsdel) and optionally recover their data
+    Deleted {
+        image: PathBuf,
+        /// Write recovered files into this new directory (files/ plus manifest.json); without it, list only
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Maximum bytes of recovered data per file (default 1 MiB)
+        #[arg(long, default_value = "1048576")]
+        max_bytes: u64,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
     /// Security posture of firmware images: ADB properties, setuid files, su binaries, init services
     Audit {
         /// Image files (ext2/3/4, erofs or f2fs), or a directory of them (such as an `extract` output)
@@ -1224,6 +1237,12 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             service,
             json,
         } => inspect::init_command(&image, &service, json),
+        Command::Deleted {
+            image,
+            output,
+            max_bytes,
+            json,
+        } => deleted_command(&image, output.as_deref(), max_bytes, json),
         Command::Audit {
             images,
             json,
@@ -2488,6 +2507,162 @@ fn ncheck_command(image: &std::path::Path, wanted: &[u64], json: bool) -> anyhow
             .join("\n")
     };
     print_out(&text)
+}
+
+/// A writer that stops after `remaining` bytes, so `deleted --output` never exceeds `max_bytes`
+/// per recovered file. When the cap is reached, `write` returns `Ok(0)` and `write_all` produces
+/// a `WriteZero` error, which the caller treats as a successful partial write.
+struct CappedFile<'a, W: std::io::Write> {
+    inner: &'a mut W,
+    remaining: u64,
+}
+
+impl<W: std::io::Write> std::io::Write for CappedFile<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let take = (buf.len() as u64).min(self.remaining) as usize;
+        let n = self.inner.write(&buf[..take])?;
+        self.remaining = self.remaining.saturating_sub(n as u64);
+        Ok(n)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// `deleted`: list deleted inodes in an ext2/3/4 image (like `debugfs lsdel`) and
+/// optionally recover their data into a new directory. Read-only: never writes to the image.
+fn deleted_command(
+    image: &std::path::Path,
+    output: Option<&std::path::Path>,
+    max_bytes: u64,
+    json: bool,
+) -> anyhow::Result<()> {
+    refuse_blocking_file(image)?;
+    anyhow::ensure!(
+        !image.is_dir(),
+        "{} is a directory, not an image",
+        image.display()
+    );
+    // Only ext2/3/4 has a recoverable deleted-inode table we can scan; other
+    // filesystems are reported as unsupported instead of guessing.
+    let fs_type = detect::filesystem_of_file(image);
+    let is_ext = matches!(
+        fs_type,
+        Some(detect::Filesystem::Ext2 | detect::Filesystem::Ext3 | detect::Filesystem::Ext4)
+    );
+    if !is_ext {
+        let name = fs_type
+            .map(|f| f.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        anyhow::bail!("deleted-inode recovery is only supported on ext2/3/4 images, not '{name}'");
+    }
+    let fs = crate::ext4fs::Fs::open(image)?;
+    let inodes = fs.deleted_inodes()?;
+    let rows: Vec<serde_json::Value> = inodes
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "inode": d.ino,
+                "mode": format!("{:04o}", d.mode),
+                "uid": d.uid,
+                "gid": d.gid,
+                "size": d.size,
+                "mtime": d.mtime,
+            })
+        })
+        .collect();
+
+    if let Some(out_dir) = output {
+        let staging = treeout::prepare_staging(out_dir)?;
+        let files = staging.join("files");
+        std::fs::create_dir_all(&files)?;
+        let mut recovered: Vec<serde_json::Value> = Vec::new();
+        for d in &inodes {
+            let fname = format!("ino-{}", d.ino);
+            let dest = files.join(&fname);
+            let limit = d.size.min(max_bytes);
+            if limit == 0 {
+                recovered.push(serde_json::json!({
+                    "inode": d.ino, "name": fname, "size": d.size, "bytes": 0,
+                }));
+                continue;
+            }
+            let mut f = std::fs::File::create(&dest)?;
+            let mut capped = CappedFile {
+                inner: &mut f,
+                remaining: limit,
+            };
+            let result = fs
+                .inode(d.ino)
+                .and_then(|inode| crate::ext4fs::Fs::cat(&fs, &inode, &mut capped));
+            match result {
+                Ok(()) => {
+                    let written = limit - capped.remaining;
+                    recovered.push(serde_json::json!({
+                        "inode": d.ino, "name": fname, "size": d.size, "bytes": written,
+                    }));
+                }
+                Err(e) => {
+                    // A WriteZero error from the cap is a successful partial write, not a failure.
+                    let written = limit - capped.remaining;
+                    if written > 0 {
+                        recovered.push(serde_json::json!({
+                            "inode": d.ino, "name": fname, "size": d.size,
+                            "bytes": written, "truncated": true,
+                        }));
+                    } else {
+                        let _ = std::fs::remove_file(&dest);
+                        recovered.push(serde_json::json!({
+                            "inode": d.ino, "name": fname, "size": d.size,
+                            "error": format!("{e:#}"),
+                        }));
+                    }
+                }
+            }
+        }
+        let total: u64 = recovered.iter().filter_map(|r| r["bytes"].as_u64()).sum();
+        std::fs::write(
+            staging.join("manifest.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "deleted_inodes": inodes.len(),
+                "recovered_bytes": total,
+                "recovered": recovered,
+            }))?,
+        )?;
+        treeout::publish(&staging, out_dir)?;
+        let text = if json {
+            serde_json::to_string_pretty(&serde_json::json!({
+                "inodes": rows,
+                "output": out_dir.display().to_string(),
+                "recovered_bytes": total,
+            }))?
+        } else {
+            format!(
+                "{} deleted inode(s); recovered {} byte(s) into {}",
+                inodes.len(),
+                total,
+                out_dir.display()
+            )
+        };
+        print_out(&text)
+    } else {
+        let text = if json {
+            serde_json::to_string_pretty(&serde_json::json!({ "inodes": rows }))?
+        } else {
+            let mut lines = vec![format!("{} deleted inode(s)", inodes.len())];
+            for d in &inodes {
+                let kind = crate::tree::Kind::from_mode(d.mode)
+                    .map(|k| k.name())
+                    .unwrap_or("?");
+                lines.push(format!(
+                    "  ino {:>8} {:4} {:>5}:{:>5} {:>12} {}",
+                    d.ino, kind, d.uid, d.gid, d.size, d.mtime
+                ));
+            }
+            lines.join("\n")
+        };
+        print_out(&text)
+    }
 }
 
 fn audit_command(

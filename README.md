@@ -817,6 +817,7 @@ Status: **verified** = checked against an independent reference tool on real fir
 | Raw images inside an OTA (boot, recovery, ...) | verified | Byte-identical to the zip entries |
 | SELinux text policy: `*_sepolicy.cil` and `*file_contexts` under `etc/selinux` | synthetic | `typepermissive` domains (High) and labels naming a permissive domain (Medium); `neverallow` counted in `--json` data only. Checked against a synthetic CIL and label file in `tests/fixtures/sepolicy` and a corpus case. Compiled policy binaries are not parsed |
 | Filesystem detection: ext2/3/4 | verified | Four real images, cross-checked with an independent superblock parse |
+| Deleted-file recovery (`deleted`): list inodes with links=0 but mode≠0 and optionally recover their data | synthetic | Matches the inode set that `debugfs lsdel` reports on hand-built ext4 volumes with deleted files; recovery reads the deleted inode's data blocks through the same path as `cat`. ext2/3/4 only; erofs and f2fs are reported as unsupported |
 | Filesystem detection: erofs | verified | Real `mkfs.erofs` images (plain and lz4hc) |
 | Filesystem detection: f2fs | verified | Real `mkfs.f2fs` images: magic `0xF2F52010` at byte 1024 (the superblock's first field); the earlier `0xF2F52011` at `0x170` never matched a real image |
 | Android sparse images (`unsparse`), single and split files | verified | Real partitions converted by `img2simg` (block sizes 1024 to 65536) and split by `simg2simg`: sha256 equal to the original and to `simg2img` |

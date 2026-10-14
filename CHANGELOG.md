@@ -35,6 +35,7 @@ All notable changes to this project are documented here. The format follows
 - A test now covers the refusal of EROFS images that use 48-bit addressing or the
   metabox. ZSTD-compressed images stay unverified: no zstd-capable `mkfs.erofs` was
   available to build one. (#228)
+- `deleted` command lists deleted (unlinked but not freed) inodes in an ext2/3/4 image — the same set `debugfs lsdel` scans (inodes with `i_links_count == 0` and `i_mode != 0`) — and optionally recovers their data blocks into a new directory (`-o <dir>`, with `--max-bytes` capping per-file output). Read-only: the image is never written to. erofs and f2fs are reported as unsupported (#225).
 - SQLite database files (`*.db`, `*.sqlite`) are recognized by magic bytes, and the `sqliteinfo` module parses the database header (page size, text encoding, page count, schema cookie, freelist) and reads the `sqlite_master` table (table/index names, root pages, CREATE statements) of a plain, non-WAL database, bounds-checked against hostile input (#188).
 - 32-bit ARM `zImage` kernel wrapper detection (#174): `identify` names the wrapper, `unpack` reports its header fields (`kernel_size`, `kernel_offset`, `header_size`), and `ramdisk` decompresses the gzip or LZMA payload to read the inner cpio.
 - init.rc grammar parser (imports, `on` actions with `&&`/`property:` triggers, services with class/user/group/capabilities/socket/seclabel and flags) as `initrc::parse`; not yet wired into audit findings (#193).

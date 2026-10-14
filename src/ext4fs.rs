@@ -678,7 +678,7 @@ impl Fs {
         self.read_exact(n * self.bs, self.bs as usize)
     }
 
-    pub fn inode(&self, ino: u32) -> Result<Inode> {
+    fn inode_offset(&self, ino: u32) -> Result<u64> {
         ensure!(
             ino >= 1 && ino <= self.inodes,
             "inode {ino} is out of range (1..={})",
@@ -690,10 +690,14 @@ impl Fs {
             group < self.itables.len(),
             "inode {ino} is in group {group}, which does not exist"
         );
-        let at = self.itables[group]
+        self.itables[group]
             .checked_mul(self.bs)
             .and_then(|t| t.checked_add((idx % self.inodes_per_group as u64) * self.inode_size))
-            .with_context(|| format!("inode {ino} location overflows"))?;
+            .with_context(|| format!("inode {ino} location overflows"))
+    }
+
+    pub fn inode(&self, ino: u32) -> Result<Inode> {
+        let at = self.inode_offset(ino)?;
         let raw = self
             .read_exact(at, self.inode_size as usize)
             .with_context(|| format!("reading inode {ino}"))?;
@@ -1296,10 +1300,66 @@ impl Fs {
     }
 }
 
+/// One deleted (unlinked but not freed) inode found by scanning the inode table.
+///
+/// A deleted inode has `links == 0` (no directory entry points to it) but `mode != 0`
+/// (the inode still carries a file type and its data blocks). `debugfs lsdel` reports
+/// the same set. The `name` is not stored in the inode on ext4 — only the directory
+/// entry held it, and that is gone — so we report the inode number and let the caller
+/// name recovered files by inode (e.g. `lost+found/ino-<n>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeletedInode {
+    pub ino: u32,
+    pub mode: u16,
+    pub uid: u32,
+    pub gid: u32,
+    pub size: u64,
+    pub mtime: i64,
+}
+
 impl Fs {
     /// Extract the tree under `out_dir/files` with `manifest.json` beside it, all or nothing.
     pub fn extract(&self, out_dir: &Path, collisions: Option<Collisions>) -> Result<Vec<Entry>> {
         crate::tree::extract(self, out_dir, collisions)
+    }
+}
+
+impl Fs {
+    /// Scan every inode in the table and return those that are deleted but not yet
+    /// overwritten: `i_links_count == 0` and `i_mode != 0`, the same set `debugfs lsdel`
+    /// reports. The inode's own data blocks (extent tree or block map) may still hold the
+    /// file content, so the caller can read it via [`Fs::inode`] + [`Fs::runs`].
+    ///
+    /// This does not read file data, only the small inode records, and it bounds the
+    /// number of inodes it will scan.
+    pub fn deleted_inodes(&self) -> Result<Vec<DeletedInode>> {
+        ensure!(self.inodes > 0, "the filesystem has no inodes");
+        ensure!(
+            u64::from(self.inodes) <= MAX_GROUPS,
+            "too many inodes to scan"
+        );
+        let mut out = Vec::with_capacity(self.inodes as usize);
+        for ino in 1..=self.inodes {
+            // Read the 16-bit mode and link count directly from the inode table so we
+            // don't pay for the full parse (xattrs, block runs, ...) on every inode.
+            let at = self.inode_offset(ino)?;
+            let raw = self.read_exact(at, self.inode_size as usize)?;
+            let mode = le16(&raw, 0);
+            let links = le16(&raw, 26);
+            if links == 0 && mode != 0 {
+                // Parse the full inode to get uid/gid/size/mtime for the listing.
+                let ino_full = self.inode(ino)?;
+                out.push(DeletedInode {
+                    ino,
+                    mode,
+                    uid: ino_full.uid,
+                    gid: ino_full.gid,
+                    size: ino_full.size,
+                    mtime: ino_full.mtime,
+                });
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -2533,6 +2593,51 @@ mod tests {
         assert!(text.contains("Free blocks: 966"));
         assert!(text.contains("Block count: 1024"));
         assert!(text.contains("Inode count: 128"));
+    }
+
+    #[test]
+    fn deleted_inodes_lists_unlinked_but_live_inodes() {
+        // Inode 11 is a regular file with links=2 (hardlink). Inode 13 is a file with links=1.
+        // We delete inode 11 by zeroing its link count while keeping its mode and data.
+        let mut m = sample(256, true);
+        let raw11 = m.raw(11);
+        // Zero the link count at offset 26 (i_links_count), keep mode non-zero.
+        put16(raw11, 26, 0);
+        let fs = m.fs();
+        let deleted = fs.deleted_inodes().unwrap();
+        assert_eq!(deleted.len(), 1, "only inode 11 should be deleted");
+        let d = &deleted[0];
+        assert_eq!(d.ino, 11);
+        assert_eq!(d.mode, 0o100644);
+        assert_eq!(d.size, 6); // "hello\n"
+        assert_eq!(d.uid, 0);
+        assert_eq!(d.gid, 0);
+        // Inode 13 (d/b, links=1) must NOT appear — it is still linked.
+        assert!(!deleted.iter().any(|d| d.ino == 13));
+        // Inode 2 (root dir, links=2) must NOT appear.
+        assert!(!deleted.iter().any(|d| d.ino == 2));
+    }
+
+    #[test]
+    fn deleted_inodes_finds_none_on_a_clean_tree() {
+        let m = sample(256, true);
+        let fs = m.fs();
+        let deleted = fs.deleted_inodes().unwrap();
+        assert_eq!(deleted.len(), 0, "no deleted inodes in the sample tree");
+    }
+
+    #[test]
+    fn deleted_inodes_recovers_data_of_a_deleted_file() {
+        let mut m = sample(256, true);
+        // Delete inode 11 ("hello\n") by zeroing its link count.
+        put16(&mut m.img, ITABLE * BS + (11 - 1) * 256 + 26, 0);
+        let fs = m.fs();
+        let deleted = fs.deleted_inodes().unwrap();
+        assert_eq!(deleted.len(), 1);
+        let ino = fs.inode(11).unwrap();
+        let mut out = Vec::new();
+        fs.cat(&ino, &mut out).unwrap();
+        assert_eq!(&out, b"hello\n", "deleted file data is still readable");
     }
 
     #[test]
