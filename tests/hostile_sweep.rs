@@ -152,6 +152,19 @@ fn invocations(d: &Path) -> Vec<Vec<String>> {
         ],
         vec!["apk".into(), img.display().to_string()],
         vec!["apk".into(), img.display().to_string(), "--json".into()],
+        vec!["apk".into(), img.display().to_string(), "--files".into()],
+        vec![
+            "apk".into(),
+            img.display().to_string(),
+            "--files".into(),
+            "--json".into(),
+        ],
+        vec![
+            "apk".into(),
+            img.display().to_string(),
+            "--cat".into(),
+            "AndroidManifest.xml".into(),
+        ],
         vec!["vbmeta".into(), img.display().to_string()],
         vec![
             "vbmeta".into(),

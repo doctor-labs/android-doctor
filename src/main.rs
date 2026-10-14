@@ -194,6 +194,12 @@ enum Command {
         /// Print the doctor/1 JSON envelope instead of text
         #[arg(long)]
         json: bool,
+        /// List the archive entries (name, size, compressed size, method) instead of auditing
+        #[arg(long, conflicts_with = "cat")]
+        files: bool,
+        /// Print one archive entry's decompressed bytes to standard output (exit 2 if missing)
+        #[arg(long, value_name = "ENTRY", conflicts_with_all = ["json", "files"])]
+        cat: Option<String>,
     },
     /// Show a flash manifest (Qualcomm rawprogram*.xml or MediaTek scatter.txt) and check it
     /// against the image files actually present
@@ -961,7 +967,12 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
                 dex::to_text(&dexes, &datas, &sel)
             })
         }
-        Command::Apk { input, json } => apk_command(&input, json),
+        Command::Apk {
+            input,
+            json,
+            files,
+            cat,
+        } => apk_command(&input, json, files, cat.as_deref()),
         Command::Amlogic { input } => {
             let img = amlogic::describe_file(&input)?;
             print_out(&amlogic::to_text(&img, &display_name(&input)))
@@ -1409,9 +1420,14 @@ fn cat_command(image: &std::path::Path, path: &str) -> anyhow::Result<()> {
     }
 }
 
-fn apk_command(input: &std::path::Path, json: bool) -> anyhow::Result<()> {
+fn apk_command(
+    input: &std::path::Path,
+    json: bool,
+    files: bool,
+    cat: Option<&str>,
+) -> anyhow::Result<()> {
     use std::fs::File;
-    use std::io::Read;
+    use std::io::{Read, Write};
 
     // Refuse directories, FIFOs and devices: opening a FIFO would block forever
     if input.is_dir() {
@@ -1433,6 +1449,18 @@ fn apk_command(input: &std::path::Path, json: bool) -> anyhow::Result<()> {
             input.display(),
             apk::MAX_APK_BYTES / (1024 * 1024)
         );
+    }
+
+    if let Some(entry) = cat {
+        let data = apk::entry_bytes(&bytes, entry)?;
+        let mut out = std::io::stdout().lock();
+        return match out.write_all(&data).and_then(|()| out.flush()) {
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+            r => r.map_err(Into::into),
+        };
+    }
+    if files {
+        return apk_files(&bytes, json);
     }
 
     // Audit the APK
@@ -1462,18 +1490,28 @@ fn apk_command(input: &std::path::Path, json: bool) -> anyhow::Result<()> {
         0
     };
     let all = findings::from_apk(&audit, now);
+    print_envelope(&all, exit, apk::to_json(&audit, now))
+}
+
+/// Print one doctor/1 envelope with `findings` and `data`. A nonzero `exit` is returned as a
+/// silent Gate, so the process exits with that code after the envelope is on stdout.
+fn print_envelope(
+    all: &[findings::Finding],
+    exit: u8,
+    data: serde_json::Value,
+) -> anyhow::Result<()> {
     let mut rows: Vec<doctor_core::Finding> = all.iter().map(findings::Finding::to_core).collect();
     doctor_core::Finding::sort(&mut rows);
     let env = doctor_core::Envelope::new(
         "android-doctor",
         env!("CARGO_PKG_VERSION"),
         exit,
-        findings::score(&all),
+        findings::score(all),
         rows,
-        apk::to_json(&audit, now),
+        data,
     );
     print_out(&serde_json::to_string_pretty(&env.to_value())?)?;
-    if failed {
+    if exit != 0 {
         return Err(reporting::Gate {
             code: doctor_core::ExitCode::Error,
             message: String::new(),
@@ -1481,6 +1519,47 @@ fn apk_command(input: &std::path::Path, json: bool) -> anyhow::Result<()> {
         .into());
     }
     Ok(())
+}
+
+/// `apk --files`: the archive entries, as text lines or in the doctor/1 envelope `data`.
+fn apk_files(bytes: &[u8], json: bool) -> anyhow::Result<()> {
+    let entries = match apk::list_entries(bytes) {
+        Ok(e) => e,
+        Err(e) if json => {
+            return print_envelope(
+                &[],
+                doctor_core::ExitCode::Error.code(),
+                serde_json::json!({ "error": format!("{e:#}") }),
+            );
+        }
+        Err(e) => return Err(e),
+    };
+    if json {
+        let data = serde_json::json!({
+            "count": entries.len(),
+            "entries": entries.iter().map(|e| serde_json::json!({
+                "name": e.name,
+                "size": e.size,
+                "compressed_size": e.compressed_size,
+                "method": e.method,
+            })).collect::<Vec<_>>(),
+        });
+        return print_envelope(&[], 0, data);
+    }
+    let text = entries
+        .iter()
+        .map(|e| {
+            format!(
+                "{:<12} {:>10} {:>10}  {}",
+                e.method,
+                e.size,
+                e.compressed_size,
+                term::sanitize(&e.name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    print_out(&text)
 }
 
 fn audit_command(
