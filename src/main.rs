@@ -15,6 +15,7 @@ mod apk;
 mod archive;
 mod audit;
 mod avb;
+mod avbcert;
 mod avbwrite;
 mod bootimg;
 mod bsdiff;
@@ -379,6 +380,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Build AVB certificate files (avb_cert): avbtool make_certificate, make_cert_permanent_attributes, make_cert_metadata, make_cert_unlock_credential
+    Avbcert {
+        #[command(subcommand)]
+        action: AvbcertAction,
+    },
     /// Show an AVB vbmeta image (or a partition with an AVB footer): header, key, signature, descriptors, hashes
     Vbmeta {
         image: PathBuf,
@@ -539,6 +545,73 @@ enum FecAction {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum AvbcertAction {
+    /// Sign a subject public key into a certificate (avbtool make_certificate; the authority key must be RSA-4096)
+    Make {
+        /// PEM RSA-4096 private key of the authority
+        #[arg(long)]
+        authority_key: PathBuf,
+        /// PEM RSA public key (or private key) of the subject
+        #[arg(long)]
+        subject_key: PathBuf,
+        /// Subject identifier file, hashed into the certificate (a product id for product keys)
+        #[arg(long)]
+        subject: PathBuf,
+        /// Version of the subject key (default: seconds since the epoch, as avbtool)
+        #[arg(long)]
+        subject_key_version: Option<u64>,
+        /// Certificate usage (avbtool's CERT_USAGE_* strings)
+        #[arg(long, value_enum, default_value_t = AvbcertUsage::Signing)]
+        usage: AvbcertUsage,
+        /// Where to write the certificate
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Pack the root authority public key and a 16-byte product id (avbtool make_cert_permanent_attributes)
+    PermanentAttributes {
+        /// PEM RSA public key of the root authority
+        #[arg(long)]
+        root_authority_key: PathBuf,
+        /// File holding the 16-byte product id
+        #[arg(long)]
+        product_id: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Pack an intermediate and a product key certificate for a vbmeta (avbtool make_cert_metadata)
+    Metadata {
+        #[arg(long)]
+        intermediate_key_certificate: PathBuf,
+        #[arg(long)]
+        product_key_certificate: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Pack an unlock credential, signing the 16-byte challenge when given a key (avbtool make_cert_unlock_credential)
+    UnlockCredential {
+        #[arg(long)]
+        intermediate_key_certificate: PathBuf,
+        #[arg(long)]
+        unlock_key_certificate: PathBuf,
+        /// The 16-byte challenge to sign (needs --unlock-key)
+        #[arg(long, requires = "unlock_key")]
+        challenge: Option<PathBuf>,
+        /// PEM RSA-4096 private key that signs the challenge (needs --challenge)
+        #[arg(long, requires = "challenge")]
+        unlock_key: Option<PathBuf>,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum AvbcertUsage {
+    Signing,
+    Intermediate,
+    Unlock,
 }
 
 /// What `ci` should do.
@@ -1091,6 +1164,7 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Command::Avbcert { action } => avbcert_command(action),
         Command::Vbmeta {
             image,
             images,
@@ -1666,6 +1740,79 @@ fn avbkey_command(
     };
     print_out(&text)?;
     Ok(())
+}
+
+/// `avbcert`: write one avb_cert structure (see `avbcert.rs` for the layouts). Issue #185.
+fn avbcert_command(action: AvbcertAction) -> anyhow::Result<()> {
+    use avbcert as ac;
+    let (output, bytes) = match action {
+        AvbcertAction::Make {
+            authority_key,
+            subject_key,
+            subject,
+            subject_key_version,
+            usage,
+            output,
+        } => {
+            let authority = ac::load_private_key(&authority_key)?;
+            let subject_pub = ac::load_public_key(&subject_key)?;
+            let id = ac::read_input(&subject)?;
+            let usage = match usage {
+                AvbcertUsage::Signing => ac::USAGE_SIGNING,
+                AvbcertUsage::Intermediate => ac::USAGE_INTERMEDIATE,
+                AvbcertUsage::Unlock => ac::USAGE_UNLOCK,
+            };
+            let version = match subject_key_version {
+                Some(v) => v,
+                None => std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_secs(),
+            };
+            let cert = ac::make_certificate(&authority, &subject_pub, &id, usage, version)?;
+            (output, cert)
+        }
+        AvbcertAction::PermanentAttributes {
+            root_authority_key,
+            product_id,
+            output,
+        } => {
+            let root = ac::load_public_key(&root_authority_key)?;
+            let id = ac::read_input(&product_id)?;
+            (output, ac::permanent_attributes(&root, &id)?)
+        }
+        AvbcertAction::Metadata {
+            intermediate_key_certificate,
+            product_key_certificate,
+            output,
+        } => {
+            let intermediate = ac::read_input(&intermediate_key_certificate)?;
+            let product = ac::read_input(&product_key_certificate)?;
+            (output, ac::metadata(&intermediate, &product)?)
+        }
+        AvbcertAction::UnlockCredential {
+            intermediate_key_certificate,
+            unlock_key_certificate,
+            challenge,
+            unlock_key,
+            output,
+        } => {
+            let intermediate = ac::read_input(&intermediate_key_certificate)?;
+            let unlock = ac::read_input(&unlock_key_certificate)?;
+            let challenge = challenge.as_deref().map(ac::read_input).transpose()?;
+            let key = unlock_key
+                .as_deref()
+                .map(ac::load_private_key)
+                .transpose()?;
+            let cred =
+                ac::unlock_credential(&intermediate, &unlock, challenge.as_deref(), key.as_ref())?;
+            (output, cred)
+        }
+    };
+    write_atomically(&output, false, |f| {
+        f.write_all(&bytes)?;
+        Ok(())
+    })?;
+    print_out(&format!("{} bytes  {}", bytes.len(), output.display()))
 }
 
 fn vbmeta_command(
