@@ -348,6 +348,91 @@ where
     Ok(Image { info, sections })
 }
 
+/// What a 32-bit ARM `zImage` wrapper reports through `unpack`.
+pub struct ZimageInfo {
+    /// The file size in bytes.
+    pub file_size: u64,
+    /// `kernel_size` from offset 0x30: length of the compressed payload.
+    pub kernel_size: u32,
+    /// `kernel_offset` from offset 0x34: the load address.
+    pub kernel_offset: u32,
+    /// `header_size` from offset 0x2C.
+    pub header_size: u32,
+}
+
+/// Return the zImage header info for `path` if it is a valid 32-bit ARM `zImage` wrapper.
+/// Reads at most `HEAD_LEN` bytes to validate the magic, signature and bounds.
+pub fn zimage_info(path: &Path) -> Result<Option<ZimageInfo>> {
+    refuse_blocking_file(path)?;
+    ensure!(
+        !path.is_dir(),
+        "{} is a directory, not a boot image",
+        path.display()
+    );
+    let mut f = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let len = f.metadata()?.len();
+    let mut head = vec![0u8; HEAD_LEN];
+    let n = f.read(&mut head)?;
+    head.truncate(n);
+    let Some(info) = crate::ramdisk::zimage_header(&head) else {
+        return Ok(None);
+    };
+    Ok(Some(ZimageInfo {
+        file_size: len,
+        kernel_size: info.kernel_size,
+        kernel_offset: info.kernel_offset,
+        header_size: info.header_size,
+    }))
+}
+
+/// Render a zImage header as the JSON that `unpack --json` prints.
+pub fn zimage_to_json(info: &ZimageInfo) -> Value {
+    json!({
+        "kind": "zimage",
+        "file_size": info.file_size,
+        "kernel_size": info.kernel_size,
+        "kernel_offset": info.kernel_offset,
+        "kernel_offset_hex": format!("{:#010x}", info.kernel_offset),
+        "header_size": info.header_size,
+        "format": "zimage",
+        "format_description": "ARM zImage (32-bit, little-endian)",
+        "sections": [
+            {
+                "name": "kernel",
+                "offset": crate::ramdisk::ZIMAGE_PAYLOAD_OFFSET as u64,
+                "size": info.kernel_size as u64,
+                "format": "zimage",
+                "format_description": format!(
+                    "ARM zImage ({} payload, {:#x} load addr)",
+                    info.kernel_size, info.kernel_offset
+                ),
+            }
+        ],
+    })
+}
+
+/// Render a zImage header as text (for `unpack` without `--json`).
+pub fn zimage_to_text(info: &ZimageInfo) -> String {
+    [
+        "kind               zImage".to_string(),
+        format!("file_size          {}", info.file_size),
+        format!(
+            "kernel_size        {} ({:#x} bytes)",
+            info.kernel_size, info.kernel_size
+        ),
+        format!("kernel_offset      {:#x}", info.kernel_offset),
+        format!("header_size        {}", info.header_size),
+        "format             zimage".to_string(),
+        "sections:".to_string(),
+        format!(
+            "  kernel  offset {}  size {}  zImage payload",
+            crate::ramdisk::ZIMAGE_PAYLOAD_OFFSET,
+            info.kernel_size
+        ),
+    ]
+    .join("\n")
+}
+
 /// Open `path`, parse it and return the image.
 pub fn read(path: &Path) -> Result<Image> {
     refuse_blocking_file(path)?;

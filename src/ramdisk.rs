@@ -24,6 +24,50 @@ pub(crate) const MAX_PROP_FILE: u64 = 1 << 20;
 const LEGACY_LZ4_MAGIC: u32 = 0x184C_2102;
 const LEGACY_LZ4_BLOCK: usize = 8 << 20;
 const SYMLINK_DEPTH: usize = 8;
+
+/// 32-bit ARM `zImage` magic (`0x016F2818` little-endian on disk).
+const ZIMAGE_MAGIC: &[u8; 4] = &[0x18, 0x28, 0x6F, 0x01];
+/// `"HdrS"` at offset 0x28 is the signature the real `file(1)` checks too.
+const ZIMAGE_SIG: &[u8; 4] = b"HdrS";
+/// The zImage header is the Linux `struct boot_img_hdr` through offset 0x40.
+const ZIMAGE_HEADER_LEN: usize = 0x40;
+/// Bytes of the header before the payload, rounded up to a 16-byte boundary.
+pub const ZIMAGE_PAYLOAD_OFFSET: usize = 0x70;
+
+/// What a 32-bit ARM `zImage` wrapper carries — the fields the bootloader reads.
+pub struct ZimageHeader {
+    pub kernel_size: u32,
+    pub kernel_offset: u32,
+    pub header_size: u32,
+}
+
+/// Recognise the zImage wrapper magic and signature, returning the header if this looks like a
+/// real 32-bit ARM `zImage`. The whole header (0x40 bytes) must be present, and `kernel_size`
+/// must not run past the end of `head` — an attacker controls it, so it is never trusted to size
+/// a read or allocation.
+pub fn zimage_header(head: &[u8]) -> Option<ZimageHeader> {
+    if head.len() < ZIMAGE_HEADER_LEN {
+        return None;
+    }
+    let magic = &head[0x24..0x28];
+    let sig = &head[0x28..0x2C];
+    if magic != ZIMAGE_MAGIC || sig != ZIMAGE_SIG {
+        return None;
+    }
+    let kernel_size = u32::from_le_bytes(head[0x30..0x34].try_into().ok()?);
+    let kernel_offset = u32::from_le_bytes(head[0x34..0x38].try_into().ok()?);
+    let header_size = u32::from_le_bytes(head[0x2C..0x30].try_into().ok()?);
+    // kernel_size is attacker-controlled: reject if it would read past the buffer.
+    let payload_end = ZIMAGE_PAYLOAD_OFFSET.checked_add(kernel_size as usize)?;
+    if payload_end > head.len() {
+        return None;
+    }
+    Some(ZimageHeader {
+        kernel_size,
+        kernel_offset,
+        header_size,
+    })
+}
 /// Properties worth reporting when auditing a device's debug and ADB exposure.
 pub(crate) const REPORTED_PROPS: [&str; 6] = [
     "ro.secure",
@@ -43,6 +87,8 @@ pub enum Compression {
     Zstd,
     Lz4Frame,
     Lz4Legacy,
+    /// Legacy LZMA (`.lzma` container, not `.xz`).
+    Lzma,
 }
 
 impl Compression {
@@ -55,6 +101,7 @@ impl Compression {
             Self::Zstd => "zstd",
             Self::Lz4Frame => "lz4",
             Self::Lz4Legacy => "lz4-legacy",
+            Self::Lzma => "lzma",
         }
     }
 }
@@ -76,6 +123,11 @@ pub fn compression_of(head: &[u8]) -> Option<Compression> {
         Compression::Lz4Legacy
     } else if at0(b"070701") || at0(b"070702") {
         Compression::None
+    } else if at0(&[0x5D]) && head.len() >= 13 {
+        // Legacy `.lzma` container: properties byte (0x5D = lc=3 lp=0 pb=2), then
+        // 4-byte dict size and 8-byte uncompressed size before the range-coded data.
+        // `lzma_rust2::LzmaReader` validates the rest, so this only needs the signature byte.
+        Compression::Lzma
     } else {
         return None;
     })
@@ -123,6 +175,15 @@ pub fn classify_section(head: &[u8]) -> (&'static str, String) {
         return (
             "aml-container",
             "Amlogic container (@AML); secure-boot images are encrypted".into(),
+        );
+    }
+    if let Some(info) = zimage_header(head) {
+        return (
+            "zimage",
+            format!(
+                "ARM zImage ({} payload, {:#x} load addr)",
+                info.kernel_size, info.kernel_offset
+            ),
         );
     }
     if head.len() >= MIN_ENTROPY_SAMPLE {
@@ -227,6 +288,10 @@ pub(crate) fn decoder<'a, R: Read + 'a>(c: Compression, r: R) -> Result<Box<dyn 
         Compression::Gzip => Box::new(flate2::read::MultiGzDecoder::new(r)),
         Compression::Bzip2 => Box::new(bzip2::read::MultiBzDecoder::new(r)),
         Compression::Xz => Box::new(lzma_rust2::XzReader::new(r, true)),
+        Compression::Lzma => Box::new(
+            lzma_rust2::LzmaReader::new_mem_limit(r, u32::MAX, None)
+                .map_err(|e| anyhow!("lzma: {e}"))?,
+        ),
         Compression::Zstd => {
             Box::new(ruzstd::decoding::StreamingDecoder::new(r).map_err(|e| anyhow!("zstd: {e}"))?)
         }
@@ -669,11 +734,27 @@ fn read_ramdisk_capped<R: Read>(mut source: R, out: Option<&Path>, cap: u64) -> 
         got += n;
     }
     head.truncate(got);
-    let Some(c) = compression_of(&head) else {
+    // A 32-bit ARM zImage wraps the payload after a fixed header. Strip it and treat the
+    // payload as the (compressed) ramdisk. `zimage_header` already bounds `kernel_size` to the
+    // buffer we hold, so an attacker cannot claim a 4 GiB payload.
+    let is_zimage = zimage_header(&head).is_some();
+    let payload = if is_zimage {
+        &head[ZIMAGE_PAYLOAD_OFFSET..]
+    } else {
+        &head[..]
+    };
+    let Some(c) = compression_of(payload) else {
         let (id, why) = classify_section(&head);
         bail!("the ramdisk is not a compressed or plain cpio archive: {why} [{id}]");
     };
-    let chained = std::io::Cursor::new(head).chain(source);
+    // For a zImage the payload starts after the header; for everything else it starts at 0.
+    let chained: Box<dyn Read> = if is_zimage {
+        // Move the payload bytes out of `head` into their own buffer so the `Cursor` owns them.
+        let payload = head.split_off(ZIMAGE_PAYLOAD_OFFSET);
+        Box::new(std::io::Cursor::new(payload).chain(source))
+    } else {
+        Box::new(std::io::Cursor::new(head).chain(source))
+    };
     let plain = Capped {
         inner: decoder(c, chained)?,
         left: cap,
@@ -989,10 +1070,20 @@ mod tests {
                 }
                 out
             }
+            Compression::Lzma => {
+                let mut w = lzma_rust2::LzmaWriter::new_use_header(
+                    Vec::new(),
+                    &lzma_rust2::LzmaOptions::default(),
+                    Some(data.len() as u64),
+                )
+                .unwrap();
+                w.write_all(data).unwrap();
+                w.finish().unwrap()
+            }
         }
     }
 
-    const ALL: [Compression; 7] = [
+    const ALL: [Compression; 8] = [
         Compression::None,
         Compression::Gzip,
         Compression::Bzip2,
@@ -1000,6 +1091,7 @@ mod tests {
         Compression::Zstd,
         Compression::Lz4Frame,
         Compression::Lz4Legacy,
+        Compression::Lzma,
     ];
 
     fn data(n: usize, seed: u8) -> Vec<u8> {
@@ -1118,6 +1210,12 @@ mod tests {
         assert_eq!(compression_of(b"07070"), None);
         assert_eq!(compression_of(&[]), None);
         assert_eq!(compression_of(&[0x1F, 0x8B, 0x07]), None);
+        // LZMA `.lzma` needs at least 13 bytes: 1 props + 4 dict size + 8 uncompressed size
+        assert_eq!(compression_of(&[0x5D]), None);
+        assert_eq!(
+            compression_of(&[0x5D, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            None
+        );
     }
 
     #[test]
@@ -1130,6 +1228,18 @@ mod tests {
         let mut arm = vec![0u8; 0x40];
         arm[0x38..0x3C].copy_from_slice(b"ARMd");
         assert_eq!(id(&arm), "arm64-image");
+        // zImage wrapper: magic at 0x24, "HdrS" at 0x28.
+        let mut zimg = vec![0u8; 0x80];
+        zimg[0x24..0x28].copy_from_slice(&[0x18, 0x28, 0x6F, 0x01]);
+        zimg[0x28..0x2C].copy_from_slice(b"HdrS");
+        zimg[0x2C..0x30].copy_from_slice(&0x40u32.to_le_bytes());
+        zimg[0x30..0x34].copy_from_slice(&16u32.to_le_bytes()); // kernel_size
+        zimg[0x34..0x38].copy_from_slice(&0x8000u32.to_le_bytes());
+        assert_eq!(id(&zimg), "zimage");
+        assert!(
+            classify_section(&zimg).1.contains("zImage"),
+            "description should name the wrapper"
+        );
         assert_eq!(id(&[0u8; 8192]), "unknown");
         assert_eq!(id(&[1, 2, 3]), "unknown");
         // random-looking data of a useful size is "high entropy"; the same bytes cut short are not judged
