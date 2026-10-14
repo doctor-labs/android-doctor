@@ -1413,16 +1413,27 @@ fn apk_command(input: &std::path::Path, json: bool) -> anyhow::Result<()> {
     use std::fs::File;
     use std::io::Read;
 
-    // Refuse directories
+    // Refuse directories, FIFOs and devices: opening a FIFO would block forever
     if input.is_dir() {
         anyhow::bail!("{} is a directory, not an APK file", input.display());
     }
+    if !input.is_file() {
+        anyhow::bail!("{} is not a regular file", input.display());
+    }
 
-    // Read the APK bytes
+    // Read the APK bytes, bounded (hostile input)
     let mut bytes = Vec::new();
-    let mut f = File::open(input).with_context(|| format!("reading {}", input.display()))?;
-    f.read_to_end(&mut bytes)
+    let f = File::open(input).with_context(|| format!("reading {}", input.display()))?;
+    f.take(apk::MAX_APK_BYTES + 1)
+        .read_to_end(&mut bytes)
         .with_context(|| format!("reading {}", input.display()))?;
+    if bytes.len() as u64 > apk::MAX_APK_BYTES {
+        anyhow::bail!(
+            "{} is larger than {} MB, the APK audit limit",
+            input.display(),
+            apk::MAX_APK_BYTES / (1024 * 1024)
+        );
+    }
 
     // Audit the APK
     let audit = apk::audit_apk_bytes(input, &bytes);
@@ -1431,30 +1442,45 @@ fn apk_command(input: &std::path::Path, json: bool) -> anyhow::Result<()> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
 
+    // A file that is not an APK could not be audited: exit 2 (doctor/1), text and JSON alike.
+    let failed = audit.info.is_none();
+    if failed && !json {
+        anyhow::bail!(
+            "{}: {}",
+            input.display(),
+            audit.error.as_deref().unwrap_or("not an APK")
+        );
+    }
     if !json {
         return print_out(&apk::to_text(&audit, now));
     }
-    // doctor/1 envelope, built with the same core type as `audit --json` (reporting::emit). The
-    // old object lives under `data`; its keys are also kept at the top level for existing scripts.
+    // doctor/1 envelope, built with the same core type as `audit --json` (reporting::emit).
+    // The apk object lives under `data` only.
+    let exit = if failed {
+        doctor_core::ExitCode::Error.code()
+    } else {
+        0
+    };
     let all = findings::from_apk(&audit, now);
     let mut rows: Vec<doctor_core::Finding> = all.iter().map(findings::Finding::to_core).collect();
     doctor_core::Finding::sort(&mut rows);
-    let flat = apk::to_json(&audit, now);
     let env = doctor_core::Envelope::new(
         "android-doctor",
         env!("CARGO_PKG_VERSION"),
-        0,
+        exit,
         findings::score(&all),
         rows,
-        flat.clone(),
+        apk::to_json(&audit, now),
     );
-    let mut v = env.to_value();
-    if let (Some(top), Some(keys)) = (v.as_object_mut(), flat.as_object()) {
-        for (k, val) in keys {
-            top.entry(k.clone()).or_insert_with(|| val.clone());
+    print_out(&serde_json::to_string_pretty(&env.to_value())?)?;
+    if failed {
+        return Err(reporting::Gate {
+            code: doctor_core::ExitCode::Error,
+            message: String::new(),
         }
+        .into());
     }
-    print_out(&serde_json::to_string_pretty(&v)?)
+    Ok(())
 }
 
 fn audit_command(

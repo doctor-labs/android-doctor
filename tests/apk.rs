@@ -24,7 +24,7 @@ fn apk_audit_reports_signers() {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     // The v1.apk fixture has a signer
     assert!(
-        !json["signers"].as_array().unwrap().is_empty(),
+        !json["data"]["signers"].as_array().unwrap().is_empty(),
         "output: {}",
         String::from_utf8_lossy(&out.stdout)
     );
@@ -51,7 +51,7 @@ fn apk_audit_reports_verification() {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     // The v1.apk fixture has verification info
     assert!(
-        json["verification"].is_array(),
+        json["data"]["verification"].is_array(),
         "output: {}",
         String::from_utf8_lossy(&out.stdout)
     );
@@ -84,9 +84,19 @@ fn apk_audit_handles_invalid_apk() {
         .output()
         .unwrap();
 
-    // APK parser reports errors rather than panicking
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
-    assert!(json.get("error").is_some() || json.get("package").is_none());
+    // The parser reports the error rather than panicking, and the tool exits 2 (doctor/1)
+    assert_eq!(out.status.code(), Some(2));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["exit_code"], 2);
+    assert_eq!(json["schema"], "doctor/1");
+    assert!(json["data"]["error"].is_string(), "output: {json}");
+
+    let text = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+        .args(["apk", apk_path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(text.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&text.stderr).contains("not-an-apk.apk"));
 }
 
 #[test]

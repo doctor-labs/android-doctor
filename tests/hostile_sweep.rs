@@ -150,6 +150,8 @@ fn invocations(d: &Path) -> Vec<Vec<String>> {
             "--classes".into(),
             "--refs".into(),
         ],
+        vec!["apk".into(), img.display().to_string()],
+        vec!["apk".into(), img.display().to_string(), "--json".into()],
         vec!["vbmeta".into(), img.display().to_string()],
         vec![
             "vbmeta".into(),
