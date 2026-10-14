@@ -444,6 +444,16 @@ pub fn help(rule: &str) -> Option<Help> {
             "Scope <grant-uri-permission>/<path-permission> to the paths that must be shared",
             Medium,
         ),
+        "apk-nsc-no-pinning" => (
+            "An APK's network-security-config has no <pin-set>: no certificate pinning",
+            "Add a <pin-set> with at least one SHA-256 pin, or document that the app trusts the full CA store",
+            Medium,
+        ),
+        "apk-nsc-cleartext" => (
+            "An APK's network-security-config permits cleartext (HTTP) traffic for a domain or globally",
+            "Set cleartextTrafficPermitted to false, or scope exceptions to specific non-sensitive domains over HTTPS",
+            Medium,
+        ),
         "elf-no-pie" => (
             "A native executable is not position-independent (ET_EXEC): no ASLR",
             "Build with -fPIE -pie so the loader can randomise its base",
@@ -886,6 +896,8 @@ const KNOWN_RULES: &[&str] = &[
     "apk-test-only",
     "apk-provider-grant-uri",
     "apk-provider-broad-path",
+    "apk-nsc-no-pinning",
+    "apk-nsc-cleartext",
     "hardcoded_credentials",
     "cloud_credentials",
     "provider_tokens",

@@ -26,7 +26,7 @@
             "severity": "critical"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 76
+          "ruleIndex": 78
         },
         {
           "baselineState": "new",
@@ -52,7 +52,7 @@
             "severity": "info"
           },
           "ruleId": "avb_signature",
-          "ruleIndex": 48
+          "ruleIndex": 50
         }
       ],
       "tool": {
@@ -650,6 +650,38 @@
               "name": "apk-min-sdk-old",
               "shortDescription": {
                 "text": "Old minimum SDK"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK's network-security-config permits cleartext (HTTP) traffic for a domain or globally"
+              },
+              "help": {
+                "text": "Set cleartextTrafficPermitted to false, or scope exceptions to specific non-sensitive domains over HTTPS"
+              },
+              "id": "apk-nsc-cleartext",
+              "name": "apk-nsc-cleartext",
+              "shortDescription": {
+                "text": "An APK's network-security-config permits cleartext (HTTP) traffic for a domain or globally"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK's network-security-config has no <pin-set>: no certificate pinning"
+              },
+              "help": {
+                "text": "Add a <pin-set> with at least one SHA-256 pin, or document that the app trusts the full CA store"
+              },
+              "id": "apk-nsc-no-pinning",
+              "name": "apk-nsc-no-pinning",
+              "shortDescription": {
+                "text": "An APK's network-security-config has no <pin-set>: no certificate pinning"
               }
             },
             {

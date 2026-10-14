@@ -792,7 +792,7 @@ fn apk_json(a: &ApkAudit) -> Value {
             "shared_user_id": m.shared_user_id,
             "debuggable": m.debuggable,
             "uses_cleartext_traffic": m.uses_cleartext_traffic,
-            "network_security_config": m.has_network_security_config,
+            "network_security_config": m.network_security_config,
             "allow_backup": m.allow_backup,
             "test_only": m.test_only,
             "application_permission": m.app_permission,

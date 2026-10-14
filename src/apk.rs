@@ -61,6 +61,8 @@ pub struct ApkInfo {
     pub verification: Vec<SchemeCheck>,
     /// Security-relevant manifest attributes (see `ManifestAttrs`).
     pub manifest: ManifestAttrs,
+    /// Parsed network-security-config, when the manifest references one.
+    pub network_security_config: Option<NetworkSecurityConfig>,
     /// Findings from the code rules over the DEX (see `rules`).
     pub code_issues: Vec<ManifestIssue>,
 }
@@ -69,8 +71,62 @@ impl ApkInfo {
     /// Manifest hardening problems, derived from real manifest attributes only.
     pub fn issues(&self) -> Vec<ManifestIssue> {
         let mut v = manifest_issues(&self.manifest);
+        v.extend(self.network_security_issues());
         v.extend(self.code_issues.iter().cloned());
         v
+    }
+
+    /// Findings from the parsed network-security-config, if one was found.
+    fn network_security_issues(&self) -> Vec<ManifestIssue> {
+        use Severity::*;
+        let mut out = Vec::new();
+        let Some(nsc) = &self.network_security_config else {
+            return out;
+        };
+        // A network security config with no <pin-set> at all means no pinning
+        // is configured, the app trusts the full public CA store by default.
+        if !nsc.has_pin_set {
+            out.push(ManifestIssue {
+                rule: "apk-nsc-no-pinning",
+                severity: Medium,
+                detail: "network-security-config has no <pin-set>: certificates are not pinned"
+                    .into(),
+            });
+        }
+        // <base-config cleartextTrafficPermitted="true"> allows HTTP globally.
+        if nsc.base_config_cleartext == Some(true) {
+            out.push(ManifestIssue {
+                rule: "apk-nsc-cleartext",
+                severity: Medium,
+                detail: "network-security-config base-config cleartextTrafficPermitted=true: HTTP allowed globally".into(),
+            });
+        }
+        // <domain-config cleartextTrafficPermitted="true"> allows HTTP for named domains only.
+        for dc in &nsc.domain_configs {
+            if dc.cleartext == Some(true) && !dc.domains.is_empty() {
+                let shown = dc
+                    .domains
+                    .iter()
+                    .take(5)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let more = dc.domains.len().saturating_sub(5);
+                let tail = if more > 0 {
+                    format!(" and {more} more")
+                } else {
+                    String::new()
+                };
+                out.push(ManifestIssue {
+                    rule: "apk-nsc-cleartext",
+                    severity: Medium,
+                    detail: format!(
+                        "network-security-config domain-config cleartextTrafficPermitted=true for: {shown}{tail}"
+                    ),
+                });
+            }
+        }
+        out
     }
 
     pub fn has_test_key(&self) -> bool {
@@ -216,7 +272,9 @@ pub struct ManifestAttrs {
     pub uses_cleartext_traffic: Option<bool>,
     pub allow_backup: Option<bool>,
     pub test_only: Option<bool>,
-    pub has_network_security_config: bool,
+    /// `android:networkSecurityConfig` value, when set (e.g. `@xml/network_security_config`).
+    /// The referenced XML is read from `res/xml/` during APK audit.
+    pub network_security_config: Option<String>,
     /// `<application android:allowTaskReparenting>` when it is a literal boolean.
     pub task_reparenting: bool,
     /// `<application android:permission>`: the default guard for every component.
@@ -578,6 +636,128 @@ pub(crate) fn parse_manifest(data: &[u8]) -> Result<ManifestAttrs> {
     Ok(result)
 }
 
+// --- Network security config parsing ---
+
+/// A parsed network-security-config XML document.
+#[derive(Debug, Clone, Default)]
+pub struct NetworkSecurityConfig {
+    /// `cleartextTrafficPermitted` on `<base-config>`.
+    pub base_config_cleartext: Option<bool>,
+    /// One `<domain-config>` block: its cleartext flag and the `<domain>` children that scope it.
+    pub domain_configs: Vec<DomainConfig>,
+    /// Whether a `<pin-set>` element was present at any level.
+    pub has_pin_set: bool,
+}
+
+/// One `<domain-config>`: cleartext flag plus scoped `<domain>` entries.
+#[derive(Debug, Clone, Default)]
+pub struct DomainConfig {
+    pub cleartext: Option<bool>,
+    pub domains: Vec<String>,
+}
+
+/// Parse a binary XML file (as found in `res/xml/` of an APK) and extract the
+/// elements relevant to a network-security-config document.
+///
+/// Only the tags `base-config`, `domain-config`, `domain` and `pin-set` are
+/// inspected; unknown tags are skipped. The string pool is decoded once and
+/// all reads are bounds-checked against the input length.
+fn parse_network_security_config(data: &[u8]) -> Result<NetworkSecurityConfig> {
+    let mut out = NetworkSecurityConfig::default();
+    // Binary XML: RES_XML_TYPE (0x0003) header, then string pool, then chunks.
+    let file_type = le16(data, 0)?;
+    ensure!(
+        file_type == 0x0003,
+        "nsc: expected RES_XML_TYPE 0x0003, got {file_type:#06x}"
+    );
+    let xml_header = le16(data, 2)? as usize;
+    ensure!(
+        xml_header >= 8 && xml_header <= data.len(),
+        "nsc: bad xml header"
+    );
+    let (pool, _pool_start) = parse_string_pool(&data[xml_header..])?;
+    let pool_chunk_size = le32(&data[xml_header..], 4)? as usize;
+    let mut pos = xml_header + pool_chunk_size;
+    // Stack of open element names to know the current nesting.
+    let mut stack: Vec<String> = Vec::new();
+    // When a <domain> start tag is seen, the next CDATA chunk holds its text.
+    let mut pending_domain_idx: Option<usize> = None;
+    while pos + 8 <= data.len() {
+        let ct = le16(data, pos)?;
+        let cs = le32(data, pos + 4)? as usize;
+        ensure!(
+            cs >= 8 && pos + cs <= data.len(),
+            "nsc: bad chunk size {cs}"
+        );
+        match ct {
+            0x0103 => {
+                // End element: pop the stack.
+                stack.pop();
+                pending_domain_idx = None;
+            }
+            0x0101 => {
+                // RES_XML_CDATA_TYPE: the text content of the current element.
+                if let Some(idx) = pending_domain_idx.take() {
+                    // ResXMLTree_cdataExt: rawVal is a string pool index (AOSP ResourceTypes.h).
+                    let raw_off = le32(data, pos + ATTR_EXT_BASE)?;
+                    if raw_off != 0xFFFFFFFF
+                        && let Some(s) = pool.get(raw_off as usize)
+                        && let Some(d) = out.domain_configs.get_mut(idx)
+                    {
+                        d.domains.push(s.clone());
+                    }
+                }
+            }
+            0x0102 => {
+                let (tag, attrs) = parse_start_tag(data, pos, &pool)?;
+                // Match attributes by local name (no resource map for these custom attrs).
+                let attr = |name: &str| -> Option<&Attr> {
+                    attrs
+                        .iter()
+                        .find(|a| pool.get(a.name_idx).map(String::as_str) == Some(name))
+                };
+                let get_bool =
+                    |name: &str| -> Option<bool> { attr(name).and_then(|a| a.as_bool()) };
+                match tag.as_str() {
+                    "base-config" => {
+                        out.base_config_cleartext = get_bool("cleartextTrafficPermitted");
+                    }
+                    "domain-config" => {
+                        let cfg = DomainConfig {
+                            cleartext: get_bool("cleartextTrafficPermitted"),
+                            domains: Vec::new(),
+                        };
+                        out.domain_configs.push(cfg);
+                        pending_domain_idx = None;
+                    }
+                    "domain" => {
+                        // The domain text comes as CDATA after this start tag.
+                        pending_domain_idx = Some(out.domain_configs.len() - 1);
+                    }
+                    "pin-set" => {
+                        out.has_pin_set = true;
+                    }
+                    _ => {}
+                }
+                stack.push(tag);
+            }
+            _ => {}
+        }
+        pos += cs;
+    }
+    Ok(out)
+}
+
+/// Convert a resource reference like `@xml/network_security_config` into the APK
+/// zip entry path `res/xml/network_security_config`. Returns None for anything
+/// that is not an `@xml/` reference (e.g. a bare resource ID with no raw string).
+fn nsc_res_path(value: &str) -> Option<String> {
+    value
+        .strip_prefix("@xml/")
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("res/xml/{s}"))
+}
+
 const ANDROID_NS: &str = "http://schemas.android.com/apk/res/android";
 /// Most components kept per manifest: a hostile manifest cannot grow this without bound.
 const MAX_COMPONENTS: usize = 5000;
@@ -676,7 +856,9 @@ fn read_tag(
             ("application", "usesCleartextTraffic") => out.uses_cleartext_traffic = a.as_bool(),
             ("application", "allowBackup") => out.allow_backup = a.as_bool(),
             ("application", "testOnly") => out.test_only = a.as_bool(),
-            ("application", "networkSecurityConfig") => out.has_network_security_config = true,
+            ("application", "networkSecurityConfig") => {
+                out.network_security_config = Some(a.value.clone())
+            }
             ("application", "permission") => out.app_permission = !a.value.is_empty(),
             ("application", "directBootAware") => {
                 if a.as_bool() == Some(true) {
@@ -1032,7 +1214,7 @@ fn manifest_issues(m: &ManifestAttrs) -> Vec<ManifestIssue> {
     if m.uses_cleartext_traffic == Some(true) {
         // With a networkSecurityConfig the attribute is ignored from API 24, so it is only a
         // hint that the config may permit cleartext (the config itself is not read).
-        let (sev, note) = if m.has_network_security_config {
+        let (sev, note) = if m.network_security_config.is_some() {
             (
                 Warn,
                 " (a networkSecurityConfig is set and overrides it on API 24+)",
@@ -1606,6 +1788,14 @@ pub fn audit_apk_bytes(path: &Path, bytes: &[u8]) -> ApkAudit {
         let activities = attrs.as_ref().map_or(0, |a| {
             a.components.iter().filter(|c| c.kind == "activity").count()
         });
+        // Network security config: the manifest attribute references an XML resource
+        // (e.g. `@xml/network_security_config`). Find and parse that file from `res/xml/`.
+        let nsc = attrs
+            .as_ref()
+            .and_then(|m| m.network_security_config.as_ref())
+            .and_then(|v| nsc_res_path(v))
+            .and_then(|p| read_entry(&mut zip, &p))
+            .and_then(|b| parse_network_security_config(&b).ok());
         let mut code_issues = code_issues(&mut zip, activities);
         code_issues.extend(native_issues(&mut zip));
         code_issues.extend(packer_issues(&mut zip));
@@ -1620,6 +1810,7 @@ pub fn audit_apk_bytes(path: &Path, bytes: &[u8]) -> ApkAudit {
             signers,
             verification: verify_apk(bytes),
             manifest: attrs.unwrap_or_default(),
+            network_security_config: nsc,
             code_issues,
         })
     })();
@@ -2264,9 +2455,23 @@ mod tests {
         name: &'static str,
         attrs: Vec<A>,
         kids: Vec<El>,
+        text: Option<&'static str>,
     }
     fn el(name: &'static str, attrs: Vec<A>, kids: Vec<El>) -> El {
-        El { name, attrs, kids }
+        El {
+            name,
+            attrs,
+            kids,
+            text: None,
+        }
+    }
+    fn el_text(name: &'static str, attrs: Vec<A>, kids: Vec<El>, text: &'static str) -> El {
+        El {
+            name,
+            attrs,
+            kids,
+            text: Some(text),
+        }
     }
     fn a(name: &'static str, v: V) -> A {
         (true, name, v)
@@ -2334,6 +2539,22 @@ mod tests {
         u16le(out, e.attrs.len() as u16);
         out.extend([0u8; 6]);
         out.extend(body);
+        // If this element has text content, emit a CDATA chunk right after the start tag.
+        if let Some(t) = e.text {
+            let idx = intern(pool, t);
+            // ResXMLTree_cdataExt (AOSP ResourceTypes.h): node header (16) + rawVal (4) +
+            // Res_value (8) = 28 bytes total.
+            u16le(out, 0x0101); // type = RES_XML_CDATA_TYPE
+            u16le(out, 16); // headerSize
+            u32le(out, 28); // size
+            u32le(out, 1); // lineNumber
+            u32le(out, u32::MAX); // comment
+            u32le(out, idx); // rawVal: string pool index
+            u16le(out, 8); // Res_value.size
+            out.push(0); // res0
+            out.push(0x03u8); // dataType = TYPE_STRING
+            u32le(out, idx); // data: string pool index
+        }
         for k in &e.kids {
             encode_el(k, pool, out, ns);
         }
@@ -2477,6 +2698,20 @@ mod tests {
         )
         .unwrap();
         w.write_all(manifest).unwrap();
+        w.finish().unwrap().into_inner()
+    }
+
+    /// Like `apk_with`, but also embeds a network-security-config XML resource at
+    /// `res/xml/network_security_config` so the NSC parser can find it by the manifest's
+    /// `@xml/network_security_config` reference.
+    fn apk_with_nsc(manifest: &[u8], nsc_xml: &[u8]) -> Vec<u8> {
+        let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let opt = zip::write::SimpleFileOptions::default();
+        w.start_file("AndroidManifest.xml", opt).unwrap();
+        w.write_all(manifest).unwrap();
+        w.start_file("res/xml/network_security_config", opt)
+            .unwrap();
+        w.write_all(nsc_xml).unwrap();
         w.finish().unwrap().into_inner()
     }
 
@@ -3089,11 +3324,166 @@ mod tests {
             33,
             vec![
                 a("usesCleartextTraffic", t()),
-                a("networkSecurityConfig", V::Int(0x7f10_0001)),
+                a(
+                    "networkSecurityConfig",
+                    V::Str("@xml/network_security_config"),
+                ),
             ],
             vec![],
         );
         assert_eq!(issues(&nsc), [("apk-cleartext-traffic", Severity::Warn)]);
+    }
+
+    #[test]
+    fn nsc_no_pinning_is_flagged_when_pin_set_absent() {
+        let m = manifest(
+            vec![],
+            33,
+            vec![a(
+                "networkSecurityConfig",
+                V::Str("@xml/network_security_config"),
+            )],
+            vec![],
+        );
+        let nsc = axml(
+            &el(
+                "network-security-config",
+                vec![],
+                vec![el(
+                    "base-config",
+                    vec![a("cleartextTrafficPermitted", f())],
+                    vec![],
+                )],
+            ),
+            true,
+        );
+        let a = audit_apk_bytes(Path::new("/x.apk"), &apk_with_nsc(&axml(&m, true), &nsc));
+        let rules: Vec<_> = a.info.unwrap().issues().iter().map(|i| i.rule).collect();
+        assert!(rules.contains(&"apk-nsc-no-pinning"), "{rules:?}");
+        assert!(!rules.contains(&"apk-nsc-cleartext"), "{rules:?}");
+    }
+
+    #[test]
+    fn nsc_cleartext_in_base_config_is_flagged() {
+        let m = manifest(
+            vec![],
+            33,
+            vec![a(
+                "networkSecurityConfig",
+                V::Str("@xml/network_security_config"),
+            )],
+            vec![],
+        );
+        let nsc = axml(
+            &el(
+                "network-security-config",
+                vec![],
+                vec![el(
+                    "base-config",
+                    vec![a("cleartextTrafficPermitted", t())],
+                    vec![],
+                )],
+            ),
+            true,
+        );
+        let a = audit_apk_bytes(Path::new("/x.apk"), &apk_with_nsc(&axml(&m, true), &nsc));
+        let rules: Vec<_> = a.info.unwrap().issues().iter().map(|i| i.rule).collect();
+        assert!(rules.contains(&"apk-nsc-cleartext"), "{rules:?}");
+        assert!(rules.contains(&"apk-nsc-no-pinning"), "{rules:?}");
+    }
+
+    #[test]
+    fn nsc_cleartext_for_specific_domains_is_flagged() {
+        let m = manifest(
+            vec![],
+            33,
+            vec![a(
+                "networkSecurityConfig",
+                V::Str("@xml/network_security_config"),
+            )],
+            vec![],
+        );
+        let nsc = axml(
+            &el(
+                "network-security-config",
+                vec![],
+                vec![el(
+                    "domain-config",
+                    vec![a("cleartextTrafficPermitted", t())],
+                    vec![el_text("domain", vec![], vec![], "insecure.example.com")],
+                )],
+            ),
+            true,
+        );
+        let a = audit_apk_bytes(Path::new("/x.apk"), &apk_with_nsc(&axml(&m, true), &nsc));
+        let rules: Vec<_> = a.info.unwrap().issues().iter().map(|i| i.rule).collect();
+        assert!(rules.contains(&"apk-nsc-cleartext"), "{rules:?}");
+    }
+
+    #[test]
+    fn nsc_with_only_pin_set_is_clean_for_cleartext() {
+        let m = manifest(
+            vec![],
+            33,
+            vec![a(
+                "networkSecurityConfig",
+                V::Str("@xml/network_security_config"),
+            )],
+            vec![],
+        );
+        let nsc = axml(
+            &el(
+                "network-security-config",
+                vec![],
+                vec![el(
+                    "base-config",
+                    vec![a("cleartextTrafficPermitted", f())],
+                    vec![],
+                )],
+            ),
+            true,
+        );
+        let a = audit_apk_bytes(Path::new("/x.apk"), &apk_with_nsc(&axml(&m, true), &nsc));
+        let rules: Vec<_> = a.info.unwrap().issues().iter().map(|i| i.rule).collect();
+        // pin-set is absent, so no-pinning should fire; cleartext should not.
+        assert!(rules.contains(&"apk-nsc-no-pinning"), "{rules:?}");
+        assert!(!rules.contains(&"apk-nsc-cleartext"), "{rules:?}");
+    }
+
+    #[test]
+    fn nsc_with_pin_set_does_not_flag_no_pinning() {
+        let m = manifest(
+            vec![],
+            33,
+            vec![a(
+                "networkSecurityConfig",
+                V::Str("@xml/network_security_config"),
+            )],
+            vec![],
+        );
+        let nsc = axml(
+            &el(
+                "network-security-config",
+                vec![],
+                vec![
+                    el(
+                        "base-config",
+                        vec![a("cleartextTrafficPermitted", f())],
+                        vec![],
+                    ),
+                    el(
+                        "pin-set",
+                        vec![],
+                        vec![el("pin", vec![a("algorithm", V::Str("SHA-256"))], vec![])],
+                    ),
+                ],
+            ),
+            true,
+        );
+        let a = audit_apk_bytes(Path::new("/x.apk"), &apk_with_nsc(&axml(&m, true), &nsc));
+        let rules: Vec<_> = a.info.unwrap().issues().iter().map(|i| i.rule).collect();
+        assert!(!rules.contains(&"apk-nsc-no-pinning"), "{rules:?}");
+        assert!(!rules.contains(&"apk-nsc-cleartext"), "{rules:?}");
     }
 
     #[test]
