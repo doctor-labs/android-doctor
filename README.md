@@ -824,6 +824,7 @@ Status: **verified** = checked against an independent reference tool on real fir
 | DEX files (`dex`) | verified | Header, tables and 82,896 decoded instructions (145 opcodes) of a real dex match `dexdump -d` (build-tools 37.0.0) offset for offset; versions 035-039, little-endian; compact dex (cdex) and the v41 container are refused |
 | APK files (`apk`) | synthetic | Package info, manifest attributes, signers (v1, v2, v3, v3.1, v4), verification posture, code issues (WebView, crypto, logging, risky APIs) and native library ELF audits; tested with generated fixtures |
 | Device tree / dtbo tables (`dt`) | synthetic | Parses and displays the device tree blob and dtbo table headers; tested on AOSP `mkdtboimg` output |
+| Vendor image headers: MediaTek `mtk_hdr`, Samsung DHTB, signblob `blob_hdr` (`identify`) | synthetic | Named by magic (`mtk-header`, `samsung-dhtb`, `signblob`); magics from magiskboot's `format.rs`, layouts from its `bootimg.hpp`. Identified only: the payload behind the header is not unwrapped, and no real sample was tested |
 | Other vendor containers (Amlogic, ...) | planned | Without real samples these will be marked unverified |
 | Spreadtrum/MediaTek `.pac` containers | synthetic | Parser and extractor (adapted from SR Labs PacHandler, Apache-2.0); tested with generated fixtures, not yet verified on real firmware |
 | Huawei `UPDATE.APP`, LG `.kdz`/`.dz`, Sony `.sin`, Nokia `.nb0`, Rockchip RKFW/RKAF/SSFW containers | synthetic | See [Firmware containers](#firmware-containers); spec-built fixtures only, no real sample yet |
