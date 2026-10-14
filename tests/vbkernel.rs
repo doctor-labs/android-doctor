@@ -1,7 +1,7 @@
 //! `android-doctor vbkernel KERNEL.img [--key ROOT.pem]`: ChromeOS kernel partition (vboot 2.x)
 //! keyblock, kernel preamble and body signatures. Issue #176.
 //!
-//! The fixture follows vboot_reference: `struct vb2_keyblock` (2struct.h, magic "CHROMEKB"),
+//! The fixture follows vboot_reference: `struct vb2_keyblock` (2struct.h, magic "CHROMEOS"),
 //! `struct vb2_kernel_preamble` 2.2 (116 bytes), signatures as PKCS#1 v1.5 over the digest
 //! of the signed range (2rsa.c), key data as little-endian words.
 
@@ -69,46 +69,68 @@ fn put32(buf: &mut [u8], at: usize, v: u32) {
     buf[at..at + 4].copy_from_slice(&v.to_le_bytes());
 }
 
-/// Build a signed kernel partition: keyblock (root key signs it), preamble and body
-/// (data key signs the preamble and the body).
-fn kernel_image(root: &RsaPrivateKey, data: &RsaPrivateKey) -> Vec<u8> {
+/// Build a signed kernel partition: keyblock (root key signs it), preamble and body (data key
+/// signs the preamble and the body). Signature offsets are struct-relative (2common.h:
+/// `vb2_signature_data()` is `sig + sig_offset`), so `sig_offset` is the distance from the
+/// `vb2_signature` struct itself to its data. `absolute` writes block-relative offsets instead,
+/// the wrong reading, which must not verify.
+fn kernel_image_with(root: &RsaPrivateKey, data: &RsaPrivateKey, absolute: bool) -> Vec<u8> {
+    // where each signature's data sits, from the start of its block
+    let kb_sig_at = 24; // keyblock_signature struct
+    let kb_data = 632;
+    let pre_sig_at = 8; // preamble_signature struct
+    let pre_data = 372;
+    let body_sig_at = 72; // body_signature struct
+    let body_data = 116;
+    let rel = |data_at: usize, struct_at: usize| {
+        if absolute {
+            data_at as u32
+        } else {
+            (data_at - struct_at) as u32
+        }
+    };
+
     let kd = key_data(&RsaPublicKey::from(data));
     let mut kb = vec![0u8; KEYBLOCK_SIZE];
-    kb[0..8].copy_from_slice(b"CHROMEKB");
+    kb[0..8].copy_from_slice(b"CHROMEOS");
     put32(&mut kb, 8, 2); // header_version_major
     put32(&mut kb, 12, 1); // header_version_minor
     put32(&mut kb, 16, KEYBLOCK_SIZE as u32);
-    put32(&mut kb, 24, 632); // keyblock_signature.sig_offset (from keyblock start)
-    put32(&mut kb, 32, 256); // keyblock_signature.sig_size
-    put32(&mut kb, 40, 632); // keyblock_signature.data_size (header + data key data)
+    put32(&mut kb, kb_sig_at, rel(kb_data, kb_sig_at)); // keyblock_signature.sig_offset
+    put32(&mut kb, kb_sig_at + 8, 256); // keyblock_signature.sig_size
+    put32(&mut kb, kb_sig_at + 16, kb_data as u32); // keyblock_signature.data_size
     put32(&mut kb, 80, 32); // data_key.key_offset (from the packed key struct at 80)
     put32(&mut kb, 88, kd.len() as u32); // data_key.key_size
     put32(&mut kb, 96, 4); // data_key.algorithm = VB2_ALG_RSA2048_SHA256
-    kb[112..632].copy_from_slice(&kd);
-    let keyblock_sig = sign(root, &kb[..632]);
-    kb[632..888].copy_from_slice(&keyblock_sig);
+    kb[112..kb_data].copy_from_slice(&kd);
+    let keyblock_sig = sign(root, &kb[..kb_data]);
+    kb[kb_data..KEYBLOCK_SIZE].copy_from_slice(&keyblock_sig);
 
     let body: Vec<u8> = (0..BODY_LEN).map(|i| (i * 7 + 3) as u8).collect();
     let mut pre = vec![0u8; PREAMBLE_SIZE];
     put32(&mut pre, 0, PREAMBLE_SIZE as u32); // preamble_size
-    put32(&mut pre, 8, 372); // preamble_signature.sig_offset (from preamble start)
-    put32(&mut pre, 16, 256); // preamble_signature.sig_size
-    put32(&mut pre, 24, 372); // preamble_signature.data_size (header + body signature data)
+    put32(&mut pre, pre_sig_at, rel(pre_data, pre_sig_at)); // preamble_signature.sig_offset
+    put32(&mut pre, pre_sig_at + 8, 256); // preamble_signature.sig_size
+    put32(&mut pre, pre_sig_at + 16, pre_data as u32); // preamble_signature.data_size (header + body signature data)
     put32(&mut pre, 32, 2); // header_version_major
     put32(&mut pre, 36, 2); // header_version_minor
     put32(&mut pre, 40, 1); // kernel_version
-    put32(&mut pre, 72, 116); // body_signature.sig_offset
-    put32(&mut pre, 80, 256); // body_signature.sig_size
-    put32(&mut pre, 88, BODY_LEN as u32); // body_signature.data_size
+    put32(&mut pre, body_sig_at, rel(body_data, body_sig_at)); // body_signature.sig_offset
+    put32(&mut pre, body_sig_at + 8, 256); // body_signature.sig_size
+    put32(&mut pre, body_sig_at + 16, BODY_LEN as u32); // body_signature.data_size
     let body_sig = sign(data, &body);
-    pre[116..372].copy_from_slice(&body_sig);
-    let pre_sig = sign(data, &pre[..372]);
-    pre[372..628].copy_from_slice(&pre_sig);
+    pre[body_data..pre_data].copy_from_slice(&body_sig);
+    let pre_sig = sign(data, &pre[..pre_data]);
+    pre[pre_data..pre_data + 256].copy_from_slice(&pre_sig);
 
     let mut img = kb;
     img.extend(pre);
     img.extend(body);
     img
+}
+
+fn kernel_image(root: &RsaPrivateKey, data: &RsaPrivateKey) -> Vec<u8> {
+    kernel_image_with(root, data, false)
 }
 
 fn tmp_dir(name: &str) -> PathBuf {
@@ -216,4 +238,35 @@ fn a_file_without_the_keyblock_magic_is_refused() {
     std::fs::write(&img, vec![0x5au8; 4096]).unwrap();
     let out = run(&["vbkernel", img.to_str().unwrap()]);
     assert!(!out.status.success());
+}
+
+#[test]
+fn the_old_chromekb_magic_is_refused() {
+    let (root, data) = (&keys().root, &keys().data);
+    let dir = tmp_dir("oldmagic");
+    let mut bytes = kernel_image(root, data);
+    bytes[..8].copy_from_slice(b"CHROMEKB");
+    let img = dir.join("kernel.img");
+    std::fs::write(&img, &bytes).unwrap();
+    let out = run(&["vbkernel", img.to_str().unwrap()]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("CHROMEOS"));
+}
+
+#[test]
+fn absolute_signature_offsets_do_not_verify() {
+    let (root, data) = (&keys().root, &keys().data);
+    let dir = tmp_dir("absolute");
+    let img = dir.join("kernel.img");
+    std::fs::write(&img, kernel_image_with(root, data, true)).unwrap();
+    let key = write_root_pem(&dir, root);
+
+    // block-relative reading points the keyblock signature past its data: refused or invalid
+    let out = run(&[
+        "vbkernel",
+        img.to_str().unwrap(),
+        "--key",
+        key.to_str().unwrap(),
+    ]);
+    assert!(!out.status.success(), "{out:?}");
 }

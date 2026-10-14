@@ -2,12 +2,13 @@
 //! kernel body (`vbkernel`, issue #176). Read-only; signing is not built.
 //!
 //! Layouts and constants are from vboot_reference: `firmware/2lib/include/2struct.h` (keyblock
-//! magic "CHROMEKB", `vb2_keyblock` 112 bytes, `vb2_packed_key` 32 bytes, `vb2_signature` 24
+//! magic "CHROMEOS", `vb2_keyblock` 112 bytes, `vb2_packed_key` 32 bytes, `vb2_signature` 24
 //! bytes, `vb2_kernel_preamble` 2.2 = 116 bytes), `2crypto.h` (algorithm numbers) and `2rsa.c`
 //! (PKCS#1 v1.5 DigestInfo, key data as little-endian words, big-endian signatures).
-//! Signature offsets are relative to the start of the block that holds them (keyblock or
-//! preamble); the signed range is the first `data_size` bytes of that block (keyblock and
-//! preamble) or of the body (kernel body).
+//! `vb2_signature.sig_offset` and `vb2_packed_key.key_offset` are relative to the address of
+//! the struct that contains them (2common.h: `vb2_signature_data()` is `sig + sig_offset`).
+//! The signed range is the first `data_size` bytes of the keyblock or preamble, or `data_size`
+//! bytes of the kernel body.
 //!
 //! Not checked: the root key's own hash choice beyond the three PKCS#1 DigestInfo prefixes,
 //! keyblock hashes for unsigned keys, the 2.0/2.1 preamble, and any device-side rollback data.
@@ -22,7 +23,7 @@ use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha512};
 use std::path::Path;
 
-const KEYBLOCK_MAGIC: &[u8; 8] = b"CHROMEKB";
+const KEYBLOCK_MAGIC: &[u8; 8] = b"CHROMEOS";
 const KEYBLOCK_HEADER_LEN: usize = 112;
 const PREAMBLE_2_2_LEN: usize = 116;
 /// Largest kernel partition read; a real one is a few tens of MB.
@@ -227,9 +228,12 @@ fn u32_at(b: &[u8], at: usize) -> Result<u32> {
     Ok(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 
+/// Read a `vb2_signature` at `at`; its data is at `at + sig_offset` (struct-relative).
 fn sig_at(b: &[u8], at: usize) -> Result<Sig> {
     Ok(Sig {
-        offset: u32_at(b, at)? as usize,
+        offset: at
+            .checked_add(u32_at(b, at)? as usize)
+            .ok_or_else(|| anyhow!("signature offset overflows"))?,
         size: u32_at(b, at + 8)? as usize,
         data_size: u32_at(b, at + 16)? as usize,
     })
@@ -318,7 +322,7 @@ pub fn verify(path: &Path, root: Option<&RsaPublicKey>) -> Result<Report> {
     let image = std::fs::read(path)?;
     if image.len() < KEYBLOCK_HEADER_LEN || &image[..8] != KEYBLOCK_MAGIC {
         bail!(
-            "{} has no ChromeOS keyblock (CHROMEKB) at offset 0",
+            "{} has no ChromeOS keyblock (CHROMEOS) at offset 0",
             path.display()
         );
     }
@@ -374,6 +378,9 @@ pub fn verify(path: &Path, root: Option<&RsaPublicKey>) -> Result<Report> {
 
     // kernel body: signed by the data key, body_signature in the preamble
     let body_sig = sig_at(preamble, 72)?;
+    // Body start: the keyblock (keyblock_size) and the preamble (preamble_size) precede it.
+    // The fetched vboot headers say the preamble is followed by the body; no fetched file
+    // has the body-offset line, so this is inferred from those size comments.
     let body_offset = keyblock_size
         .checked_add(preamble_size)
         .ok_or_else(|| anyhow!("body offset overflows"))?;

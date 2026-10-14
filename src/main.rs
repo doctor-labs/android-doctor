@@ -278,7 +278,7 @@ enum Command {
     },
     /// Verify a ChromeOS kernel partition (vboot 2.x): keyblock, kernel preamble and body signatures
     Vbkernel {
-        /// A kernel partition image (the CHROMEKB keyblock at offset 0)
+        /// A kernel partition image (the CHROMEOS keyblock at offset 0)
         image: PathBuf,
         /// Root public key (PEM) that signed the keyblock; without it the keyblock is not checked
         #[arg(long, value_name = "FILE")]
