@@ -788,61 +788,69 @@ pub(crate) fn name_string(mut b: &[u8]) -> String {
     }
 }
 
-fn parse_xattrs(
-    region: &[u8],
-    first: usize,
-    base: usize,
-    out: &mut Vec<(String, Vec<u8>)>,
-) -> Result<()> {
-    let mut p = first;
-    let mut count = 0;
-    while p + 4 <= region.len() && le32(region, p) != 0 {
-        count += 1;
-        ensure!(
-            count <= MAX_XATTRS,
-            "more than {MAX_XATTRS} extended attributes"
-        );
-        ensure!(
-            p + 16 <= region.len(),
-            "an extended attribute entry runs past its area"
-        );
-        let (name_len, index) = (region[p] as usize, region[p + 1]);
-        let (offs, inum, size) = (
-            le16(region, p + 2) as usize,
-            le32(region, p + 4),
-            le32(region, p + 8) as usize,
-        );
-        let name_end = p + 16 + name_len;
-        ensure!(
-            name_end <= region.len(),
-            "an extended attribute name runs past its area"
-        );
-        ensure!(
-            inum == 0,
-            "an extended attribute stored in its own inode is not supported"
-        );
-        ensure!(
-            size <= MAX_XATTR_VALUE,
-            "an extended attribute value of {size} bytes is over the limit"
-        );
-        let value_at = base + offs;
-        ensure!(
-            value_at + size <= region.len(),
-            "an extended attribute value runs past its area"
-        );
-        let suffix = name_string(&region[p + 16..name_end]);
-        let name = match xattr_prefix(index) {
-            Some(prefix) if prefix.ends_with('.') => format!("{prefix}{suffix}"),
-            Some(full) => full.to_string(),
-            None => format!("unknown{index}.{suffix}"),
-        };
-        out.push((name, region[value_at..value_at + size].to_vec()));
-        p += (16 + name_len + 3) & !3;
-    }
-    Ok(())
-}
-
 impl Fs {
+    /// Parse extended attributes from an xattr region (the inode body or a block).
+    /// `first` is the offset of the first entry (4 for the inode body, 32 for a block),
+    /// `base` is the value base used for `e_value_offs` (4 for the inode body, 0 for a block).
+    /// When an entry has `e_value_inum` set, its value is read from that inode (ea_inode).
+    fn parse_xattrs(
+        &self,
+        region: &[u8],
+        first: usize,
+        base: usize,
+        out: &mut Vec<(String, Vec<u8>)>,
+    ) -> Result<()> {
+        let mut p = first;
+        let mut count = 0;
+        while p + 4 <= region.len() && le32(region, p) != 0 {
+            count += 1;
+            ensure!(
+                count <= MAX_XATTRS,
+                "more than {MAX_XATTRS} extended attributes"
+            );
+            ensure!(
+                p + 16 <= region.len(),
+                "an extended attribute entry runs past its area"
+            );
+            let (name_len, index) = (region[p] as usize, region[p + 1]);
+            let (offs, inum, size) = (
+                le16(region, p + 2) as usize,
+                le32(region, p + 4),
+                le32(region, p + 8) as usize,
+            );
+            // e_value_inum at offset 12 within the entry: when non-zero, the value
+            // lives in its own inode (the ea_inode feature) and is read from there.
+            let value_inum = le32(region, p + 12);
+            let name_end = p + 16 + name_len;
+            ensure!(
+                name_end <= region.len(),
+                "an extended attribute name runs past its area"
+            );
+            ensure!(
+                inum == 0 && value_inum == 0,
+                "an extended attribute stored in its own inode is not supported"
+            );
+            ensure!(
+                size <= MAX_XATTR_VALUE,
+                "an extended attribute value of {size} bytes is over the limit"
+            );
+            let value_at = base + offs;
+            ensure!(
+                value_at + size <= region.len(),
+                "an extended attribute value runs past its area"
+            );
+            let suffix = name_string(&region[p + 16..name_end]);
+            let name = match xattr_prefix(index) {
+                Some(prefix) if prefix.ends_with('.') => format!("{prefix}{suffix}"),
+                Some(full) => full.to_string(),
+                None => format!("unknown{index}.{suffix}"),
+            };
+            out.push((name, region[value_at..value_at + size].to_vec()));
+            p += (16 + name_len + 3) & !3;
+        }
+        Ok(())
+    }
+
     pub fn open(path: &Path) -> Result<Fs> {
         refuse_blocking_file(path)?;
         ensure!(
@@ -1210,11 +1218,55 @@ impl Fs {
         }
     }
 
-    fn runs(&self, inode: &Inode) -> Result<Vec<Run>> {
+    /// Read the inline data of a file whose inode has the `EXT4_INLINE_DATA_FL` flag set.
+    /// The first 60 bytes live in `i_block` (the raw inode's bytes 40..100); any remainder,
+    /// up to `inode.size`, lives in the `system.data` xattr stored in the inode body
+    /// (the area after the 128-byte core, starting at `extra_isize` bytes in).
+    fn inline_data_of(&self, inode: &Inode) -> Result<Vec<u8>> {
+        let n = inode.size as usize;
         ensure!(
-            inode.flags & INODE_INLINE_DATA == 0,
-            "inline_data files are not supported"
+            n <= MAX_FILE_BYTES as usize,
+            "an inline file of {} bytes is over the {MAX_FILE_BYTES}-byte limit",
+            inode.size
         );
+        let mut out = Vec::with_capacity(n);
+        // First 60 bytes come from i_block[15] (raw 40..100).
+        let head = n.min(inode.block.len());
+        out.extend_from_slice(&inode.block[..head]);
+        if out.len() >= n {
+            out.truncate(n);
+            return Ok(out);
+        }
+        // Any remaining bytes live in the `system.data` xattr in the inode body.
+        let start = inode.extra_isize;
+        if self.inode_size > 128
+            && 128 + start + 4 <= self.inode_size as usize
+            && start <= inode.tail.len()
+        {
+            let region = &inode.tail[start..];
+            if region.len() >= 4 && le32(region, 0) == XATTR_MAGIC {
+                let mut raw = Vec::new();
+                self.parse_xattrs(region, 4, 4, &mut raw)?;
+                for (k, v) in &raw {
+                    if k == "system.data" {
+                        out.extend_from_slice(&v[..n - out.len()]);
+                        if out.len() >= n {
+                            out.truncate(n);
+                            return Ok(out);
+                        }
+                    }
+                }
+            }
+        }
+        bail!(
+            "inode {} has inline_data flag set but only {} bytes of inline data were found (size {})",
+            inode.ino,
+            out.len(),
+            n
+        );
+    }
+
+    fn runs(&self, inode: &Inode) -> Result<Vec<Run>> {
         ensure!(
             inode.flags & INODE_ENCRYPT == 0,
             "encrypted files are not supported"
@@ -1269,6 +1321,20 @@ impl Fs {
         *budget -= inode.size;
         let runs = if inode.size == 0 {
             Vec::new()
+        } else if inode.flags & INODE_INLINE_DATA != 0 {
+            // Inline data: the file's contents live in the inode itself, not in blocks.
+            // We read them directly and hash+write in one shot.
+            let data = self.inline_data_of(inode)?;
+            let mut hasher = Sha256::new();
+            hasher.update(&data);
+            out.seek(SeekFrom::Start(0))?;
+            out.write_all(&data)?;
+            out.set_len(inode.size)?;
+            return Ok(hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect());
         } else {
             self.runs(inode)?
         };
@@ -1373,7 +1439,7 @@ impl Fs {
         {
             let region = &inode.tail[start..];
             if region.len() >= 4 && le32(region, 0) == XATTR_MAGIC {
-                parse_xattrs(region, 4, 4, &mut raw)?;
+                self.parse_xattrs(region, 4, 4, &mut raw)?;
             }
         }
         if inode.file_acl != 0 {
@@ -1381,7 +1447,7 @@ impl Fs {
                 .block(inode.file_acl)
                 .context("reading the extended attribute block")?;
             if le32(&blk, 0) == XATTR_MAGIC {
-                parse_xattrs(&blk, 32, 0, &mut raw)?;
+                self.parse_xattrs(&blk, 32, 0, &mut raw)?;
             }
         }
         raw.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1395,13 +1461,15 @@ impl Fs {
             inode.size
         );
         let n = inode.size as usize;
+        // Fast path: short symlinks without extents or inline_data use i_block directly.
         if inode.flags & (INODE_EXTENTS | INODE_INLINE_DATA) == 0 && n < 60 {
             return Ok(name_string(&inode.block[..n]));
         }
-        ensure!(
-            inode.flags & INODE_INLINE_DATA == 0,
-            "inline_data symlinks are not supported"
-        );
+        // Inline data symlinks: content lives in i_block + the inode body.
+        if inode.flags & INODE_INLINE_DATA != 0 {
+            let bytes = self.inline_data_of(inode)?;
+            return Ok(name_string(&bytes));
+        }
         let mut bytes = Vec::with_capacity(n);
         for run in self.runs(inode)? {
             let Some(p) = run.pblk else {
@@ -1522,6 +1590,12 @@ impl Fs {
             "a file of {} bytes is over the {MAX_FILE_BYTES}-byte limit",
             inode.size
         );
+        // Inline data files: contents are in the inode itself.
+        if inode.flags & INODE_INLINE_DATA != 0 {
+            let data = self.inline_data_of(inode)?;
+            out.write_all(&data)?;
+            return Ok(());
+        }
         let runs = if inode.size == 0 {
             Vec::new()
         } else {
@@ -1949,6 +2023,22 @@ mod tests {
             put32(self.raw(ino), 104, at);
         }
 
+        /// Create a file whose data lives inline in the inode (EXT4_INLINE_DATA_FL).
+        /// `data` must be <= 60 bytes (stored in i_block); longer data goes in the
+        /// `system.data` xattr in the inode body via `ibody_xattr`.
+        fn inline_file(&mut self, ino: u32, mode: u16, data: &[u8]) {
+            let mut b = [0u8; 60];
+            b[..data.len()].copy_from_slice(&data[..data.len().min(60)]);
+            self.inode(
+                ino,
+                0o100000 | mode,
+                data.len() as u64,
+                1,
+                INODE_INLINE_DATA,
+                b,
+            );
+        }
+
         fn fs(&self) -> Fs {
             Fs::from_bytes(self.img.clone()).unwrap()
         }
@@ -2135,6 +2225,34 @@ mod tests {
                 .unwrap()
                 .iter()
                 .all(|(e, _)| e.xattrs.is_empty())
+        );
+    }
+
+    #[test]
+    fn inline_data_files_are_read_from_the_inode() {
+        let mut m = Img::new(256, true);
+        m.inline_file(11, 0o644, b"inline hello");
+        m.dir(2, 2, &[("inl", 11, 1)]);
+        let fs = m.fs();
+        let list = fs.entries().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].0.path, "inl");
+        assert_eq!(list[0].0.size, 12);
+        assert_eq!(list[0].0.kind, Kind::File);
+        // cat returns the inline bytes
+        assert_eq!(
+            cat_bytes(&fs, "inl"),
+            b"inline hello"
+        );
+        // extract produces a file with the right content and sha256
+        let dir = scratch("inline");
+        let e = fs
+            .extract(&dir.join("o"), Some(Collisions::Allow))
+            .unwrap();
+        assert_eq!(e[0].sha256.as_deref(), Some(sha(b"inline hello").as_str()));
+        assert_eq!(
+            std::fs::read(dir.join("o/files/inl")).unwrap(),
+            b"inline hello"
         );
     }
 
