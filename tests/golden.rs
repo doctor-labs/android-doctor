@@ -662,6 +662,7 @@ fn help_texts() {
         "dt",
         "partitions",
         "unpack",
+        "journal",
         "ls",
         "cat",
         "tree",

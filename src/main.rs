@@ -245,6 +245,15 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Show the jbd2 journal of an ext3/ext4 image: superblock fields, clean/dirty status, and
+    /// the transactions found by walking from `s_first`. Read-only: the image is never modified.
+    Journal {
+        /// An ext2/3/4 image with a journal
+        image: PathBuf,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
     /// List a directory (or show one file) inside an ext2/3/4, erofs or f2fs image, without extracting it
     Ls {
         image: PathBuf,
@@ -1179,6 +1188,7 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
                 print_out(&text)
             }
         }
+        Command::Journal { image, json } => journal_command(&image, json),
         Command::Ramdisk {
             input,
             output,
@@ -2426,6 +2436,40 @@ fn blocks_command(image: &std::path::Path, path: &str, json: bool) -> anyhow::Re
             .map(u64::to_string)
             .collect::<Vec<_>>()
             .join("\n")
+    };
+    print_out(&text)
+}
+
+/// `journal`: describe the jbd2 journal of an ext3/ext4 image, read-only.
+fn journal_command(image: &std::path::Path, json: bool) -> anyhow::Result<()> {
+    let fs = ext4fs::Fs::open(image)?;
+    let bytes = fs.journal()?;
+    let j = ext4fs::Journal::parse(&bytes)?;
+    let text = if json {
+        serde_json::to_string_pretty(&serde_json::json!({
+            "version": j.version,
+            "block_size": j.block_size,
+            "max_blocks": j.max_blocks,
+            "first": j.first,
+            "sequence": j.sequence,
+            "start": j.start,
+            "clean": j.clean,
+            "errno": j.errno,
+            "feature_compat": j.feature_compat,
+            "feature_incompat": j.feature_incompat,
+            "feature_ro_compat": j.feature_ro_compat,
+            "uuid": j.uuid,
+            "nr_users": j.nr_users,
+            "transactions": j.transactions.iter().map(|t| serde_json::json!({
+                "sequence": t.sequence,
+                "descriptor_blocks": t.descriptor_blocks,
+                "commit_blocks": t.commit_blocks,
+                "revoke_blocks": t.revoke_blocks,
+                "other_blocks": t.other_blocks,
+            })).collect::<Vec<_>>(),
+        }))?
+    } else {
+        j.dump()
     };
     print_out(&text)
 }

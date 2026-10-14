@@ -67,6 +67,7 @@ fn invocations(d: &Path) -> Vec<Vec<String>> {
     let out = d.join("out");
     vec![
         vec!["identify".into(), img.display().to_string()],
+        vec!["journal".into(), img.display().to_string()],
         vec!["ls".into(), img.display().to_string(), "/".into()],
         vec!["cat".into(), img.display().to_string(), "/etc/hosts".into()],
         vec!["tree".into(), img.display().to_string()],
@@ -357,6 +358,7 @@ fn a_fifo_never_blocks_a_reader() {
     let d = fixture("fifo");
     for cmd in [
         "identify",
+        "journal",
         "ls",
         "tree",
         "audit",

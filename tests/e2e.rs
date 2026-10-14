@@ -333,3 +333,138 @@ fn tree_prints_the_image_recursively() {
     assert_eq!(j["entries"][0]["path"], "system/etc");
     assert_eq!(j["entries"][1]["path"], "system/etc/old.log");
 }
+
+fn le16(b: &mut [u8], at: usize, v: u16) {
+    b[at..at + 2].copy_from_slice(&v.to_le_bytes());
+}
+
+fn le32(b: &mut [u8], at: usize, v: u32) {
+    b[at..at + 4].copy_from_slice(&v.to_le_bytes());
+}
+
+/// `journal` on a non-ext image fails with a non-zero exit and a clear message.
+#[test]
+fn journal_command_rejects_a_non_image() {
+    let d = Scratch::new("journal-e2e");
+    let plain = d.join("plain.img");
+    std::fs::write(&plain, vec![0u8; 4096]).unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+        .arg("journal")
+        .arg(&plain)
+        .output()
+        .unwrap();
+    assert!(!o.status.success(), "journal on a non-ext image must fail");
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("not an ext"),
+        "{:?}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+}
+
+/// Build a tiny ext4 image (1 KiB blocks) with a journal in inode 8 and run the
+/// `journal` command against it, checking both JSON and text output.
+#[test]
+fn journal_command_emits_json_or_text_and_lists_fields() {
+    let bs = 1024usize;
+    let blocks = 24usize;
+    let inodes = 64usize;
+    let mut img = vec![0u8; bs * blocks];
+    // ext4 superblock at offset 1024.
+    le32(&mut img, 1024, inodes as u32); // s_inodes_count
+    le32(&mut img, 1024 + 4, blocks as u32); // s_blocks_count
+    le32(&mut img, 1024 + 12, blocks as u32); // s_free_blocks_count
+    le32(&mut img, 1024 + 16, inodes as u32 - 2); // s_free_inodes_count
+    le32(&mut img, 1024 + 20, 1); // s_first_data_block
+    le32(&mut img, 1024 + 32, 8192); // s_blocks_per_group
+    le32(&mut img, 1024 + 40, inodes as u32); // s_inodes_per_group
+    le16(&mut img, 1024 + 56, 0xEF53); // magic
+    le32(&mut img, 1024 + 76, 1); // s_rev_level
+    le16(&mut img, 1024 + 88, 256); // s_inode_size
+    le32(&mut img, 1024 + 96, 0x80 | 0x40); // 64bit | extents incompat
+    le16(&mut img, 1024 + 254, 64); // s_desc_size
+    le32(&mut img, 1024 + 112, 8); // s_journal_inum = 8
+    // group descriptor 0 at block 2 (offset 2048): block group inode table at block 3.
+    le32(&mut img, 2048 + 8, 3);
+    // inode table at block 3 (64 inodes * 256 bytes = 16 blocks -> blocks 3..19).
+    let itable = 3 * bs;
+    // root inode (2) at the start of the itable.
+    le16(&mut img, itable, 0o040755);
+    le32(&mut img, itable + 4, bs as u32); // size = one data block
+    le16(&mut img, itable + 26, 2); // nlink
+    le32(&mut img, itable + 40, 20); // root block pointer -> block 20
+    // journal inode (8) at (8-1)*256 into the itable.
+    let jino = itable + 7 * 256;
+    le16(&mut img, jino, 0o100644);
+    le32(&mut img, jino + 4, (3 * bs) as u32); // i_size = 3 journal blocks
+    le32(&mut img, jino + 40, 20); // block pointer 0 -> block 20
+    le32(&mut img, jino + 44, 21); // block pointer 1 -> block 21
+    le32(&mut img, jino + 48, 22); // block pointer 2 -> block 22
+
+    // Journal contents at block 20.
+    let jblk = bs * 20;
+    fn put_be(img: &mut [u8], off: usize, v: u32) {
+        img[off..off + 4].copy_from_slice(&v.to_be_bytes());
+    }
+    // Journal block 0: superblock v2 (type 4).
+    put_be(&mut img, jblk, 0xC03B3998); // h_magic
+    put_be(&mut img, jblk + 4, 4); // h_blocktype
+    put_be(&mut img, jblk + 12, bs as u32); // s_blocksize
+    put_be(&mut img, jblk + 16, 3); // s_maxlen
+    put_be(&mut img, jblk + 20, 0); // s_first
+    put_be(&mut img, jblk + 24, 1); // s_sequence
+    put_be(&mut img, jblk + 28, 1); // s_start (dirty)
+    put_be(&mut img, jblk + 32, 0); // s_errno
+    put_be(&mut img, jblk + 36, 0); // s_feature_compat
+    put_be(&mut img, jblk + 40, 0); // s_feature_incompat
+    put_be(&mut img, jblk + 44, 0); // s_feature_ro_compat
+    img[jblk + 48..jblk + 64].copy_from_slice(&[
+        0x12, 0x34, 0x56, 0x78, 0x12, 0x34, 0x12, 0x34, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde,
+        0xf0,
+    ]);
+    put_be(&mut img, jblk + 64, 2); // s_nr_users
+    // Journal block 1: descriptor (type 1, seq 1).
+    put_be(&mut img, jblk + bs, 0xC03B3998);
+    put_be(&mut img, jblk + bs + 4, 1);
+    put_be(&mut img, jblk + bs + 8, 1);
+    // Journal block 2: commit (type 2, seq 1).
+    put_be(&mut img, jblk + 2 * bs, 0xC03B3998);
+    put_be(&mut img, jblk + 2 * bs + 4, 2);
+    put_be(&mut img, jblk + 2 * bs + 8, 1);
+
+    let d = Scratch::new("journal");
+    let path = d.join("system.img");
+    std::fs::write(&path, &img).unwrap();
+
+    // JSON output.
+    let o = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+        .arg("journal")
+        .arg(&path)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let j: serde_json::Value = serde_json::from_str(&String::from_utf8(o.stdout).unwrap()).unwrap();
+    assert_eq!(j["version"], 2);
+    assert_eq!(j["block_size"], bs);
+    assert_eq!(j["max_blocks"], 3);
+    assert_eq!(j["start"], 1);
+    assert_eq!(j["clean"], false);
+    assert_eq!(j["uuid"], "12345678-1234-1234-1234-56789abcdef0");
+    let txns = j["transactions"].as_array().unwrap();
+    assert_eq!(txns.len(), 1);
+    assert_eq!(txns[0]["sequence"], 1);
+    assert_eq!(txns[0]["descriptor_blocks"], 1);
+    assert_eq!(txns[0]["commit_blocks"], 1);
+
+    // Text output.
+    let o = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+        .arg("journal")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let text = String::from_utf8_lossy(&o.stdout);
+    assert!(text.contains("Journal superblock version: 2"), "{text}");
+    assert!(text.contains("dirty, recovery starts here"), "{text}");
+    assert!(text.contains("seq 1"), "{text}");
+}
