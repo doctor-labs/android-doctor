@@ -120,3 +120,45 @@ fn apk_audit_text_output_shows_basic_info() {
         stdout
     );
 }
+
+fn v1_fixture() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/apk/v1.apk")
+}
+
+#[test]
+fn apk_json_uses_the_doctor1_envelope() {
+    let out = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+        .args(["apk", v1_fixture().to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["schema"], "doctor/1");
+    assert_eq!(json["tool"], "android-doctor");
+    assert_eq!(json["exit_code"], 0);
+    assert!(json["score"]["value"].is_u64());
+    assert!(json["data"]["signers"].is_array(), "data: {json}");
+    let findings = json["findings"].as_array().unwrap();
+    assert!(
+        findings.iter().any(|f| f["id"] == "apk-v1-only-signing"),
+        "findings: {json}"
+    );
+    for f in findings {
+        assert_eq!(f["fingerprint"].as_str().unwrap().len(), 16);
+        assert!(f["location"]["kind"].is_string());
+    }
+}
+
+#[test]
+fn dex_flag_is_not_accepted_because_code_rules_always_run() {
+    let out = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+        .args(["apk", v1_fixture().to_str().unwrap(), "--dex"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--dex"));
+}

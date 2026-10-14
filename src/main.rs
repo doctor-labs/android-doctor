@@ -189,14 +189,11 @@ enum Command {
     },
     /// Audit one APK file: manifest, package, version, signers, code, issues
     Apk {
-        /// An APK file (or a .dex file in the case of --dex)
+        /// An APK file
         input: PathBuf,
-        /// Print JSON instead of text
+        /// Print the doctor/1 JSON envelope instead of text
         #[arg(long)]
         json: bool,
-        /// Run the DEX code rules over classes*.dex
-        #[arg(long)]
-        dex: bool,
     },
     /// Show a flash manifest (Qualcomm rawprogram*.xml or MediaTek scatter.txt) and check it
     /// against the image files actually present
@@ -964,7 +961,7 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
                 dex::to_text(&dexes, &datas, &sel)
             })
         }
-        Command::Apk { input, json, dex } => apk_command(&input, json, dex),
+        Command::Apk { input, json } => apk_command(&input, json),
         Command::Amlogic { input } => {
             let img = amlogic::describe_file(&input)?;
             print_out(&amlogic::to_text(&img, &display_name(&input)))
@@ -1412,7 +1409,7 @@ fn cat_command(image: &std::path::Path, path: &str) -> anyhow::Result<()> {
     }
 }
 
-fn apk_command(input: &std::path::Path, json: bool, _run_dex: bool) -> anyhow::Result<()> {
+fn apk_command(input: &std::path::Path, json: bool) -> anyhow::Result<()> {
     use std::fs::File;
     use std::io::Read;
 
@@ -1434,12 +1431,30 @@ fn apk_command(input: &std::path::Path, json: bool, _run_dex: bool) -> anyhow::R
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
 
-    let text = if json {
-        serde_json::to_string_pretty(&apk::to_json(&audit, now))?
-    } else {
-        apk::to_text(&audit, now)
-    };
-    print_out(&text)
+    if !json {
+        return print_out(&apk::to_text(&audit, now));
+    }
+    // doctor/1 envelope, built with the same core type as `audit --json` (reporting::emit). The
+    // old object lives under `data`; its keys are also kept at the top level for existing scripts.
+    let all = findings::from_apk(&audit, now);
+    let mut rows: Vec<doctor_core::Finding> = all.iter().map(findings::Finding::to_core).collect();
+    doctor_core::Finding::sort(&mut rows);
+    let flat = apk::to_json(&audit, now);
+    let env = doctor_core::Envelope::new(
+        "android-doctor",
+        env!("CARGO_PKG_VERSION"),
+        0,
+        findings::score(&all),
+        rows,
+        flat.clone(),
+    );
+    let mut v = env.to_value();
+    if let (Some(top), Some(keys)) = (v.as_object_mut(), flat.as_object()) {
+        for (k, val) in keys {
+            top.entry(k.clone()).or_insert_with(|| val.clone());
+        }
+    }
+    print_out(&serde_json::to_string_pretty(&v)?)
 }
 
 fn audit_command(

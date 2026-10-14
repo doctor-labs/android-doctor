@@ -150,6 +150,45 @@ impl Finding {
     }
 }
 
+/// Convert one APK audit: manifest and code issues, then the signing posture. The subject is the
+/// APK path; severities come from the rule catalogue for posture rows (they carry none).
+pub fn from_apk(a: &crate::apk::ApkAudit, now: i64) -> Vec<Finding> {
+    let Some(info) = &a.info else {
+        return Vec::new();
+    };
+    let mk = |rule: &str, severity: Severity, detail: &str| {
+        Finding {
+            rule: rule.to_string(),
+            category: "security".into(),
+            severity,
+            scope: String::new(),
+            subject: info.path.clone(),
+            key: detail.to_string(),
+            message: detail.to_string(),
+            remedy: help(rule).map(|h| h.remedy.to_string()),
+            // The code rules did not run on some dex: a gap, not a pass.
+            gap: rule == "apk-code-unscanned",
+            uri: None,
+            fingerprint: String::new(),
+            baseline_state: None,
+        }
+        .seal(true)
+    };
+    let mut out: Vec<Finding> = info
+        .issues()
+        .iter()
+        .map(|i| mk(i.rule, i.severity.unified(), &i.detail))
+        .collect();
+    out.extend(info.posture(now).iter().map(|(rule, detail)| {
+        mk(
+            rule,
+            help(rule).map_or(Severity::Info, |h| h.severity),
+            detail,
+        )
+    }));
+    out
+}
+
 /// Rules whose audit summary finding is replaced by one finding per content hit.
 const CONTENT_RULES: &[&str] = &[
     "hardcoded_credentials",
