@@ -37,6 +37,9 @@ const TAG_KERNEL_CMDLINE: u64 = 3;
 const TAG_CHAIN_PARTITION: u64 = 4;
 
 const FLAG_HASHTREE_DISABLED: u32 = 1;
+/// Kernel cmdline descriptor flags (avbtool `FLAGS_USE_ONLY_IF_HASHTREE_NOT_DISABLED` / `..._DISABLED`).
+const CMDLINE_ONLY_IF_HASHTREE_NOT_DISABLED: u32 = 1 << 0;
+const CMDLINE_ONLY_IF_HASHTREE_DISABLED: u32 = 1 << 1;
 const FLAG_VERIFICATION_DISABLED: u32 = 2;
 /// Not in the AVB spec enum, but used by some vendors/avbtool to mark an
 /// unlocked device that permits rollback of the anti-rollback index.
@@ -1062,6 +1065,26 @@ impl SignatureStatus {
 }
 
 impl Vbmeta {
+    /// The kernel command line the bootloader would pass, as avbtool's `calculate_kernel_cmdline`
+    /// computes it: this vbmeta's cmdline descriptors in order, filtered by their flags for the
+    /// hashtree state, joined by one space. Chained partitions' descriptors are not followed
+    /// (their images are not read here), and dm-verity arguments are not generated.
+    pub fn kernel_cmdline(&self, hashtree_disabled: bool) -> String {
+        self.descriptors
+            .iter()
+            .filter_map(|d| match d {
+                Descriptor::KernelCmdline { flags, text } => {
+                    let skip = (hashtree_disabled
+                        && flags & CMDLINE_ONLY_IF_HASHTREE_NOT_DISABLED != 0)
+                        || (!hashtree_disabled && flags & CMDLINE_ONLY_IF_HASHTREE_DISABLED != 0);
+                    (!skip).then_some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     /// Named security states derived from the vbmeta image flags.
     pub fn security_states(&self) -> Vec<SecurityState> {
         let mut s = Vec::new();
@@ -1174,6 +1197,7 @@ impl Vbmeta {
                 "vbmeta_offset": f.vbmeta_offset, "vbmeta_size": f.vbmeta_size,
             })),
             "descriptors": self.descriptors.iter().map(descriptor_json).collect::<Vec<_>>(),
+            "kernel_cmdline_hashtree_disabled": self.kernel_cmdline(true),
             "partition_checks": checks.iter().map(|(n, c)| json!({"partition": n, "result": check_label(c)})).collect::<Vec<_>>(),
         })
     }
@@ -1263,6 +1287,15 @@ impl Vbmeta {
                 Descriptor::Unknown { tag, len } => format!("  unknown descriptor tag {tag} ({len} bytes)"),
             });
         }
+        let cmdline = self.kernel_cmdline(true);
+        o.push(format!(
+            "computed kernel cmdline (hashtree disabled): {}",
+            if cmdline.is_empty() {
+                "(none)"
+            } else {
+                &cmdline
+            }
+        ));
         for (n, c) in checks {
             o.push(format!("check {n}: {}", check_label(c)));
         }
@@ -1924,6 +1957,7 @@ mod tests {
         assert_eq!(j["signature_verified"], "invalid");
         assert_eq!(j["descriptors"].as_array().unwrap().len(), 5);
         assert_eq!(j["partition_checks"][0]["result"], "ok");
+        assert_eq!(j["kernel_cmdline_hashtree_disabled"], "c");
         let t = m.to_text(&[]);
         for want in [
             "prop k = v",
@@ -1933,9 +1967,28 @@ mod tests {
             "chain p",
             "public key: 4096 bits",
             "5 descriptors",
+            "computed kernel cmdline (hashtree disabled): c",
         ] {
             assert!(t.contains(want), "{want} in {t}");
         }
+    }
+
+    #[test]
+    fn kernel_cmdline_follows_the_hashtree_flags_like_avbtool() {
+        // avbtool calculate_kernel_cmdline: flag 1 = only if hashtree NOT disabled,
+        // flag 2 = only if hashtree disabled, 0 = always; snippets joined by one space.
+        let m = parse(
+            &vbmeta(
+                0,
+                0,
+                &[cmdline(0, "a=1"), cmdline(1, "b=2"), cmdline(2, "c=3")],
+                &[],
+            ),
+            None,
+        )
+        .unwrap();
+        assert_eq!(m.kernel_cmdline(true), "a=1 c=3");
+        assert_eq!(m.kernel_cmdline(false), "a=1 b=2");
     }
 
     #[test]
