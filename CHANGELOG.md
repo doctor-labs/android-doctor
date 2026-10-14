@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- SQLite database files (`*.db`, `*.sqlite`) are recognized by magic bytes, and the `sqliteinfo` module parses the database header (page size, text encoding, page count, schema cookie, freelist) and reads the `sqlite_master` table (table/index names, root pages, CREATE statements) of a plain, non-WAL database, bounds-checked against hostile input (#188).
 - APK code audit reports hardcoded public IP addresses and cleartext http:// URLs (#197).
 - ELF audit reports RPATH/RUNPATH entries outside read-only system locations (#189).
 - APK audit names known packers and protectors (Jiagu, Bangcle, SecNeo, Tencent Legu, Baidu, Alibaba, Ijiami) from their stub libraries (#195).
