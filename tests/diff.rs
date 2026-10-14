@@ -391,3 +391,59 @@ fn mcp_returns_the_cli_envelope_unchanged() {
         cli.stdout.trim_end()
     );
 }
+
+/// An erofs filesystem with an AVB footer and vbmeta block appended, the layout of a hashtree
+/// partition. The vbmeta is taken from the `avb` fixture (`a.img`) with its rollback index set.
+fn avb_partition(rollback_index: u64) -> Vec<u8> {
+    let fixture = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/avb/a.img"
+    ))
+    .unwrap();
+    let footer = &fixture[fixture.len() - 64..];
+    let off = u64::from_be_bytes(footer[20..28].try_into().unwrap()) as usize;
+    let size = u64::from_be_bytes(footer[28..36].try_into().unwrap()) as usize;
+    let mut vbmeta = fixture[off..off + size].to_vec();
+    vbmeta[112..120].copy_from_slice(&rollback_index.to_be_bytes());
+    let mut img =
+        build_image(dir(vec![("build.prop", file(0o644, b"ro.secure=1\n"))]), 12).unwrap();
+    let original = img.len() as u64;
+    let vbmeta_offset = img.len() as u64;
+    img.extend_from_slice(&vbmeta);
+    let mut f = vec![0u8; 64];
+    f[..4].copy_from_slice(b"AVBf");
+    f[4..8].copy_from_slice(&1u32.to_be_bytes());
+    f[12..20].copy_from_slice(&original.to_be_bytes());
+    f[20..28].copy_from_slice(&vbmeta_offset.to_be_bytes());
+    f[28..36].copy_from_slice(&(vbmeta.len() as u64).to_be_bytes());
+    img.extend_from_slice(&f);
+    img
+}
+
+#[test]
+fn a_lower_avb_rollback_index_is_a_high_diff_finding_and_an_equal_one_is_not() {
+    let d = Scratch::new("avb-rollback");
+    let (old, new, same) = (
+        d.0.join("old.img"),
+        d.0.join("new.img"),
+        d.0.join("same.img"),
+    );
+    std::fs::write(&old, avb_partition(5)).unwrap();
+    std::fs::write(&new, avb_partition(4)).unwrap();
+    std::fs::write(&same, avb_partition(5)).unwrap();
+    let hits = |v: &serde_json::Value| -> Vec<serde_json::Value> {
+        v["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|f| f["id"] == "diff-avb-rollback-index")
+            .cloned()
+            .collect()
+    };
+    let (_, v) = diff_json(&old, &new, &[]);
+    let found = hits(&v);
+    assert_eq!(found.len(), 1, "{v}");
+    assert_eq!(found[0]["severity"], "high");
+    let (_, v) = diff_json(&old, &same, &[]);
+    assert!(hits(&v).is_empty(), "{v}");
+}

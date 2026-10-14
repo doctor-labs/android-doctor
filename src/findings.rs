@@ -1034,6 +1034,10 @@ const KNOWN_RULES: &[&str] = &[
     "diff-root-service",
     "diff-sepolicy-changed",
     "diff-prop-changed",
+    "diff-avb-rollback-index",
+    "diff-avb-security-state",
+    "diff-avb-hash-algorithm",
+    "diff-avb-descriptor",
 ];
 
 #[cfg(test)]
