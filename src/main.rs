@@ -2006,16 +2006,10 @@ fn tree_command(
         _ => String::new(),
     };
     if json {
+        // Plain JSON like `ls --json`: a listing has no findings, so no doctor/1 envelope.
         let v = serde_json::json!({
-            "schema": "doctor/1",
-            "tool": "android-doctor",
-            "version": env!("CARGO_PKG_VERSION"),
-            "exit_code": 0,
-            "findings": [],
-            "data": {
-                "path": base.join("/"),
-                "entries": shown.iter().map(|e| tree::entry_json(e)).collect::<Vec<_>>(),
-            },
+            "path": base.join("/"),
+            "entries": shown.iter().map(|e| tree::entry_json(e)).collect::<Vec<_>>(),
         });
         return print_out(&serde_json::to_string_pretty(&v)?);
     }

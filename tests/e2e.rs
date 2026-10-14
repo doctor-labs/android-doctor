@@ -326,8 +326,10 @@ fn tree_prints_the_image_recursively() {
         "system/\n  build.prop\n  etc/\n  xbin/\n"
     );
     let j: serde_json::Value = serde_json::from_str(&run(&["/system/etc", "--json"])).unwrap();
-    assert_eq!(j["schema"], "doctor/1");
-    assert_eq!(j["findings"], serde_json::json!([]));
-    assert_eq!(j["data"]["entries"][0]["path"], "system/etc");
-    assert_eq!(j["data"]["entries"][1]["path"], "system/etc/old.log");
+    assert!(
+        j.get("schema").is_none(),
+        "a listing is plain JSON like ls, not a doctor/1 envelope"
+    );
+    assert_eq!(j["entries"][0]["path"], "system/etc");
+    assert_eq!(j["entries"][1]["path"], "system/etc/old.log");
 }
