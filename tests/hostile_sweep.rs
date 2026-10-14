@@ -205,6 +205,12 @@ fn invocations(d: &Path) -> Vec<Vec<String>> {
             "-o".into(),
             d.join("erased.img").display().to_string(),
         ],
+        vec![
+            "apkcompare".into(),
+            img.display().to_string(),
+            img.display().to_string(),
+            "--json".into(),
+        ],
         vec!["vbmeta".into(), img.display().to_string()],
         vec!["vbkernel".into(), img.display().to_string()],
         vec![

@@ -290,6 +290,8 @@ pub struct ManifestAttrs {
     pub app_task_affinity: Option<String>,
     /// Activities, services, receivers and providers declared under `<application>`.
     pub components: Vec<Component>,
+    /// `<uses-feature android:name>` names directly under `<manifest>` (glEsVersion-only entries have no name and are skipped).
+    pub uses_features: Vec<String>,
 }
 
 /// One manifest component and the attributes the exported check needs.
@@ -1033,6 +1035,11 @@ fn read_tag(
             }
             ("application", "allowTaskReparenting") => {
                 out.task_reparenting = a.as_bool() == Some(true)
+            }
+            ("uses-feature", "name")
+                if parent.is_some_and(|(p, _)| p == "manifest") && !a.value.is_empty() =>
+            {
+                out.uses_features.push(a.value.clone())
             }
             ("application", "taskAffinity") => out.app_task_affinity = Some(a.value.clone()),
             _ if is_component && in_app => match name {
