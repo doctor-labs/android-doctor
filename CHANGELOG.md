@@ -32,10 +32,9 @@ All notable changes to this project are documented here. The format follows
 - `prop <image> <name>` prints every value a property is set to in the image's property files, with the file that sets it; `init <image> <service>` decodes one init service (path, args, class, user, groups, capabilities, seclabel, sockets, flags) from the `.rc` files. Both are read-only, bounded, and take `--json` (a plain array, no doctor/1 envelope) (#222).
 - `shell` gains a `stat [sel]` verb: the entry's inode, owner, mode, size, link count, mtime and SELinux label, read from the opened image's own directory listing (#223).
 
-- EROFS images with unsupported features (48-bit addressing, metabox) are now tested
-  and properly refused with clear error messages. ZSTD-compressed EROFS reading is
-  verified (tested via ruzstd which the am-fs-erofs crate uses for decompression);
-  test fixtures cannot be built as mkfs.erofs lacks zstd support. (#228)
+- A test now covers the refusal of EROFS images that use 48-bit addressing or the
+  metabox. ZSTD-compressed images stay unverified: no zstd-capable `mkfs.erofs` was
+  available to build one. (#228)
 
 ### Added
 - SQLite database files (`*.db`, `*.sqlite`) are recognized by magic bytes, and the `sqliteinfo` module parses the database header (page size, text encoding, page count, schema cookie, freelist) and reads the `sqlite_master` table (table/index names, root pages, CREATE statements) of a plain, non-WAL database, bounds-checked against hostile input (#188).
