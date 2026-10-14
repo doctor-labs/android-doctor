@@ -94,6 +94,66 @@ fn entry_node(image: &Path, e: &Entry) -> Node {
     n
 }
 
+/// `stat [sel]`: the entry's own metadata (inode, owner, mode, size, links, mtime, label), read
+/// from the image's directory listing. The image root has no entry, so it is refused.
+fn stat_command(
+    s: &mut doctor_kit::session::Session<'_>,
+    args: &[String],
+) -> Result<doctor_kit::session::Reply, String> {
+    let node = s.node(args.first().map(String::as_str))?;
+    let image = node
+        .meta
+        .get("image")
+        .and_then(Value::as_str)
+        .map(String::from);
+    let path = node
+        .meta
+        .get("path")
+        .and_then(Value::as_str)
+        .map(String::from);
+    let (Some(image), Some(path)) = (image, path) else {
+        return Err("stat: not inside an opened image; `cd` into one first".into());
+    };
+    let (parent, name) = path
+        .rsplit_once('/')
+        .ok_or_else(|| "stat: not a file in the image".to_string())?;
+    if name.is_empty() {
+        return Err("stat: the image root has no entry of its own; `info` shows it".into());
+    }
+    let parent = if parent.is_empty() { "/" } else { parent };
+    let entries = Tree::open(Path::new(&image))
+        .and_then(|t| t.list_dir(parent))
+        .map_err(|e| format!("stat: {e:#}"))?;
+    let e = entries
+        .iter()
+        .find(|e| e.path.rsplit('/').next() == Some(name))
+        .ok_or_else(|| format!("stat: {path} is not in its directory listing"))?;
+    let label = e
+        .xattrs
+        .iter()
+        .find(|(k, _)| k == "security.selinux")
+        .map_or_else(|| "-".to_string(), |(_, v)| sanitize(v));
+    let link = e
+        .link
+        .as_deref()
+        .map_or_else(String::new, |l| format!("\n  link: {}", sanitize(l)));
+    let text = format!(
+        "{path}\n  type: {}\n  mode: {:04o}\n  owner: {}:{}\n  size: {}\n  inode: {}  links: {}\n  mtime: {}\n  selinux: {label}{link}",
+        e.kind.name(),
+        e.mode,
+        e.uid,
+        e.gid,
+        e.size,
+        e.ino,
+        e.nlink,
+        e.mtime,
+    );
+    Ok(doctor_kit::session::Reply::new(
+        text,
+        crate::tree::entry_json(e),
+    ))
+}
+
 impl AndroidDoctor {
     /// The scan context of the interactive commands: nothing is walked, the root is the subject.
     #[cfg(any(feature = "shell", feature = "explore"))]
@@ -186,6 +246,15 @@ impl Doctor for AndroidDoctor {
     }
     fn checks(&self) -> Vec<Box<dyn Check>> {
         vec![]
+    }
+    /// `stat` in the shell: one entry of an opened image, read from the image's own listing.
+    fn commands(&self) -> Vec<doctor_kit::session::Command> {
+        vec![doctor_kit::session::Command {
+            name: "stat",
+            help: "stat [sel]         one file or directory of an opened image: mode, owner, size, links, mtime",
+            flags: &[],
+            run: stat_command,
+        }]
     }
     /// The subject is an image, a directory of images or two builds, chosen by the command.
     fn target(&self) -> TargetKind {
