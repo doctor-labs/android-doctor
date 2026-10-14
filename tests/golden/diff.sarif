@@ -34,7 +34,7 @@
             "severity": "high"
           },
           "ruleId": "diff-debuggable-build",
-          "ruleIndex": 56
+          "ruleIndex": 57
         },
         {
           "level": "error",
@@ -59,7 +59,7 @@
             "severity": "high"
           },
           "ruleId": "diff-insecure-adb",
-          "ruleIndex": 57
+          "ruleIndex": 58
         },
         {
           "level": "error",
@@ -84,7 +84,7 @@
             "severity": "high"
           },
           "ruleId": "diff-su-binary",
-          "ruleIndex": 63
+          "ruleIndex": 64
         },
         {
           "level": "error",
@@ -109,7 +109,7 @@
             "severity": "high"
           },
           "ruleId": "diff-new-setuid",
-          "ruleIndex": 59
+          "ruleIndex": 60
         },
         {
           "level": "note",
@@ -134,7 +134,7 @@
             "severity": "info"
           },
           "ruleId": "diff-prop-changed",
-          "ruleIndex": 60
+          "ruleIndex": 61
         },
         {
           "level": "note",
@@ -159,7 +159,7 @@
             "severity": "info"
           },
           "ruleId": "diff-prop-changed",
-          "ruleIndex": 60
+          "ruleIndex": 61
         }
       ],
       "tool": {
@@ -949,6 +949,22 @@
               "name": "apk-test-only",
               "shortDescription": {
                 "text": "An APK is marked android:testOnly"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "Third-party tracker or analytics SDKs are present in an APK's code"
+              },
+              "help": {
+                "text": "Review what each SDK collects, disclose it in the privacy policy and remove the ones you do not need"
+              },
+              "id": "apk-tracker-sdk",
+              "name": "apk-tracker-sdk",
+              "shortDescription": {
+                "text": "Third-party tracker or analytics SDKs are present in an APK's code"
               }
             },
             {

@@ -673,6 +673,11 @@ pub fn help(rule: &str) -> Option<Help> {
             "Inspect the APK with the dex command or another tool; this is not a pass",
             Info,
         ),
+        "apk-tracker-sdk" => (
+            "Third-party tracker or analytics SDKs are present in an APK's code",
+            "Review what each SDK collects, disclose it in the privacy policy and remove the ones you do not need",
+            Low,
+        ),
         "apk-cert-not-yet-valid" => (
             "An APK signing certificate is not yet valid (host clock)",
             "Check the certificate dates and the host clock",
@@ -973,6 +978,7 @@ const KNOWN_RULES: &[&str] = &[
     "apk-code-cleartext-url",
     "apk-packer",
     "apk-code-unscanned",
+    "apk-tracker-sdk",
     "partition_coverage",
     "unhandled_input",
     "avb_signature",
