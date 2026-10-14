@@ -32,8 +32,8 @@ const MAX_APK_COUNT: usize = 2_000;
 const MAX_APK_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Most text files (properties and init scripts) and bytes of them one image may make us read.
-const MAX_TEXT_FILES: usize = 50_000;
-const MAX_TEXT_BYTES: u64 = 256 << 20;
+pub(crate) const MAX_TEXT_FILES: usize = 50_000;
+pub(crate) const MAX_TEXT_BYTES: u64 = 256 << 20;
 /// How many items of one list the text report prints before pointing at `--json`.
 const TEXT_LIST_CAP: usize = 25;
 

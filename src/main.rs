@@ -43,6 +43,7 @@ mod huawei;
 mod imgdiff;
 mod info;
 mod initrc;
+mod inspect;
 mod kit;
 mod lgkdz;
 mod libbrotli;
@@ -305,6 +306,15 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Print every value of one property from the image's property files (build.prop, default.prop, ...), with the file that sets it
+    Prop {
+        image: PathBuf,
+        /// Property name, such as ro.secure
+        name: String,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
     /// List the physical block numbers holding the data of one regular file inside an ext2/3/4 or f2fs image (holes are skipped; erofs is refused)
     Blocks {
         image: PathBuf,
@@ -327,6 +337,15 @@ enum Command {
         image: PathBuf,
         #[arg(required = true)]
         inodes: Vec<u64>,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Decode one init service (`service <name>` block) from the image's .rc files: path, args, user, groups, capabilities, sockets
+    Init {
+        image: PathBuf,
+        /// Service name, such as adbd
+        service: String,
         /// Print JSON instead of text
         #[arg(long)]
         json: bool,
@@ -1199,6 +1218,12 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             inodes,
             json,
         } => ncheck_command(&image, &inodes, json),
+        Command::Prop { image, name, json } => inspect::prop_command(&image, &name, json),
+        Command::Init {
+            image,
+            service,
+            json,
+        } => inspect::init_command(&image, &service, json),
         Command::Audit {
             images,
             json,
