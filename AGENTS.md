@@ -32,6 +32,7 @@ and take `path` (`diff`: `old`, `new`, `only`), `baseline`, `fail_on`, `sarif`).
 | Inspect the DEX code of an APK | `android-doctor dex <apk> --classes --methods --refs [--grep TEXT] --json` |
 | What changed between two builds of an APK (sizes, entries, features, patch estimate) | `android-doctor apkcompare <old.apk> <new.apk> --json` (doctor/1 envelope, no findings; no download size) |
 | Browse an image | `android-doctor ls <image> [path]`, `android-doctor cat <image> <path>` |
+| Find in an image | `android-doctor find <image> [path] --name '*.so' \| --selinux GLOB \| --setuid \| --xattr NAME[=GLOB] \| --grep TEXT [--json]` |
 
 `audit --json` and `doctor scan --json` print the doctor/1 envelope (`docs/doctor-contract.md`):
 `schema`, `tool`, `version`, `exit_code`, `score` (`value`, `label`, `model`, `coverage_gaps`),

@@ -1,0 +1,18 @@
+Find files in an ext2/3/4, erofs or f2fs image by name glob, SELinux label, setuid or setgid bit, extended attribute or content (read-only)
+
+Usage: android-doctor find [OPTIONS] <IMAGE> [PATH]
+
+Arguments:
+  <IMAGE>  
+  [PATH]   Directory to search under (default: the root) [default: /]
+
+Options:
+      --name <NAME>        Glob (`*`, `?`) for the file name
+      --no-color           Never emit colour, even on a terminal (also honours the NO_COLOR environment variable)
+      --selinux <SELINUX>  Glob for the SELinux label, such as `u:object_r:shell_*`
+      --setuid             Only files with the setuid bit
+      --setgid             Only files with the setgid bit
+      --xattr <XATTR>      An extended attribute: `NAME` (present) or `NAME=GLOB` (value matches), such as `security.selinux=*su*`
+      --grep <GREP>        Only regular files whose content contains this text (files up to 1 MiB; larger ones are listed as not checked)
+      --json               Print the doctor/1 envelope instead of text
+  -h, --help               Print help
