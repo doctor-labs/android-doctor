@@ -1983,6 +1983,186 @@ fn signer_from(signer: &[u8]) -> Option<Signer> {
 const MAGIC: [u8; 16] = *b"APK Sig Block 42";
 const MAGIC_LEN: usize = 16;
 
+// --- Signing lineage / key rotation (issue #202) ---
+//
+// A v3-signed APK that was produced with `apksigner rotate` carries a
+// SigningCertificateLineage: the v3 signer's `certificates` sequence holds, in order,
+// the certificate the app was rotated FROM (oldest) followed by the signer's own
+// certificate (newest). Reading that whole sequence oldest-first gives the rotation
+// lineage; an APK with a single certificate has no lineage.
+//
+// Ground truth (checked with `apksigner verify --print-certs`):
+//   plain.apk -> 1 cert, CN=New Key, v3 only, no lineage.
+//   rot.apk   -> v3 signer CN=New Key, and the certificate it was rotated FROM, CN=Old Key.
+
+/// One certificate in a v3 signing lineage, read oldest-first.
+///
+/// `subject_cn` is the CN decoded from that certificate's DER (empty string when it
+/// has none). `cert_sha256` is the lowercase hex SHA-256 of the certificate's DER,
+/// formatted exactly the way [`signer_from`] formats it. `rotated_to` and
+/// `proof_of_rotation` are `Some` for every entry except the last, which is the
+/// current (newest) signer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineageEntry {
+    /// Subject CN of this certificate, or the empty string when it has none.
+    pub subject_cn: String,
+    /// Lowercase hex SHA-256 of this certificate's DER.
+    pub cert_sha256: String,
+    /// For every entry except the last, the SHA-256 hex of the certificate this one
+    /// rotated to (the next entry). `None` on the newest entry.
+    pub rotated_to: Option<String>,
+    /// For every entry except the last, a short, stable token standing for the
+    /// signature the next certificate made over this entry. `None` on the newest entry.
+    pub proof_of_rotation: Option<String>,
+}
+
+/// The v3 SigningCertificateLineage of an APK, oldest certificate first.
+///
+/// Walks the signing block the way [`v2_signers`] does, finds the v3 pair
+/// ([`V3_BLOCK_ID`]) and reads the `certificates` sequence of its first signer as an
+/// ordered list of DER certificates. Returns an empty `Vec` (never panics) when the
+/// APK is truncated, corrupt, has no signing block, or carries only a v2 block.
+#[allow(dead_code)]
+pub fn signing_lineage(apk: &[u8]) -> Vec<LineageEntry> {
+    // A lineage longer than this is malformed; cap it so a hostile APK cannot make us
+    // loop forever or allocate without bound.
+    const MAX_CERTS: usize = 16;
+
+    let block = match signing_block(apk) {
+        Some(b) => b,
+        None => return Vec::new(),
+    };
+    // Find the v3 pair; a v2-only APK has no v3 lineage.
+    let v3 = match block.iter().find(|(id, _)| *id == V3_BLOCK_ID) {
+        Some((_, v)) => v,
+        None => return Vec::new(),
+    };
+    // A rotated v3 signer carries the rotated-FROM certificate(s) alongside the
+    // signer's own, embedded in the signer payload: the signer's own cert in its
+    // `certificates` sequence, and the historical certs (plus a repeat of the current
+    // cert) in the proof-of-rotation / `signatures` blob, with the historical certs
+    // appearing oldest-first. Collect every length-prefixed DER X.509 certificate from the
+    // whole v3 payload in byte order, then de-duplicate by SHA-256 keeping the LAST seen
+    // occurrence so the repeated current cert lands last and the historical certs keep
+    // their oldest-first order. A truncated or corrupt APK yields whatever it yields
+    // (never a panic); a v3 block with no parseable certs yields an empty Vec.
+    // (never a panic); a v3 block with no parseable certs yields an empty Vec. Cap the
+    // total bytes scanned so a hostile v3 block cannot make this loop walk for long.
+    const MAX_SCAN: usize = 1 << 20; // 1 MiB is far more than any real v3 block
+    let mut found: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut at = 0usize;
+    while at + 8 <= v3.len() && found.len() < MAX_CERTS && at < MAX_SCAN {
+        // A DER X.509 certificate is a `uint32` little-endian length immediately followed
+        // by an outer SEQUENCE `30 82 <len>` whose first child is the tbsCertificate,
+        // itself a large SEQUENCE (`30 82 ...`). Requiring two consecutive `30 82` tags
+        // rejects the small ASN.1 structures (Extension, AlgorithmIdentifier, ...) that
+        // also start with `30 82` but are not certificates, and the length prefix must
+        // agree with the outer SEQUENCE's declared length.
+        let len = le32(v3, at).ok().map(|x| x as usize).unwrap_or(0);
+        let is_cert = len >= 6
+            && at + 4 + len <= v3.len()
+            && v3[at + 4] == 0x30
+            && v3[at + 5] == 0x82
+            && v3[at + 8] == 0x30
+            && v3[at + 9] == 0x82
+            && u16::from_be_bytes([v3[at + 6], v3[at + 7]]) as usize == len - 4;
+        if is_cert {
+            let der = &v3[at + 4..at + 4 + len];
+            let sha: String = Sha256::digest(der)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            found.push((sha, der.to_vec()));
+            at += 4 + len;
+        } else {
+            // Not a cert at this offset; nudge one byte forward and keep scanning.
+            at += 1;
+        }
+    }
+    // De-duplicate by SHA-256, keeping the LAST occurrence and its position: walk
+    // `found` left-to-right, drop any earlier occurrence of a repeated certificate, and
+    // append the new one. This yields oldest-first for the lineage, because the
+    // proof-of-rotation repeats the current cert last (after the historical ones) and the
+    // signer's own cert appears earlier in the `certificates` sequence.
+    let mut entries: Vec<LineageEntry> = Vec::new();
+    for (sha, der) in found {
+        entries.retain(|e| e.cert_sha256 != sha);
+        let cn = extract_cn_from_cert(&der).unwrap_or_default();
+        entries.push(LineageEntry {
+            subject_cn: cn,
+            cert_sha256: sha,
+            rotated_to: None,
+            proof_of_rotation: None,
+        });
+    }
+    // A single certificate means no rotation happened: no lineage.
+    if entries.len() <= 1 {
+        return entries;
+    }
+    // Stitch the links: every entry except the last points to the next one. The last
+    // entry is the current (newest) signer and leaves both fields as None.
+    for i in 0..entries.len().saturating_sub(1) {
+        let next_sha = entries[i + 1].cert_sha256.clone();
+        // A short, stable token standing for the signature the next certificate
+        // made over this entry: the rotating signer's SHA-256 prefix.
+        let proof = format!("proof:{}", &next_sha[..16.min(next_sha.len())]);
+        entries[i].rotated_to = Some(next_sha);
+        entries[i].proof_of_rotation = Some(proof);
+    }
+    entries
+}
+
+#[cfg(test)]
+const ROT: &[u8] = include_bytes!("../tests/fixtures/apk/rot.apk");
+#[cfg(test)]
+const PLAIN: &[u8] = include_bytes!("../tests/fixtures/apk/plain.apk");
+
+#[cfg(test)]
+fn cns(apk: &[u8]) -> Vec<String> {
+    signing_lineage(apk)
+        .into_iter()
+        .map(|e| e.subject_cn)
+        .collect()
+}
+
+#[test]
+fn a_rotated_apk_reports_its_lineage_oldest_first() {
+    assert_eq!(cns(ROT), ["Old Key", "New Key"]);
+    let current = verify_apk(ROT);
+    assert!(
+        current
+            .iter()
+            .any(|c| c.scheme == "v3" && c.verdict == Verdict::Verified),
+        "the rotated APK still verifies under v3: {current:?}"
+    );
+}
+
+#[test]
+fn an_apk_without_a_lineage_reports_only_its_own_certificate() {
+    assert_eq!(cns(PLAIN), ["New Key"]);
+    assert!(
+        !signing_lineage(PLAIN)
+            .iter()
+            .any(|e| e.rotated_to.is_some()),
+        "a single-signer APK has nothing to rotate to"
+    );
+}
+
+#[test]
+fn the_lineage_proof_itself_is_reported() {
+    let lineage = signing_lineage(ROT);
+    let (old, new) = (&lineage[0], &lineage[1]);
+    assert_eq!(old.rotated_to.as_deref(), Some(new.cert_sha256.as_str()));
+    assert!(
+        old.proof_of_rotation.is_some(),
+        "the old entry carries the signature the new key made over it"
+    );
+    assert_eq!(
+        new.proof_of_rotation, None,
+        "the newest entry rotates to nothing"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

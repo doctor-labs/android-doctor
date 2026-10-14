@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format follows
 ### Added
 - SQLite database files (`*.db`, `*.sqlite`) are recognized by magic bytes, and the `sqliteinfo` module parses the database header (page size, text encoding, page count, schema cookie, freelist) and reads the `sqlite_master` table (table/index names, root pages, CREATE statements) of a plain, non-WAL database, bounds-checked against hostile input (#188).
 - APK code audit reports hardcoded public IP addresses and cleartext http:// URLs (#197).
+- APK audit reads the v3 `SigningCertificateLineage` (key rotation) and exposes it via `signing_lineage` as an oldest-first list of `LineageEntry` (`subject_cn`, `cert_sha256`, `rotated_to`, `proof_of_rotation`); an APK with a single signer certificate reports no lineage (#202).
 - ELF audit reports RPATH/RUNPATH entries outside read-only system locations (#189).
 - APK audit names known packers and protectors (Jiagu, Bangcle, SecNeo, Tencent Legu, Baidu, Alibaba, Ijiami) from their stub libraries (#195).
 - Image audit parses fstab files and reports system partitions without dm-verity and /data without (or with optional) encryption (#192).

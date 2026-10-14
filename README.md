@@ -178,7 +178,14 @@ signatures it already reads:
 Firmware has no trusted clock, so the two date rules compare against the clock of the machine
 running `audit` and say so in the finding ("expired 2021-01-01 (as of 2026-10-06, host clock)").
 Android does not enforce certificate expiry when installing, so treat these as a hygiene signal.
-`audit --json` adds `is_debug_cert`, `not_before` and `not_after` (Unix seconds) to each signer.`audit` also reads every native ELF object in the image (`.so` files and executables) and
+
+A v3-signed APK that was produced with `apksigner rotate` may carry a `SigningCertificateLineage`:
+the rotation history is the v3 signer's certificates read oldest-first (the key the app rotated
+FROM comes first, the current signer is last), and the lineage is exposed via the `LineageEntry`
+list returned by `signing_lineage` (`subject_cn`, `cert_sha256`, `rotated_to` and
+`proof_of_rotation`). An APK with a single signing certificate has no lineage, and a v2-only (or
+unsigned) APK reports none. The same signing certificates are listed under `apks[].signers` in
+`audit --json`. `audit --json` adds `is_debug_cert`, `not_before` and `not_after` (Unix seconds) to each signer.`audit` also reads every native ELF object in the image (`.so` files and executables) and
 flags missing exploit mitigations, checksec style. Files are only parsed, never run. It is on
 by default and bounded (at most 20,000 objects and 512 MiB of them per image, 64 MiB each).
 One finding per rule names a few objects; `--json` lists every object under `elf`.
