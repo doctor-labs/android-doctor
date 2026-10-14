@@ -692,7 +692,11 @@ stdio and exposes four tools, `identify`, `doctor`, `audit` and `diff`. `doctor`
 run the CLI itself with `--json` and return its stdout unchanged: the doctor/1 envelope, byte for
 byte what the CLI prints for the same arguments. Arguments: `path` (`audit` also `paths`; `diff` takes `old`, `new` and `only`), and the
 flags `baseline`, `fail_on` and `sarif`. Excluded over MCP: `--json` (always on), `--score`,
-`--no-color`, help and version. A finding at or above `fail_on` is a result (read `exit_code`),
+`--no-color`, help and version.
+Seven read-only browse tools sit beside them: `ls` (`image`, optional `path`), `cat` (`image`, `path`;
+raw text), `info`, `vbmeta`, `ramdisk`, `unpack` (`path`) and `files` (`image`). They take no output
+option, so they never write, and return at most 1 MiB (more is an error). `ls`, `info`, `vbmeta`,
+`ramdisk`, `files` and `unpack` return the CLI's `--json` output. A finding at or above `fail_on` is a result (read `exit_code`),
 not an MCP error; an exit of `2` is. Register it in your agent's MCP config:
 
 ```json
