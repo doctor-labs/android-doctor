@@ -128,6 +128,8 @@ pub struct Vbmeta {
     pub aux_size: u64,
     pub signature_len: u64,
     pub public_key_bits: Option<u32>,
+    /// The raw ML-DSA public key length, when the algorithm is MLDSA65/MLDSA87 and the key blob matches it.
+    pub public_key_bytes: Option<usize>,
     pub public_key_sha256: Option<String>,
     pub public_key_metadata_len: u64,
     /// `Some(true)` if the hash in the authentication block matches, `None` for algorithm NONE.
@@ -323,6 +325,8 @@ fn algorithm_name(a: u32) -> String {
         4 => "SHA512_RSA2048".into(),
         5 => "SHA512_RSA4096".into(),
         6 => "SHA512_RSA8192".into(),
+        7 => "MLDSA65".into(),
+        8 => "MLDSA87".into(),
         n => format!("unknown({n})"),
     }
 }
@@ -337,6 +341,23 @@ fn auth_hash(algorithm: u32, data: &[u8]) -> Option<Vec<u8>> {
         4..=6 => Some(Sha512::digest(data).to_vec()),
         _ => None,
     }
+}
+
+/// Raw public key size for an ML-DSA algorithm type (avbtool ALGORITHMS:
+/// `public_key_num_bytes` is 4 + this): MLDSA65 = 7 (1952), MLDSA87 = 8 (2592).
+fn mldsa_key_len(algorithm: u32) -> Option<usize> {
+    match algorithm {
+        7 => Some(1952),
+        8 => Some(2592),
+        _ => None,
+    }
+}
+
+/// The raw key inside an ML-DSA `AvbMLDSAPublicKeyHeader` blob (big-endian u32 byte count, then
+/// the key), if the algorithm is ML-DSA and the blob has exactly that size.
+fn mldsa_public_key_len(algorithm: u32, key: &[u8]) -> Option<usize> {
+    let want = mldsa_key_len(algorithm)?;
+    (key.len() == 4 + want && be32(key, 0) as usize == want).then_some(want)
 }
 
 /// The RSA key size in bits for a given algorithm type.
@@ -763,7 +784,9 @@ pub fn parse(data: &[u8], external_key: Option<&RsaPublicKey>) -> Result<Vbmeta>
         p = end;
     }
 
-    let public_key_bits = (key.len() >= 4).then(|| be32(key, 0));
+    // ML-DSA key blobs start with a byte count, not RSA's key_num_bits
+    let public_key_bits =
+        (key.len() >= 4 && mldsa_key_len(algorithm).is_none()).then(|| be32(key, 0));
     Ok(Vbmeta {
         libavb: (be32(data, 4), be32(data, 8)),
         algorithm,
@@ -775,6 +798,7 @@ pub fn parse(data: &[u8], external_key: Option<&RsaPublicKey>) -> Result<Vbmeta>
         aux_size,
         signature_len: signature.len() as u64,
         public_key_bits,
+        public_key_bytes: mldsa_public_key_len(algorithm, key),
         public_key_sha256: (!key.is_empty()).then(|| hex(&Sha256::digest(key))),
         public_key_metadata_len: metadata.len() as u64,
         digest_ok,
@@ -1201,8 +1225,17 @@ impl Vbmeta {
             },
             self.signature_verified.to_text()
         ));
-        if let (Some(bits), Some(sha)) = (self.public_key_bits, &self.public_key_sha256) {
-            o.push(format!("public key: {bits} bits, sha256 {sha}"));
+        match (
+            self.public_key_bits,
+            self.public_key_bytes,
+            &self.public_key_sha256,
+        ) {
+            (Some(bits), _, Some(sha)) => o.push(format!("public key: {bits} bits, sha256 {sha}")),
+            (_, Some(n), Some(sha)) => o.push(format!(
+                "public key: {}, {n} bytes, sha256 {sha}",
+                algorithm_name(self.algorithm)
+            )),
+            _ => {}
         }
         if let Some(f) = &self.footer {
             o.push(format!(
@@ -2476,5 +2509,27 @@ mod tests {
             judge(&d.join("a.img")),
             Some(("avb-footer-not-covered", Severity::High))
         );
+    }
+
+    /// ML-DSA (avbtool ALGORITHMS: MLDSA65 = 7, MLDSA87 = 8). The key blob is an
+    /// `AvbMLDSAPublicKeyHeader`: a big-endian u32 byte count, then the raw public key.
+    #[test]
+    fn mldsa_is_named_and_its_key_is_not_read_as_rsa_bits() {
+        let blob = |len: u32, n: usize| {
+            let mut k = len.to_be_bytes().to_vec();
+            k.resize(4 + n, 7u8);
+            k
+        };
+        assert_eq!(algorithm_name(7), "MLDSA65");
+        assert_eq!(algorithm_name(8), "MLDSA87");
+        let m = parse(&vbmeta(7, 0, &[], &blob(1952, 1952)), None).unwrap();
+        assert_eq!(m.public_key_bits, None);
+        assert_eq!(m.public_key_bytes, Some(1952));
+        assert_eq!(m.signature_verified, SignatureStatus::Unsupported(7));
+        let m = parse(&vbmeta(8, 0, &[], &blob(2592, 2592)), None).unwrap();
+        assert_eq!(m.public_key_bytes, Some(2592));
+        // a length field that disagrees with the algorithm is not a key of that size
+        let m = parse(&vbmeta(8, 0, &[], &blob(1952, 1952)), None).unwrap();
+        assert_eq!(m.public_key_bytes, None);
     }
 }
