@@ -638,6 +638,21 @@ pub fn help(rule: &str) -> Option<Help> {
             "Avoid shelling out; never build the command from untrusted input",
             Medium,
         ),
+        "apk-code-receiver-unprotected" => (
+            "An APK registers a dynamic broadcast receiver that any app can send to",
+            "Pass a permission to registerReceiver, or set RECEIVER_NOT_EXPORTED on API 33+",
+            Medium,
+        ),
+        "apk-code-pending-implicit-intent" => (
+            "An APK wraps an implicit Intent in a PendingIntent",
+            "Set an explicit component or package on the Intent, and use FLAG_IMMUTABLE",
+            Low,
+        ),
+        "apk-code-broadcast-no-permission" => (
+            "An APK sends an implicit broadcast without a receiver permission",
+            "Set a package on the Intent or pass a permission that receivers must hold",
+            Low,
+        ),
         "apk-code-tapjacking" => (
             "No tapjacking protection was found in an APK's code",
             "Call setFilterTouchesWhenObscured(true) on sensitive views or set android:filterTouchesWhenObscured",
@@ -991,6 +1006,9 @@ const KNOWN_RULES: &[&str] = &[
     "apk-code-dynamic-loading",
     "apk-code-raw-sql",
     "apk-code-command-exec",
+    "apk-code-receiver-unprotected",
+    "apk-code-pending-implicit-intent",
+    "apk-code-broadcast-no-permission",
     "apk-code-tapjacking",
     "apk-code-screenshot",
     "apk-code-anti-analysis",

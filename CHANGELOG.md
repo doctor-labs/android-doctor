@@ -54,6 +54,7 @@ All notable changes to this project are documented here. The format follows
 - APK audit runs the ELF hardening rules (PIE, NX stack, RELRO, canary, FORTIFY) on `lib/<abi>/*.so` (#190).
 - APK audit flags signer certificates signed with MD5/SHA-1 (`apk-cert-weak-hash`) and RSA keys under 2048 bits (`apk-cert-weak-key`) (#203).
 - APK audit reports provider URI grants (`grantUriPermissions`) and grants or path permissions covering every path (#208).
+- APK code audit reports dynamic receivers registered without a permission or `RECEIVER_NOT_EXPORTED` (`apk-code-receiver-unprotected`), implicit Intents wrapped in a PendingIntent (`apk-code-pending-implicit-intent`) and broadcasts sent without a receiver permission (`apk-code-broadcast-no-permission`) (#212).
 - `avbkey`: write a PEM RSA key's AVB public key blob and print its SHA-256 digest, like avbtool extract_public_key(_digest) (#183).
 
 ### Fixed
