@@ -733,6 +733,16 @@ pub fn help(rule: &str) -> Option<Help> {
             "Remove the file from the production image",
             Low,
         ),
+        "selinux-permissive-domain" => (
+            "A domain is typepermissive in the shipped SELinux policy",
+            "Remove the typepermissive statement and fix the denials it hides, or confine the domain",
+            High,
+        ),
+        "selinux-file-context-unconfined" => (
+            "A file_contexts label names a permissive domain",
+            "Label the path with a confined domain",
+            Medium,
+        ),
         _ => return None,
     };
     Some(Help {
@@ -987,6 +997,8 @@ const KNOWN_RULES: &[&str] = &[
     "mode_anomalies",
     "init_service_hygiene",
     "debug_leftovers",
+    "selinux-permissive-domain",
+    "selinux-file-context-unconfined",
     "diff-new-setuid",
     "diff-new-capability",
     "diff-root-service",

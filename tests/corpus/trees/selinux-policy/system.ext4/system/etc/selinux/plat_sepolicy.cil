@@ -1,0 +1,10 @@
+; Synthetic CIL for unit tests. Not taken from a real device.
+(block healthd
+    (type process)
+    (typepermissive process)
+)
+(type shell_test_domain)
+(typepermissive shell_test_domain)
+(neverallow domain shell_data_file (file (write)))
+(type unconfined_test)
+(typepermissive unconfined_test)
