@@ -145,9 +145,9 @@ impl Fs {
     /// never written back. Returns the raw journal image starting at the journal
     /// superblock.
     pub fn journal(&self) -> Result<Vec<u8>> {
-        // `s_journal_inum` lives at offset 112 in the ext superblock.
+        // `s_journal_inum` lives at offset 0xE0 (224) in the ext superblock.
         let sb = self.read_exact(1024, 1024)?;
-        let inum = le32(&sb, 112);
+        let inum = le32(&sb, 0xE0);
         if inum == 0 {
             bail!("this filesystem has no journal (s_journal_inum == 0)");
         }
@@ -3179,7 +3179,7 @@ mod tests {
         let buf = build_journal(bs, 4, 0, 7, 2, &[(1, 7), (2, 7)]);
         let mut m = Img::new(256, true);
         // wire inode 8 to the journal bytes; set s_journal_inum = 8 in the ext sb
-        put32(&mut m.img[1024..2048], 112, 8);
+        put32(&mut m.img[1024..2048], 0xE0, 8);
         let blocks = m.alloc(&buf);
         let (map, f) = m.mapping(&blocks);
         m.inode(8, 0o100644, buf.len() as u64, 1, f, map);

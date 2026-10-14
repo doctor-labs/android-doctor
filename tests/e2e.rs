@@ -382,7 +382,7 @@ fn journal_command_emits_json_or_text_and_lists_fields() {
     le16(&mut img, 1024 + 88, 256); // s_inode_size
     le32(&mut img, 1024 + 96, 0x80 | 0x40); // 64bit | extents incompat
     le16(&mut img, 1024 + 254, 64); // s_desc_size
-    le32(&mut img, 1024 + 112, 8); // s_journal_inum = 8
+    le32(&mut img, 1024 + 0xE0, 8); // s_journal_inum = 8 (superblock offset 0xE0)
     // group descriptor 0 at block 2 (offset 2048): block group inode table at block 3.
     le32(&mut img, 2048 + 8, 3);
     // inode table at block 3 (64 inodes * 256 bytes = 16 blocks -> blocks 3..19).
