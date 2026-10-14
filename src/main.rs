@@ -52,6 +52,7 @@ mod otaverify;
 mod ozip;
 mod pac;
 mod payload;
+mod permissions;
 mod ramdisk;
 mod report;
 mod reporting;
