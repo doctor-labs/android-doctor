@@ -765,10 +765,15 @@ pub struct FileProviderGrant {
     pub path: Option<String>,
 }
 
-/// Parse a binary XML document as a FileProvider `<paths>` file (`res/xml/*`). Returns
-/// `Ok(None)` when the root is not `<paths>`, so other `res/xml/` documents are ignored.
-/// Grants are the root's direct children, tagged with `entry`.
-fn parse_file_paths(entry: &str, data: &[u8]) -> Result<Option<Vec<FileProviderGrant>>> {
+/// Scan a binary XML document as a FileProvider `<paths>` file. Sets `is_paths` once the root
+/// element is `<paths>`; any other root returns Ok without reading further. Grants are the
+/// root's direct children, tagged with `entry`.
+fn scan_file_paths(
+    entry: &str,
+    data: &[u8],
+    grants: &mut Vec<FileProviderGrant>,
+    is_paths: &mut bool,
+) -> Result<()> {
     ensure!(le16(data, 0)? == 0x0003, "paths: not a binary XML document");
     let xml_header = le16(data, 2)? as usize;
     ensure!(
@@ -779,7 +784,6 @@ fn parse_file_paths(entry: &str, data: &[u8]) -> Result<Option<Vec<FileProviderG
     let pool_chunk_size = le32(&data[xml_header..], 4)? as usize;
     let mut pos = xml_header + pool_chunk_size;
     let mut depth = 0usize;
-    let mut grants = Vec::new();
     while pos + 8 <= data.len() {
         let ct = le16(data, pos)?;
         let cs = le32(data, pos + 4)? as usize;
@@ -793,8 +797,9 @@ fn parse_file_paths(entry: &str, data: &[u8]) -> Result<Option<Vec<FileProviderG
                 let (tag, attrs) = parse_start_tag(data, pos, &pool)?;
                 if depth == 0 {
                     if tag != "paths" {
-                        return Ok(None);
+                        return Ok(());
                     }
+                    *is_paths = true;
                 } else if depth == 1 && grants.len() < MAX_FILE_PATH_GRANTS {
                     let path = attrs
                         .iter()
@@ -812,11 +817,33 @@ fn parse_file_paths(entry: &str, data: &[u8]) -> Result<Option<Vec<FileProviderG
         }
         pos += cs;
     }
-    Ok(Some(grants))
+    Ok(())
 }
 
-/// Every FileProvider grant in the APK's top-level `res/xml/` documents, in entry order.
-fn file_provider_grants(zip: &mut ZipArchive<Cursor<&[u8]>>) -> Vec<FileProviderGrant> {
+/// What one `res/xml/` document is, as far as the FileProvider rule is concerned.
+enum FileProviderDoc {
+    NotPaths,
+    Paths(Vec<FileProviderGrant>),
+    /// A `<paths>` document that failed part way: its grants are unknown.
+    Broken,
+}
+
+fn parse_file_paths(entry: &str, data: &[u8]) -> FileProviderDoc {
+    let mut grants = Vec::new();
+    let mut is_paths = false;
+    let result = scan_file_paths(entry, data, &mut grants, &mut is_paths);
+    if !is_paths {
+        FileProviderDoc::NotPaths
+    } else if result.is_ok() {
+        FileProviderDoc::Paths(grants)
+    } else {
+        FileProviderDoc::Broken
+    }
+}
+
+/// FileProvider findings over the APK's top-level `res/xml/` documents: broad grants, and an
+/// info per `<paths>` document that could not be parsed (its grants are not checked).
+fn file_provider_issues(zip: &mut ZipArchive<Cursor<&[u8]>>) -> Vec<ManifestIssue> {
     let mut names: Vec<String> = zip
         .file_names()
         .filter(|n| n.strip_prefix("res/xml/").is_some_and(|r| !r.contains('/')))
@@ -824,22 +851,32 @@ fn file_provider_grants(zip: &mut ZipArchive<Cursor<&[u8]>>) -> Vec<FileProvider
         .collect();
     names.sort();
     names.truncate(MAX_XML_DOCS);
-    let mut out = Vec::new();
+    let mut grants = Vec::new();
+    let mut issues = Vec::new();
     for n in names {
         let Some(bytes) = read_entry(zip, &n) else {
             continue;
         };
-        if let Ok(Some(grants)) = parse_file_paths(&n, &bytes) {
-            out.extend(grants);
+        match parse_file_paths(&n, &bytes) {
+            FileProviderDoc::NotPaths => {}
+            FileProviderDoc::Paths(g) => grants.extend(g),
+            FileProviderDoc::Broken => issues.push(ManifestIssue {
+                rule: "apk-fileprovider-unchecked",
+                severity: Severity::Info,
+                detail: format!(
+                    "{n} is a FileProvider <paths> document that could not be parsed: its grants are not checked"
+                ),
+            }),
         }
     }
-    out
+    issues.extend(broad_grant_issues(&grants));
+    issues
 }
 
 /// Findings for FileProvider grants that expose a whole storage root: `<root-path>` shares the
 /// device root, and `<external-path>` with `path="."` (or "/") shares all of external storage.
 /// Scoped grants are not reported.
-fn file_provider_issues(grants: &[FileProviderGrant]) -> Vec<ManifestIssue> {
+fn broad_grant_issues(grants: &[FileProviderGrant]) -> Vec<ManifestIssue> {
     grants
         .iter()
         .filter(|g| {
@@ -1927,7 +1964,7 @@ pub fn audit_apk_bytes(path: &Path, bytes: &[u8]) -> ApkAudit {
         let mut code_issues = code_issues(&mut zip, activities);
         code_issues.extend(native_issues(&mut zip));
         code_issues.extend(packer_issues(&mut zip));
-        code_issues.extend(file_provider_issues(&file_provider_grants(&mut zip)));
+        code_issues.extend(file_provider_issues(&mut zip));
         Ok(ApkInfo {
             path: path.display().to_string(),
             package_name: attrs
@@ -3757,6 +3794,43 @@ mod tests {
         assert!(
             !scoped.contains(&"apk-fileprovider-broad-path"),
             "{scoped:?}"
+        );
+    }
+
+    #[test]
+    fn file_provider_document_that_fails_to_parse_is_noted() {
+        let full = axml(
+            &el(
+                "paths",
+                vec![],
+                vec![el(
+                    "root-path",
+                    vec![a("name", V::Str("r")), a("path", V::Str("/"))],
+                    vec![],
+                )],
+            ),
+            true,
+        );
+        // Cut the final end-element chunk short: the root is still a <paths> document.
+        let cut = &full[..full.len() - 8];
+        let m = manifest(vec![], 33, vec![], vec![]);
+        let a = audit_apk_bytes(
+            Path::new("/x.apk"),
+            &apk_with_res_xml(&axml(&m, true), "file_paths.xml", cut),
+        );
+        assert!(a.error.is_none(), "{:?}", a.error);
+        let issues = a.info.unwrap().issues();
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.rule == "apk-fileprovider-unchecked" && i.severity == Severity::Info),
+            "{:?}",
+            issues.iter().map(|i| i.rule).collect::<Vec<_>>()
+        );
+        assert!(
+            !issues
+                .iter()
+                .any(|i| i.rule == "apk-fileprovider-broad-path")
         );
     }
 
