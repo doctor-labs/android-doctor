@@ -1,0 +1,13 @@
+Turn a raw image into an Android sparse image
+
+Usage: android-doctor sparse [OPTIONS] --output <OUTPUT> <INPUT>
+
+Arguments:
+  <INPUT>  Raw image to convert
+
+Options:
+      --no-color                 Never emit colour, even on a terminal (also honours the NO_COLOR environment variable)
+  -o, --output <OUTPUT>          
+      --block-size <BLOCK_SIZE>  Block size in bytes, a multiple of 4 [default: 4096]
+      --force                    Replace an existing output file instead of refusing
+  -h, --help                     Print help

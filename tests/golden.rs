@@ -640,6 +640,7 @@ fn help_texts() {
         "vbmeta",
         "ramdisk",
         "files",
+        "sparse",
         "unsparse",
         "identify",
         "report",

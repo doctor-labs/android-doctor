@@ -269,6 +269,175 @@ pub fn unsparse<R: Read, W: Write + Seek>(mut inputs: Vec<R>, out: &mut W) -> Re
     Ok(first)
 }
 
+/// Block size `img2simg` uses when none is given.
+pub const DEFAULT_BLOCK_SIZE: u32 = 4096;
+/// RAW chunks are flushed once they reach about this many bytes.
+const PACK_RAW_MAX: usize = COPY_BUF;
+
+enum Block {
+    Zero,
+    Fill([u8; 4]),
+    Raw,
+}
+
+/// The chunk still being built. Consecutive blocks of one kind share a chunk.
+enum Pending {
+    None,
+    Zero(u32),
+    Fill([u8; 4], u32),
+    Raw(Vec<u8>),
+}
+
+impl Pending {
+    /// Add a block to the open chunk if it is the same kind; false if a new chunk is needed.
+    fn absorb(&mut self, b: &Block, blk: &[u8]) -> bool {
+        match (self, b) {
+            (Pending::Zero(n), Block::Zero) => *n += 1,
+            (Pending::Fill(p, n), Block::Fill(q)) if *p == *q => *n += 1,
+            (Pending::Raw(d), Block::Raw) => d.extend_from_slice(blk),
+            _ => return false,
+        }
+        true
+    }
+
+    fn start(b: &Block, blk: &[u8]) -> Pending {
+        match b {
+            Block::Zero => Pending::Zero(1),
+            Block::Fill(p) => Pending::Fill(*p, 1),
+            Block::Raw => Pending::Raw(blk.to_vec()),
+        }
+    }
+}
+
+fn write_chunk<W: Write>(out: &mut W, kind: u16, blocks: u32, payload: &[u8]) -> Result<()> {
+    let mut c = Vec::with_capacity(CHUNK_HDR_LEN + payload.len());
+    c.extend(kind.to_le_bytes());
+    c.extend(0u16.to_le_bytes());
+    c.extend(blocks.to_le_bytes());
+    c.extend(((CHUNK_HDR_LEN + payload.len()) as u32).to_le_bytes());
+    c.extend(payload);
+    out.write_all(&c)?;
+    Ok(())
+}
+
+fn flush_chunk<W: Write>(
+    out: &mut W,
+    pending: &mut Pending,
+    blk_sz: u32,
+    chunks: &mut u32,
+) -> Result<()> {
+    let (kind, blocks, payload) = match std::mem::replace(pending, Pending::None) {
+        Pending::None => return Ok(()),
+        Pending::Zero(n) => (CHUNK_DONT_CARE, n, vec![]),
+        Pending::Fill(p, n) => (CHUNK_FILL, n, p.to_vec()),
+        Pending::Raw(d) => (CHUNK_RAW, (d.len() / blk_sz as usize) as u32, d),
+    };
+    write_chunk(out, kind, blocks, &payload)?;
+    *chunks += 1;
+    Ok(())
+}
+
+/// Convert a raw image to a sparse image, as `img2simg` does: an all-zero block becomes a
+/// DONT_CARE chunk, a block that repeats one 4-byte pattern a FILL chunk, anything else RAW.
+/// A short last block is zero-padded. `out` must be seekable because the header is written last.
+pub fn pack<R: Read, W: Write + Seek>(raw: &mut R, out: &mut W, blk_sz: u32) -> Result<Header> {
+    ensure!(
+        blk_sz >= 4 && blk_sz.is_multiple_of(4),
+        "block size must be a multiple of 4, not {blk_sz}"
+    );
+    let start = out.stream_position()?;
+    out.write_all(&[0u8; FILE_HDR_LEN])?;
+    let mut buf = vec![0u8; blk_sz as usize];
+    let (mut total_blks, mut chunks) = (0u32, 0u32);
+    let mut pending = Pending::None;
+    loop {
+        let mut n = 0;
+        while n < buf.len() {
+            let k = raw.read(&mut buf[n..])?;
+            if k == 0 {
+                break;
+            }
+            n += k;
+        }
+        if n == 0 {
+            break;
+        }
+        buf[n..].fill(0);
+        total_blks = total_blks
+            .checked_add(1)
+            .context("image has more than 2^32 blocks")?;
+        let blk = &buf[..];
+        let kind = if blk.iter().all(|&b| b == 0) {
+            Block::Zero
+        } else if blk.chunks(4).all(|w| w == &blk[..4]) {
+            Block::Fill([blk[0], blk[1], blk[2], blk[3]])
+        } else {
+            Block::Raw
+        };
+        if !pending.absorb(&kind, blk) {
+            flush_chunk(out, &mut pending, blk_sz, &mut chunks)?;
+            pending = Pending::start(&kind, blk);
+        }
+        if matches!(&pending, Pending::Raw(d) if d.len() >= PACK_RAW_MAX) {
+            flush_chunk(out, &mut pending, blk_sz, &mut chunks)?;
+        }
+    }
+    flush_chunk(out, &mut pending, blk_sz, &mut chunks)?;
+    let end = out.stream_position()?;
+    let hdr = Header {
+        blk_sz,
+        total_blks,
+        total_chunks: chunks,
+        chunk_hdr_sz: CHUNK_HDR_LEN,
+    };
+    let mut h = Vec::with_capacity(FILE_HDR_LEN);
+    h.extend(MAGIC.to_le_bytes());
+    h.extend(1u16.to_le_bytes());
+    h.extend(0u16.to_le_bytes());
+    h.extend((FILE_HDR_LEN as u16).to_le_bytes());
+    h.extend((CHUNK_HDR_LEN as u16).to_le_bytes());
+    h.extend(blk_sz.to_le_bytes());
+    h.extend(total_blks.to_le_bytes());
+    h.extend(chunks.to_le_bytes());
+    h.extend(0u32.to_le_bytes()); // image_checksum, unused
+    out.seek(SeekFrom::Start(start))?;
+    out.write_all(&h)?;
+    out.seek(SeekFrom::Start(end))?;
+    Ok(hdr)
+}
+
+/// `sparse` command: write the raw image `input` as a sparse image to `output`, through
+/// `<output>.part` like `run`.
+pub fn pack_run(input: &Path, output: &Path, blk_sz: u32, force: bool) -> Result<()> {
+    if !force && output.symlink_metadata().is_ok() {
+        bail!(
+            "{} already exists; pass --force to overwrite",
+            output.display()
+        );
+    }
+    crate::detect::refuse_blocking_file(input)?;
+    let mut src =
+        BufReader::new(File::open(input).with_context(|| format!("opening {}", input.display()))?);
+    if let Some(dir) = output.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut part = output.as_os_str().to_owned();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    let built = (|| -> Result<()> {
+        let mut out = extract::create_part(&part)?;
+        pack(&mut src, &mut out, blk_sz)?;
+        Ok(())
+    })();
+    if let Err(e) = built {
+        let _ = std::fs::remove_file(&part);
+        return Err(e);
+    }
+    std::fs::rename(&part, output)?;
+    println!("{}", extract::describe(output)?);
+    Ok(())
+}
+
 /// `unsparse` command: rebuild `output` from one or more sparse files. Nothing is created until
 /// every input has been opened; the image is written to `<output>.part` and renamed when complete.
 pub fn run(inputs: &[PathBuf], output: &Path, force: bool) -> Result<()> {
@@ -808,6 +977,47 @@ mod tests {
 
     fn scratch(tag: &str) -> crate::testutil::Scratch {
         crate::testutil::Scratch::new(&format!("sparse-{tag}"))
+    }
+
+    fn pack_bytes(raw: &[u8], blk: u32) -> Vec<u8> {
+        let mut out = Cursor::new(Vec::new());
+        pack(&mut Cursor::new(raw), &mut out, blk).unwrap();
+        out.into_inner()
+    }
+
+    #[test]
+    fn a_packed_image_unsparses_back_to_the_original() {
+        let mut raw = blocks(0, 2);
+        raw.extend([1, 2, 3, 4].repeat(2 * BLK as usize / 4));
+        raw.extend(blocks(7, 1));
+        raw.extend(blocks(0, 1));
+        raw.extend((0..3 * BLK as usize).map(|i| (i * 7 % 256) as u8));
+        raw.extend([5u8; 5]); // a short last block is zero-padded
+        let mut want = raw.clone();
+        want.resize(raw.len().div_ceil(BLK as usize) * BLK as usize, 0);
+        assert_eq!(one(pack_bytes(&raw, BLK)).unwrap(), want);
+    }
+
+    #[test]
+    fn packing_writes_dont_care_fill_and_raw_chunks_in_order() {
+        // the RAW block must not repeat a 4-byte pattern, or it would be a FILL
+        let raw_blk: Vec<u8> = (1..=BLK as u8).collect();
+        let raw = [blocks(0, 1), [1, 2, 3, 4].repeat(2), raw_blk, blocks(0, 1)].concat();
+        let p = pack_bytes(&raw, BLK);
+        assert_eq!(p.len(), 28 + 12 + 16 + 20 + 12);
+        assert_eq!(&p[20..24], &4u32.to_le_bytes()); // total_chunks
+        assert_eq!(&p[28..30], &CHUNK_DONT_CARE.to_le_bytes());
+        assert_eq!(&p[40..42], &CHUNK_FILL.to_le_bytes());
+        assert_eq!(&p[56..58], &CHUNK_RAW.to_le_bytes());
+        assert_eq!(&p[76..78], &CHUNK_DONT_CARE.to_le_bytes());
+        assert!(
+            pack(
+                &mut Cursor::new(vec![0u8; 12]),
+                &mut Cursor::new(Vec::new()),
+                6
+            )
+            .is_err()
+        );
     }
 
     #[test]
