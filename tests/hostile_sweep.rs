@@ -166,6 +166,7 @@ fn invocations(d: &Path) -> Vec<Vec<String>> {
             "AndroidManifest.xml".into(),
         ],
         vec!["vbmeta".into(), img.display().to_string()],
+        vec!["vbkernel".into(), img.display().to_string()],
         vec![
             "vbmeta".into(),
             img.display().to_string(),
@@ -271,6 +272,7 @@ fn a_fifo_never_blocks_a_reader() {
         "verify-ota",
         "dex",
         "vbmeta",
+        "vbkernel",
     ] {
         let args = vec![cmd.to_string(), d.join("pipe.img").display().to_string()];
         let err = run(&args);
