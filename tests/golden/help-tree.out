@@ -1,0 +1,13 @@
+Show the whole tree (or a subtree) of an ext2/3/4, erofs or f2fs image, recursively, without extracting it
+
+Usage: android-doctor tree [OPTIONS] <IMAGE> [PATH]
+
+Arguments:
+  <IMAGE>  
+  [PATH]   Path inside the image to start from (default: the root) [default: /]
+
+Options:
+      --depth <N>  Show at most N levels below the start path
+      --no-color   Never emit colour, even on a terminal (also honours the NO_COLOR environment variable)
+      --json       Print JSON instead of text (doctor/1 envelope, no findings)
+  -h, --help       Print help

@@ -69,6 +69,7 @@ fn invocations(d: &Path) -> Vec<Vec<String>> {
         vec!["identify".into(), img.display().to_string()],
         vec!["ls".into(), img.display().to_string(), "/".into()],
         vec!["cat".into(), img.display().to_string(), "/etc/hosts".into()],
+        vec!["tree".into(), img.display().to_string()],
         vec!["files".into(), img.display().to_string()],
         vec!["audit".into(), img.display().to_string()],
         vec!["doctor".into(), ota.display().to_string()],
@@ -322,6 +323,7 @@ fn a_fifo_never_blocks_a_reader() {
     for cmd in [
         "identify",
         "ls",
+        "tree",
         "audit",
         "dt",
         "verify-ota",

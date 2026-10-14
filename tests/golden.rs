@@ -635,6 +635,7 @@ fn help_texts() {
         "unpack",
         "ls",
         "cat",
+        "tree",
         "audit",
         "diff",
         "vbmeta",
