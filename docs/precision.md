@@ -51,6 +51,7 @@ machine, not necessarily across machines. Findings do not depend on it.
 | `stb-recovery` | `shell-service` (medium x3 for the boot-started shell-domain services, info for the `disabled` one), `adbd-service` (info), `debug_endpoints` (medium) |
 | `apk-code` (erofs) | the `apk-code-*` rules over the DEX of one APK (`Risky.apk`, a zip of `tests/fixtures/dex/risky.dex`, built from `Risky.java` next to it). The one binary in the corpus: a DEX cannot be written as text. No manifest, so the activity-based `apk-code-tapjacking` / `apk-code-screenshot` are covered by unit tests instead |
 | `apk-tracker` (erofs) | `apk-tracker-sdk` over the DEX of one APK (`Tracker.apk`, a zip of a dex built from `tests/fixtures/dex/AppsFlyerLib.java`: a stub class in the `com.appsflyer` package, not the real SDK). Binary, like `apk-code` |
+| `apk-ipc` (erofs) | the intent and receiver rules over one APK (`Ipc.apk`, a zip of `tests/fixtures/dex/ipc.dex`, built from `Ipc.java` next to it): `apk-code-receiver-unprotected` (medium), `apk-code-pending-implicit-intent` (medium and low), `apk-code-broadcast-no-permission` (low). Like `apk-code`, the one binary is a DEX that cannot be written as text |
 | `ota-blocks` | the "cannot evaluate" infos for every quality rule (OTA with no images) |
 | `corrupt-image` | the same infos, from an unreadable image |
 
