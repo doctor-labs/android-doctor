@@ -16,6 +16,11 @@
       "subject": "system"
     },
     {
+      "id": "apk-code-device-id-sms",
+      "severity": "high",
+      "subject": "system"
+    },
+    {
       "id": "apk-code-dynamic-loading",
       "severity": "medium",
       "subject": "system"
@@ -42,6 +47,11 @@
     },
     {
       "id": "apk-code-raw-sql",
+      "severity": "medium",
+      "subject": "system"
+    },
+    {
+      "id": "apk-code-sms-send",
       "severity": "medium",
       "subject": "system"
     },
