@@ -878,6 +878,29 @@ impl Fs {
         Ok(())
     }
 
+    /// Whether the inode still has data blocks (or an extent tree with entries).
+    ///
+    /// Linux clears a deleted inode's extent tree or block pointers in `ext4_delete_inode`, so
+    /// a deleted inode with an empty block map has already had its data freed. We must not
+    /// report zero-filled holes as recovered data.
+    pub fn has_data(&self, inode: &Inode) -> bool {
+        if inode.flags & INODE_EXTENTS != 0 {
+            // The extent header: magic (2), entries (2), max (2), depth (2), then leaves.
+            if inode.block.len() < 6 {
+                return false;
+            }
+            // Extent magic is 0xF30A; if it's gone the tree is cleared.
+            if le16(&inode.block, 0) != 0xF30A {
+                return false;
+            }
+            // Number of entries at offset 2.
+            le16(&inode.block, 2) > 0
+        } else {
+            // Block pointers: 15 × 4 bytes at offset 0..60.
+            (0..15).any(|i| le32(&inode.block, i * 4) != 0)
+        }
+    }
+
     fn runs(&self, inode: &Inode) -> Result<Vec<Run>> {
         ensure!(
             inode.flags & INODE_INLINE_DATA == 0,
@@ -2638,6 +2661,78 @@ mod tests {
         let mut out = Vec::new();
         fs.cat(&ino, &mut out).unwrap();
         assert_eq!(&out, b"hello\n", "deleted file data is still readable");
+    }
+
+    #[test]
+    fn has_data_detects_a_cleared_extent_tree() {
+        let mut m = sample(256, true);
+        // Simulate ext4_delete_inode clearing the extent header: zero the entries count.
+        let at = ITABLE * BS + (11 - 1) * 256 + 40; // i_block at offset 40 within the inode
+        put16(&mut m.img, at + 2, 0); // extent entries = 0
+        let fs = m.fs();
+        // A live file (inode 11) should have data before we clear its extent tree.
+        // After clearing, it should not.
+        let ino = fs.inode(11).unwrap();
+        assert!(
+            !fs.has_data(&ino),
+            "an inode with a zeroed extent tree has no recoverable data"
+        );
+    }
+
+    #[test]
+    fn has_data_detects_a_cleared_block_map() {
+        // Use non-extent mode (no INODE_EXTENTS flag) for a block-pointer inode.
+        let mut m = sample(128, false);
+        // Simulate clearing: zero all 15 direct/indirect pointers.
+        for i in 0..15 {
+            put32(&mut m.img, ITABLE * BS + (11 - 1) * 128 + 40 + i * 4, 0);
+        }
+        let fs = m.fs();
+        let ino = fs.inode(11).unwrap();
+        assert!(
+            !fs.has_data(&ino),
+            "an inode with all-zero block pointers has no recoverable data"
+        );
+    }
+
+    #[test]
+    fn deleted_inode_with_cleared_block_map_is_unrecoverable() {
+        let mut m = sample(256, true);
+        // Delete inode 11 by zeroing its link count.
+        put16(&mut m.img, ITABLE * BS + (11 - 1) * 256 + 26, 0);
+        // Simulate ext4_delete_inode clearing the extent tree: zero the entries count.
+        let at = ITABLE * BS + (11 - 1) * 256 + 40; // i_block at offset 40 within the inode
+        put16(&mut m.img, at + 2, 0); // extent entries = 0
+        let fs = m.fs();
+        let deleted = fs.deleted_inodes().unwrap();
+        assert_eq!(deleted.len(), 1);
+        let ino = fs.inode(11).unwrap();
+        assert!(
+            !fs.has_data(&ino),
+            "the deleted inode's extent tree was cleared"
+        );
+    }
+
+    #[test]
+    fn deleted_inode_that_is_a_directory_cat_fails() {
+        // A deleted directory inode has links=0 but mode still says dir.
+        // cat() should reject it ("not a regular file"), not produce zero-filled output.
+        let mut m = sample(256, true);
+        // Delete the root directory (inode 2) by zeroing its link count.
+        put16(&mut m.img, ITABLE * BS + 256 + 26, 0);
+        let fs = m.fs();
+        let deleted = fs.deleted_inodes().unwrap();
+        let root = deleted
+            .iter()
+            .find(|d| d.ino == 2)
+            .expect("root should be deleted");
+        assert_eq!(root.mode & 0o170000, 0o040000, "root is a directory");
+        let ino = fs.inode(2).unwrap();
+        let mut out = Vec::new();
+        // cat() rejects directories — this is a non-cap error path.
+        let e = fs.cat(&ino, &mut out).unwrap_err();
+        assert!(format!("{e:#}").contains("not a regular file"), "{e:#}");
+        assert!(out.is_empty(), "no data written for a directory");
     }
 
     #[test]

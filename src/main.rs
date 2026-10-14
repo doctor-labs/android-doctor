@@ -2582,19 +2582,39 @@ fn deleted_command(
             let dest = files.join(&fname);
             let limit = d.size.min(max_bytes);
             if limit == 0 {
+                // Zero-size file or max-bytes of 0: nothing to recover.
                 recovered.push(serde_json::json!({
                     "inode": d.ino, "name": fname, "size": d.size, "bytes": 0,
                 }));
                 continue;
             }
+
+            // Check if the inode still has a block map before attempting recovery.
+            // ext4 clears a deleted inode's extent tree or block pointers on delete.
+            let inode = match fs.inode(d.ino) {
+                Ok(i) => i,
+                Err(e) => {
+                    recovered.push(serde_json::json!({
+                        "inode": d.ino, "name": fname, "size": d.size,
+                        "status": "unrecoverable", "reason": format!("{e:#}"),
+                    }));
+                    continue;
+                }
+            };
+            if !fs.has_data(&inode) {
+                recovered.push(serde_json::json!({
+                    "inode": d.ino, "name": fname, "size": d.size,
+                    "status": "unrecoverable", "reason": "block map cleared on delete",
+                }));
+                continue;
+            }
+
             let mut f = std::fs::File::create(&dest)?;
             let mut capped = CappedFile {
                 inner: &mut f,
                 remaining: limit,
             };
-            let result = fs
-                .inode(d.ino)
-                .and_then(|inode| crate::ext4fs::Fs::cat(&fs, &inode, &mut capped));
+            let result = crate::ext4fs::Fs::cat(&fs, &inode, &mut capped);
             match result {
                 Ok(()) => {
                     let written = limit - capped.remaining;
@@ -2603,18 +2623,23 @@ fn deleted_command(
                     }));
                 }
                 Err(e) => {
-                    // A WriteZero error from the cap is a successful partial write, not a failure.
                     let written = limit - capped.remaining;
-                    if written > 0 {
+                    let is_cap = e
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|e| e.kind() == std::io::ErrorKind::WriteZero);
+                    if is_cap && written > 0 {
+                        // The only error that counts as truncated is the size cap.
                         recovered.push(serde_json::json!({
                             "inode": d.ino, "name": fname, "size": d.size,
                             "bytes": written, "truncated": true,
                         }));
                     } else {
+                        // Any other error — even with partial bytes — means the
+                        // recovery is not trustworthy; remove the partial file.
                         let _ = std::fs::remove_file(&dest);
                         recovered.push(serde_json::json!({
                             "inode": d.ino, "name": fname, "size": d.size,
-                            "error": format!("{e:#}"),
+                            "status": "unrecoverable", "reason": format!("{e:#}"),
                         }));
                     }
                 }
