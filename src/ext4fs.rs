@@ -130,6 +130,305 @@ pub struct Fs {
     itables: Vec<u64>,
 }
 
+impl Fs {
+    /// Parse and return the filesystem superblock (the 1024 bytes at byte offset
+    /// 1024). Read-only: this only re-reads the 1 KiB superblock block, it does
+    /// not touch any file data.
+    #[allow(dead_code)] // follows up #224: wired into `ext` dump in a later PR
+    pub fn super_block(&self) -> Result<SuperBlock> {
+        let sb = self.read_exact(1024, 1024)?;
+        SuperBlock::parse(&sb)
+    }
+}
+
+/// A read-only view of the ext2/3/4 superblock.
+///
+/// Parses the 1024 bytes that sit at byte offset 1024 of an ext image (the
+/// "superblock proper"), decoding the headline fields and the three feature
+/// flag words as names, and exposes a `dump` text view that mirrors the output
+/// of `dumpe2fs -h` for the fields this reader understands. No file data, group
+/// descriptors or inodes are read here.
+///
+/// `parse` borrows the bytes for parsing; the returned `SuperBlock` owns a
+/// 1 KiB copy of those bytes so it is free to keep around. This is the
+/// read-only counterpart to `Fs::new`, which consumes a subset of these fields
+/// to open an image — the two never agree to disagree because they read the
+/// same offsets.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // follows up #224: wired into `ext` dump in a later PR
+pub struct SuperBlock {
+    /// Raw 1024-byte superblock image.
+    raw: Vec<u8>,
+    /// Total inode count (`s_inodes_count`).
+    pub inodes_count: u32,
+    /// Total block count (`s_blocks_count`, 64-bit when `64bit` is an incompat
+    /// feature, matching `s_blocks_count_hi`).
+    pub blocks_count: u64,
+    /// Reserved block count (`s_r_blocks_count`, 64-bit under `64bit`).
+    pub reserved_blocks: u32,
+    /// Free block count (`s_free_blocks_count`).
+    pub free_blocks: u32,
+    /// Free inode count (`s_free_inodes_count`).
+    pub free_inodes: u32,
+    /// First data block (`s_first_data_block`).
+    pub first_data_block: u32,
+    /// Block size in bytes (`1 << (10 + s_log_block_size)`).
+    pub block_size: u64,
+    /// Blocks per group (`s_blocks_per_group`).
+    pub blocks_per_group: u32,
+    /// Inodes per group (`s_inodes_per_group`).
+    pub inodes_per_group: u32,
+    /// Filesystem magic (`0xEF53`).
+    pub magic: u16,
+    /// Filesystem state (`s_state`): 1 = clean, 2 = errors, 4 = orphan recovery.
+    pub state: u16,
+    /// Error behaviour (`s_errors`).
+    pub errors: u16,
+    /// Revision level (`s_rev_level`).
+    pub rev: u32,
+    /// Volume name (`s_volume_name`, 16 bytes, NUL trimmed).
+    pub volume_name: String,
+    /// Filesystem UUID (`s_uuid`, 16 bytes, formatted as the canonical
+    /// 8-4-4-4-12 string).
+    pub uuid: String,
+    /// Last mount time (`s_mtime`), seconds since the epoch.
+    pub last_mount_time: u32,
+    /// Last write time (`s_wtime`), seconds since the epoch.
+    pub last_write_time: u32,
+    /// Compatible feature flags (`s_feature_compat`), as names.
+    pub feature_compat: Vec<&'static str>,
+    /// Incompatible feature flags (`s_feature_incompat`), as names.
+    pub feature_incompat: Vec<&'static str>,
+    /// Read-only-compatible feature flags (`s_feature_ro_compat`), as names.
+    pub feature_ro_compat: Vec<&'static str>,
+}
+
+#[allow(dead_code)] // follows up #224: wired into `ext` dump in a later PR
+impl SuperBlock {
+    /// Parse a 1024-byte ext2/3/4 superblock. The bytes must be the superblock
+    /// proper (at image offset 1024 for <= 4 KiB blocks; larger block images
+    /// still keep the superblock at that fixed offset).
+    pub fn parse(raw: &[u8]) -> Result<Self> {
+        ensure!(
+            raw.len() >= 1024,
+            "superblock is shorter than 1024 bytes ({})",
+            raw.len()
+        );
+        let magic = le16(raw, 56);
+        ensure!(
+            magic == EXT_MAGIC,
+            "bad magic {magic:#06x}, not an ext filesystem"
+        );
+        let log_block_size = le32(raw, 24);
+        ensure!(
+            log_block_size <= 6,
+            "unsupported block size (log {log_block_size})"
+        );
+        let block_size = MIN_BLOCK << log_block_size as u64;
+
+        let blocks_count = le32(raw, 4) as u64;
+        let incompat = le32(raw, 96);
+        let blocks_count = if incompat & INCOMPAT_64BIT != 0 {
+            blocks_count | ((le32(raw, 336) as u64) << 32)
+        } else {
+            blocks_count
+        };
+        let reserved_blocks = le32(raw, 8);
+        // Volume name is 16 bytes at offset 0x78, NUL-padded/truncated.
+        let volume_name = cstring(raw, 120, 16);
+        // The 16-byte UUID at offset 0x68, rendered as the canonical string.
+        let uuid = uuid_str(raw, 104);
+
+        Ok(SuperBlock {
+            raw: raw[..1024].to_vec(),
+            inodes_count: le32(raw, 0),
+            blocks_count,
+            reserved_blocks,
+            free_blocks: le32(raw, 12),
+            free_inodes: le32(raw, 16),
+            first_data_block: le32(raw, 20),
+            block_size,
+            blocks_per_group: le32(raw, 32),
+            inodes_per_group: le32(raw, 40),
+            magic,
+            state: le16(raw, 58),
+            errors: le16(raw, 60),
+            rev: le32(raw, 76),
+            volume_name,
+            uuid,
+            last_mount_time: le32(raw, 44),
+            last_write_time: le32(raw, 48),
+            feature_compat: feature_names(raw, 92, COMPAT_FLAGS),
+            feature_incompat: feature_names(raw, 96, INCOMPAT_FLAGS),
+            feature_ro_compat: feature_names(raw, 100, RO_COMPAT_FLAGS),
+        })
+    }
+
+    /// A human-readable text dump of the parsed superblock, mirroring the field
+    /// names `dumpe2fs -h` prints for the values this reader understands.
+    #[allow(dead_code)]
+    pub fn dump(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("Filesystem volume name: {}\n", self.volume_name));
+        out.push_str(&format!("Filesystem UUID: {}\n", self.uuid));
+        out.push_str(&format!("Filesystem magic number: {:#06X}\n", self.magic));
+        out.push_str(&format!("Filesystem revision: {}\n", self.rev));
+        out.push_str(&format!("Block size: {}\n", self.block_size));
+        out.push_str(&format!("Block count: {}\n", self.blocks_count));
+        out.push_str(&format!("Free blocks: {}\n", self.free_blocks));
+        out.push_str(&format!("Reserved blocks: {}\n", self.reserved_blocks));
+        out.push_str(&format!("Inode count: {}\n", self.inodes_count));
+        out.push_str(&format!("Free inodes: {}\n", self.free_inodes));
+        out.push_str(&format!("Blocks per group: {}\n", self.blocks_per_group));
+        out.push_str(&format!("Inodes per group: {}\n", self.inodes_per_group));
+        out.push_str(&format!("First data block: {}\n", self.first_data_block));
+        out.push_str(&format!("State: {}\n", state_name(self.state)));
+        out.push_str(&format!("Errors: {}\n", errors_name(self.errors)));
+        out.push_str("Filesystem features: ");
+        out.push_str(&self.feature_compat.join(" "));
+        out.push(' ');
+        out.push_str(&self.feature_incompat.join(" "));
+        out.push(' ');
+        out.push_str(&self.feature_ro_compat.join(" "));
+        out.push('\n');
+        out
+    }
+}
+
+/// Feature flag tables, mapping a set bit to its e2fsprogs name. Each entry is
+/// `(bit, name)`; the tables come from `ext2_fs.h` (ext2 through ext4, the same
+/// source `dumpe2fs` uses).
+#[allow(dead_code)]
+const COMPAT_FLAGS: &[(u32, &str)] = &[
+    (0, "sparse_super"),
+    (1, "large_file"),
+    (2, "btree_dir"),
+    (3, "ext_attr"),
+    (4, "resize_inode"),
+    (5, "dir_index"),
+    (6, "lazy_bg"),
+    (7, "exclude_bitmap"),
+    (8, "exclude_inode"),
+    (9, "dir_prealloc"),
+    (10, "imagic_inodes"),
+    (11, "sparse_super2"),
+    (12, "fast_commit"),
+    (13, "stable_inodes"),
+    (14, "orphan_file"),
+];
+
+#[allow(dead_code)]
+const INCOMPAT_FLAGS: &[(u32, &str)] = &[
+    (0, "compression"),
+    (1, "filetype"),
+    (2, "recover"),
+    (3, "journal_dev"),
+    (4, "meta_bg"),
+    (6, "extents"),
+    (7, "64bit"),
+    (8, "mmp"),
+    (9, "flex_bg"),
+    (10, "ea_inode"),
+    (11, "dirdata"),
+    (12, "metadata_csum"),
+    (13, "metadata_csum_seed"),
+    (14, "largetdir"),
+    (15, "inline_data"),
+    (16, "encrypt"),
+    (17, "casefold"),
+    (18, "strict_init"),
+    (19, "4va"),
+    (20, "fast_commit"),
+];
+
+#[allow(dead_code)]
+const RO_COMPAT_FLAGS: &[(u32, &str)] = &[
+    (0, "sparse_super"),
+    (1, "large_file"),
+    (2, "btree_dir"),
+    (3, "huge_file"),
+    (4, "gdt_csum"),
+    (5, "dir_nlink"),
+    (6, "extra_isize"),
+    (7, "has_snapshot"),
+    (8, "quota"),
+    (9, "bigalloc"),
+    (10, "metadata_csum"),
+    (11, "replica"),
+    (12, "readonly"),
+    (13, "project"),
+    (14, "shared_blocks"),
+    (15, "verity"),
+    (16, "orphan_present"),
+];
+
+#[allow(dead_code)]
+fn feature_names(raw: &[u8], le32_off: usize, table: &'static [(u32, &str)]) -> Vec<&'static str> {
+    let w = le32(raw, le32_off);
+    table
+        .iter()
+        .filter_map(|(bit, name)| {
+            if w & (1 << bit) != 0 {
+                Some(*name)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Read a NUL-terminated C string from `raw` starting at `off`, up to `maxlen`
+/// bytes (trailing/inner NULs trimmed), without reading past the buffer.
+#[allow(dead_code)]
+fn cstring(raw: &[u8], off: usize, maxlen: usize) -> String {
+    let end = (off + maxlen).min(raw.len());
+    let slice = &raw[off..end];
+    let n = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
+    String::from_utf8_lossy(&slice[..n]).into_owned()
+}
+
+/// Render a 16-byte ext UUID as the canonical `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`.
+#[allow(dead_code)]
+fn uuid_str(raw: &[u8], off: usize) -> String {
+    let u = &raw[off..(off + 16).min(raw.len())];
+    let hex = |i: usize, n: usize| {
+        let mut s = String::new();
+        for b in &u[i..i + n] {
+            s.push_str(&format!("{b:02x}"));
+        }
+        s
+    };
+    // ext2/3/4 UUIDs use the classic RFC 4122 byte layout: 4-2-2-2-6 bytes.
+    format!(
+        "{}-{}-{}-{}-{}",
+        hex(0, 4),
+        hex(4, 2),
+        hex(6, 2),
+        hex(8, 2),
+        hex(10, 6),
+    )
+}
+
+#[allow(dead_code)]
+fn state_name(s: u16) -> &'static str {
+    match s {
+        1 => "clean (EXT4_VALID_FS)",
+        2 => "errors (EXT4_ERROR_FS)",
+        4 => "orphan recovery (EXT4_ORPHAN_FS)",
+        _ => "unknown",
+    }
+}
+
+#[allow(dead_code)]
+fn errors_name(e: u16) -> &'static str {
+    match e {
+        1 => "continue",
+        2 => "remount-ro",
+        3 => "panic",
+        _ => "unknown",
+    }
+}
+
 fn xattr_prefix(index: u8) -> Option<&'static str> {
     Some(match index {
         1 => "user.",
@@ -2080,6 +2379,120 @@ mod tests {
             std::fs::read(out.join("system/files/a")).unwrap(),
             b"hello\n"
         );
+    }
+
+    /// A real ext4 superblock byte array, captured from `mke2fs -q -t ext4 -L testvol
+    /// -U 12345678-1234-1234-1234-123456789abc img 1M`. Ground-truth field values
+    /// come from `dumpe2fs -h img` on the same image (see the test below).
+    const SB_BYTES: &[u8] = &[
+        128, 0, 0, 0, 0, 4, 0, 0, 51, 0, 0, 0, 198, 3, 0, 0, 117, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 32, 0, 0, 0, 32, 0, 0, 128, 0, 0, 0, 0, 0, 0, 0, 18, 45, 206, 106, 0, 0,
+        255, 255, 83, 239, 1, 0, 1, 0, 0, 0, 18, 45, 206, 106, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
+        0, 0, 0, 0, 11, 0, 0, 0, 0, 1, 0, 0, 56, 0, 0, 0, 194, 34, 0, 0, 107, 4, 0, 0, 18, 52, 86,
+        120, 18, 52, 18, 52, 18, 52, 18, 52, 86, 120, 154, 188, 116, 101, 115, 116, 118, 111, 108,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 161, 113, 150, 66, 173, 128, 68,
+        152, 183, 40, 236, 111, 118, 55, 92, 39, 1, 0, 64, 0, 12, 0, 0, 0, 0, 0, 0, 0, 18, 45, 206,
+        106, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 32, 0, 1, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 1, 0, 0, 91, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 44, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 178, 28,
+        54, 148, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 76, 57, 173, 146,
+    ];
+
+    #[test]
+    fn superblock_parses_all_fields_and_dumps_text() {
+        use crate::ext4fs::SuperBlock;
+        let sb = SuperBlock::parse(SB_BYTES).expect("valid superblock");
+        // dumpe2fs -h ground truth (mke2fs -q -t ext4 -L testvol ...).
+        assert_eq!(sb.inodes_count, 128);
+        assert_eq!(sb.blocks_count, 1024);
+        assert_eq!(sb.reserved_blocks, 51);
+        assert_eq!(sb.free_blocks, 966);
+        assert_eq!(sb.free_inodes, 117);
+        assert_eq!(sb.first_data_block, 1);
+        assert_eq!(sb.block_size, 1024);
+        assert_eq!(sb.blocks_per_group, 8192);
+        assert_eq!(sb.inodes_per_group, 128);
+        assert_eq!(sb.magic, 0xEF53);
+        assert_eq!(sb.state, 1); // Ext4_VALID_FS
+        assert_eq!(sb.volume_name, "testvol");
+        assert_eq!(sb.uuid, "12345678-1234-1234-1234-123456789abc");
+        // mtime is 0 (never mounted); wtime == mkfs time.
+        assert_eq!(sb.last_mount_time, 0);
+        assert_eq!(sb.last_write_time, 1791896850);
+        // feature flag names decoded from the raw compat/incompat/ro_compat words.
+        // compat word 0x38 -> ext_attr, resize_inode, dir_index
+        let compat = &sb.feature_compat;
+        assert!(compat.contains(&"ext_attr"));
+        assert!(compat.contains(&"resize_inode"));
+        assert!(compat.contains(&"dir_index"));
+        assert!(
+            !compat.contains(&"sparse_super"),
+            "sparse_super is ro_compat"
+        );
+        // incompat word 0x22c2 -> filetype, extents, 64bit, flex_bg, metadata_csum_seed
+        let incompat = &sb.feature_incompat;
+        assert!(incompat.contains(&"filetype"));
+        assert!(incompat.contains(&"extents"));
+        assert!(incompat.contains(&"64bit"));
+        assert!(incompat.contains(&"flex_bg"));
+        assert!(incompat.contains(&"metadata_csum_seed"));
+        assert!(
+            !incompat.contains(&"sparse_super"),
+            "sparse_super is ro_compat"
+        );
+        // ro_compat word 0x46b -> sparse_super, large_file, huge_file, dir_nlink,
+        // extra_isize, metadata_csum
+        let ro = &sb.feature_ro_compat;
+        assert!(ro.contains(&"sparse_super"));
+        assert!(ro.contains(&"large_file"));
+        assert!(ro.contains(&"huge_file"));
+        assert!(ro.contains(&"dir_nlink"));
+        assert!(ro.contains(&"extra_isize"));
+        assert!(ro.contains(&"metadata_csum"));
+        // The text dump must surface the headline fields and the magic check.
+        let text = sb.dump();
+        assert!(text.contains("Filesystem volume name: testvol"));
+        assert!(text.contains("Filesystem UUID: 12345678-1234-1234-1234-123456789abc"));
+        assert!(text.contains("Filesystem magic number: 0xEF53"));
+        assert!(text.contains("Block size: 1024"));
+        assert!(text.contains("Free blocks: 966"));
+        assert!(text.contains("Block count: 1024"));
+        assert!(text.contains("Inode count: 128"));
+    }
+
+    #[test]
+    fn superblock_parse_rejects_bad_magic() {
+        use crate::ext4fs::SuperBlock;
+        let mut bad = SB_BYTES.to_vec();
+        bad[56] = 0;
+        bad[57] = 0;
+        let e = format!("{:#}", SuperBlock::parse(&bad).unwrap_err());
+        assert!(e.contains("bad magic"), "{e}");
     }
 
     fn tempfile_like() -> File {
