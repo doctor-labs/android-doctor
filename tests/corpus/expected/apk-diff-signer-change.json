@@ -1,0 +1,7 @@
+[
+  {
+    "id": "apk-diff-signer-changed",
+    "severity": "high",
+    "subject": "apk"
+  }
+]

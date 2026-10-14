@@ -22,6 +22,8 @@ const AOSP_TEST_KEY_SUBJECTS: &[&str] =
 
 /// Maximum APK size we will read into memory (10 MB).
 pub const MAX_APK_BYTES: u64 = 10 * 1024 * 1024;
+/// Cap on `<uses-permission>` entries kept per manifest (hostile manifests can repeat them).
+const MAX_USES_PERMISSIONS: usize = 4096;
 /// Maximum size of a single entry inside an APK zip (5 MB).
 const MAX_ENTRY_BYTES: usize = 5 * 1024 * 1024;
 
@@ -1028,6 +1030,13 @@ fn read_tag(
                 if parent.is_some_and(|(p, _)| p == "manifest") && !a.value.is_empty() =>
             {
                 perm_name = Some(a.value.clone())
+            }
+            ("uses-permission", "name")
+                if parent.is_some_and(|(p, _)| p == "manifest")
+                    && !a.value.is_empty()
+                    && out.uses_permissions.len() < MAX_USES_PERMISSIONS =>
+            {
+                out.uses_permissions.push(a.value.clone())
             }
             ("permission", "protectionLevel") if (0x10..=0x1f).contains(&a.data_type) => {
                 perm_level = Some(a.data & 0xf)
@@ -3607,6 +3616,33 @@ mod tests {
             &manifest(vec![], 33, vec![], vec![]),
             "apk-direct-boot-aware"
         ));
+    }
+
+    #[test]
+    fn uses_permission_names_are_read_from_the_manifest() {
+        let m = el(
+            "manifest",
+            vec![(false, "package", V::Str("com.example.fx"))],
+            vec![
+                el(
+                    "uses-permission",
+                    vec![a("name", V::Str("android.permission.CAMERA"))],
+                    vec![],
+                ),
+                el(
+                    "uses-permission",
+                    vec![a("name", V::Str("android.permission.INTERNET"))],
+                    vec![],
+                ),
+                el("application", vec![], vec![]),
+            ],
+        );
+        let r = audit_apk_bytes(Path::new("/x.apk"), &apk_with(&axml(&m, true)));
+        let info = r.info.unwrap();
+        assert_eq!(
+            info.manifest.uses_permissions,
+            ["android.permission.CAMERA", "android.permission.INTERNET"]
+        );
     }
 
     #[test]

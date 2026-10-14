@@ -13,6 +13,7 @@ use crate::detect::refuse_blocking_file;
 mod amlogic;
 mod apk;
 mod apkcompare;
+mod apkdiff;
 mod archive;
 mod audit;
 mod avb;
@@ -503,6 +504,18 @@ enum Command {
         /// Print JSON (the doctor/1 envelope) instead of text
         #[arg(long)]
         json: bool,
+    },
+    /// Compare two builds of one APK: requested permissions, new or newly exported components and the signing certificate; what got worse becomes findings
+    ApkDiff {
+        /// The old APK
+        old: PathBuf,
+        /// The new APK
+        new: PathBuf,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        report: ReportArgs,
     },
     /// Write the AVB public key blob of a PEM RSA key (avbtool extract_public_key) and print its SHA-256 digest
     Avbkey {
@@ -1419,6 +1432,12 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             force,
             json,
         } => avberase_command(&image, &output, force, json),
+        Command::ApkDiff {
+            old,
+            new,
+            json,
+            report,
+        } => apk_diff_command(&old, &new, json, &report, no_color),
         Command::Avbkey { key, output, json } => avbkey_command(&key, output.as_deref(), json),
         Command::Vbsign {
             image,
@@ -3058,6 +3077,29 @@ fn diff_command(
         r.findings,
         || fwdiff::to_json(&r.images, only),
         || Some(fwdiff::to_text(&r.images, only)),
+    )
+}
+
+fn apk_diff_command(
+    old: &std::path::Path,
+    new: &std::path::Path,
+    json: bool,
+    report: &ReportArgs,
+    no_color: bool,
+) -> anyhow::Result<()> {
+    let r = apkdiff::run(old, new)?;
+    emit(
+        Emit {
+            json,
+            // A new permission or export is a regression of the build, so gate on high like `diff`.
+            fail_default: Some(findings::Severity::High),
+            no_color,
+            domain_replaces_face: false,
+        },
+        report,
+        r.findings,
+        || r.data,
+        || Some(r.text),
     )
 }
 
