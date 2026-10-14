@@ -15,6 +15,7 @@ All notable changes to this project are documented here. The format follows
 - APK code audit reports hardcoded public IP addresses and cleartext http:// URLs (#197).
 - APK audit reads the v3 `SigningCertificateLineage` (key rotation) and exposes it via `signing_lineage` as an oldest-first list of `LineageEntry` (`subject_cn`, `cert_sha256`, `rotated_to`, `proof_of_rotation`); an APK with a single signer certificate reports no lineage (#202).
 - ELF audit reports RPATH/RUNPATH entries outside read-only system locations (#189).
+- ELF audit reports native binaries that keep a full symbol table (`.symtab` in the section headers) as `elf-not-stripped` (info); `.dynsym` alone does not count, and no finding is made when the section table is missing or unreadable (#189).
 - APK audit names known packers and protectors (Jiagu, Bangcle, SecNeo, Tencent Legu, Baidu, Alibaba, Ijiami) from their stub libraries (#195).
 - Image audit parses fstab files and reports system partitions without dm-verity and /data without (or with optional) encryption (#192).
 - APK audit reports high intent-filter priorities, binary SMS port receivers, dialer secret codes and directBootAware components (#210).

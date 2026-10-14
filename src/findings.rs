@@ -489,6 +489,11 @@ pub fn help(rule: &str) -> Option<Help> {
             "Build with -D_FORTIFY_SOURCE=2 at -O1 or higher",
             Info,
         ),
+        "elf-not-stripped" => (
+            "The native binary keeps its full symbol table (.symtab): it ships unstripped",
+            "Strip release binaries with llvm-strip --strip-all, or keep the symbols in a separate debug file",
+            Info,
+        ),
         "hardcoded_credentials" => (
             "A private key is embedded in the image",
             "Remove the key from the image and rotate it",
@@ -877,6 +882,7 @@ const KNOWN_RULES: &[&str] = &[
     "elf-partial-relro",
     "elf-no-canary",
     "elf-no-fortify",
+    "elf-not-stripped",
     "apk-exported-component",
     "apk-exported-weak-permission",
     "apk-custom-permission-weak",

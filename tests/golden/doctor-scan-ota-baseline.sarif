@@ -26,7 +26,7 @@
             "severity": "low"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 78
+          "ruleIndex": 79
         },
         {
           "baselineState": "new",
@@ -86,7 +86,7 @@
             "severity": "info"
           },
           "ruleId": "selinux_label_gaps",
-          "ruleIndex": 80
+          "ruleIndex": 81
         },
         {
           "baselineState": "new",
@@ -112,7 +112,7 @@
             "severity": "info"
           },
           "ruleId": "mode_anomalies",
-          "ruleIndex": 77
+          "ruleIndex": 78
         },
         {
           "baselineState": "new",
@@ -129,7 +129,7 @@
             "severity": "info"
           },
           "ruleId": "init_service_hygiene",
-          "ruleIndex": 74
+          "ruleIndex": 75
         },
         {
           "baselineState": "new",
@@ -1218,6 +1218,22 @@
               "name": "elf-no-relro",
               "shortDescription": {
                 "text": "No RELRO: the GOT stays writable after relocation"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "The native binary keeps its full symbol table (.symtab): it ships unstripped"
+              },
+              "help": {
+                "text": "Strip release binaries with llvm-strip --strip-all, or keep the symbols in a separate debug file"
+              },
+              "id": "elf-not-stripped",
+              "name": "elf-not-stripped",
+              "shortDescription": {
+                "text": "The native binary keeps its full symbol table (.symtab): it ships unstripped"
               }
             },
             {

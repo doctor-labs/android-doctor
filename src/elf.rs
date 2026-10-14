@@ -59,6 +59,10 @@ pub struct ElfInfo {
     pub fortify: Option<bool>,
     /// RPATH/RUNPATH entries that point outside read-only system locations.
     pub unsafe_rpaths: Vec<String>,
+    /// `Some(true)` when the section table has a `.symtab` (full symbol table; the binary is not
+    /// stripped). `Some(false)` when the table is readable and has none. `None` when there is no
+    /// readable section table. `.dynsym` alone does not count.
+    pub symtab: Option<bool>,
 }
 
 struct Rd<'a> {
@@ -195,11 +199,64 @@ pub fn parse(d: &[u8]) -> Result<Option<ElfInfo>> {
         canary: None,
         fortify: None,
         unsafe_rpaths: Vec::new(),
+        symtab: section_table_has_symtab(&r).ok().flatten(),
     };
     if let Some(dynh) = ph.iter().find(|h| h.kind == PT_DYNAMIC) {
         dynamic(&r, &ph, dynh, &mut info).context("reading the dynamic section")?;
     }
     Ok(Some(info))
+}
+
+/// Scan the section names for `.symtab`, through the section-name string table (`e_shstrndx`).
+/// `Ok(None)` when the file has no section table (or one that cannot hold a header); errors on a
+/// truncated or out-of-range table, which the caller treats as "nothing to judge".
+fn section_table_has_symtab(r: &Rd) -> Result<Option<bool>> {
+    let (shoff, shentsize, shnum, shstrndx, min) = if r.is64 {
+        (r.u64(40)?, r.u16(58)?, r.u16(60)?, r.u16(62)?, 64)
+    } else {
+        (
+            u64::from(r.u32(32)?),
+            r.u16(46)?,
+            r.u16(48)?,
+            r.u16(50)?,
+            40,
+        )
+    };
+    if shoff == 0 || shnum == 0 || shstrndx == 0 || shstrndx >= shnum || shentsize < min {
+        return Ok(None);
+    }
+    // (sh_name, sh_offset, sh_size) of section `i`.
+    let sh = |i: u16| -> Result<(u32, u64, u64)> {
+        let o = shoff
+            .checked_add(u64::from(i) * u64::from(shentsize))
+            .context("section header offset overflows")?;
+        Ok(if r.is64 {
+            (r.u32(o)?, r.u64(o + 24)?, r.u64(o + 32)?)
+        } else {
+            (
+                r.u32(o)?,
+                u64::from(r.u32(o + 16)?),
+                u64::from(r.u32(o + 20)?),
+            )
+        })
+    };
+    let (_, stroff, strsz) = sh(shstrndx)?;
+    let end = stroff
+        .checked_add(strsz)
+        .context("section name table overflows")?;
+    let names =
+        r.d.get(usize::try_from(stroff)?..usize::try_from(end)?)
+            .context("section name table is past the end of the file")?;
+    for i in 0..shnum {
+        let (name, _, _) = sh(i)?;
+        let name = names
+            .get(name as usize..)
+            .and_then(|t| t.split(|b| *b == 0).next());
+        if name == Some(&b".symtab"[..]) {
+            return Ok(Some(true));
+        }
+    }
+    Ok(Some(false))
 }
 
 fn dynamic(r: &Rd, ph: &[Phdr], dynh: &Phdr, info: &mut ElfInfo) -> Result<()> {
@@ -358,6 +415,13 @@ pub fn issues(i: &ElfInfo) -> Vec<(Severity, &'static str, &'static str)> {
             "RPATH/RUNPATH searches a writable or relative directory before the system libraries (library hijacking)",
         ));
     }
+    if i.symtab == Some(true) {
+        v.push((
+            Severity::Info,
+            "elf-not-stripped",
+            "full symbol table (.symtab) present; binary ships unstripped",
+        ));
+    }
     v
 }
 
@@ -458,7 +522,7 @@ pub fn to_json(a: &ElfAudit) -> Value {
             "path": p, "bits": i.bits, "big_endian": i.big_endian, "executable": i.executable,
             "no_pie": i.no_pie, "exec_stack": i.exec_stack,
             "relro": match i.relro { Relro::None => "none", Relro::Partial => "partial", Relro::Full => "full" },
-            "stack_canary": i.canary, "fortify": i.fortify,
+            "stack_canary": i.canary, "fortify": i.fortify, "symtab": i.symtab,
             "unsafe_rpaths": i.unsafe_rpaths,
             "issues": issues(i).iter().map(|x| x.1).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
@@ -483,6 +547,8 @@ pub(crate) mod tests {
         dynamic: bool,
         /// DT_RPATH / DT_RUNPATH tags: (tag, path string), the string is appended to the string table.
         paths: Vec<(u64, &'static str)>,
+        /// Section names for a section table (`.shstrtab` is added); `None` = no section table.
+        sections: Option<Vec<&'static str>>,
     }
 
     fn base() -> Spec {
@@ -496,6 +562,7 @@ pub(crate) mod tests {
             strings: vec!["__stack_chk_fail", "__memcpy_chk"],
             dynamic: true,
             paths: vec![],
+            sections: None,
         }
     }
     fn unhardened() -> Spec {
@@ -577,7 +644,69 @@ pub(crate) mod tests {
 
     /// Layout: header, program headers, then at 0x200 the dynamic section and at 0x300 the string
     /// table. One PT_LOAD maps the first 0x400 bytes at vaddr 0x1000.
+    /// The section table, placed after the 0x400-byte body: (e_shoff, e_shentsize, e_shnum,
+    /// e_shstrndx, bytes). Empty when the spec has no sections.
+    fn section_table(s: &Spec) -> (u64, u16, u16, u16, Vec<u8>) {
+        let Some(names) = &s.sections else {
+            return (0, 0, 0, 0, vec![]);
+        };
+        let mut all: Vec<&str> = names.clone();
+        all.push(".shstrtab");
+        let mut shstr = vec![0u8];
+        let mut offs = Vec::new();
+        for n in &all {
+            offs.push(shstr.len() as u32);
+            shstr.extend(n.as_bytes());
+            shstr.push(0);
+        }
+        let shstr_len = shstr.len() as u64;
+        shstr.resize(shstr.len().next_multiple_of(8), 0);
+        let shoff = 0x400 + shstr.len() as u64;
+        // Entry 0 is the null section; all[i] is entry i + 1; .shstrtab is the last name.
+        let mut tail = shstr;
+        tail.extend(sh_entry(s, 0, 0, 0, 0));
+        for (i, _) in all.iter().enumerate() {
+            let is_strtab = i == all.len() - 1;
+            let (off, size) = if is_strtab {
+                (0x400, shstr_len)
+            } else {
+                (0, 0)
+            };
+            tail.extend(sh_entry(s, offs[i], 1, off, size));
+        }
+        let entsize = if s.is64 { 64 } else { 40 };
+        (shoff, entsize, all.len() as u16 + 1, all.len() as u16, tail)
+    }
+
+    /// One section header: name offset, type, file offset and size (other fields zero).
+    fn sh_entry(s: &Spec, name: u32, ty: u32, off: u64, size: u64) -> Vec<u8> {
+        let mut e = Vec::new();
+        put(&mut e, s.be, 4, u64::from(name));
+        put(&mut e, s.be, 4, u64::from(ty));
+        if s.is64 {
+            put(&mut e, s.be, 8, 0); // flags
+            put(&mut e, s.be, 8, 0); // addr
+            put(&mut e, s.be, 8, off);
+            put(&mut e, s.be, 8, size);
+            put(&mut e, s.be, 4, 0); // link
+            put(&mut e, s.be, 4, 0); // info
+            put(&mut e, s.be, 8, 0); // addralign
+            put(&mut e, s.be, 8, 0); // entsize
+        } else {
+            put(&mut e, s.be, 4, 0); // flags
+            put(&mut e, s.be, 4, 0); // addr
+            put(&mut e, s.be, 4, off);
+            put(&mut e, s.be, 4, size);
+            put(&mut e, s.be, 4, 0); // link
+            put(&mut e, s.be, 4, 0); // info
+            put(&mut e, s.be, 4, 0); // addralign
+            put(&mut e, s.be, 4, 0); // entsize
+        }
+        e
+    }
+
     fn build(s: &Spec) -> Vec<u8> {
+        let (shoff, shentsize, shnum, shstrndx, tail) = section_table(s);
         let (w, esz, phsz, ehsz) = if s.is64 {
             (8, 16, 56, 64)
         } else {
@@ -629,14 +758,14 @@ pub(crate) mod tests {
         put(&mut v, s.be, 4, 1);
         put(&mut v, s.be, w, 0); // entry
         put(&mut v, s.be, w, ehsz as u64); // phoff
-        put(&mut v, s.be, w, 0); // shoff
+        put(&mut v, s.be, w, shoff);
         put(&mut v, s.be, 4, 0);
         put(&mut v, s.be, 2, ehsz as u64);
         put(&mut v, s.be, 2, phsz as u64);
         put(&mut v, s.be, 2, phs.len() as u64);
-        for _ in 0..3 {
-            put(&mut v, s.be, 2, 0); // shentsize, shnum, shstrndx
-        }
+        put(&mut v, s.be, 2, u64::from(shentsize));
+        put(&mut v, s.be, 2, u64::from(shnum));
+        put(&mut v, s.be, 2, u64::from(shstrndx));
         assert_eq!(v.len(), ehsz);
         for (t, f, off, va, fsz) in phs {
             put(&mut v, s.be, 4, u64::from(t));
@@ -661,6 +790,7 @@ pub(crate) mod tests {
         v.resize(str_off as usize, 0);
         v.extend(strtab);
         v.resize(0x400, 0);
+        v.extend(tail);
         v
     }
 
@@ -888,5 +1018,70 @@ pub(crate) mod tests {
         let a = scan_tree(&entries, &mut |_| Ok(d.clone()));
         assert_eq!(a.errors.len(), 1);
         assert!(a.errors[0].1.contains("past the end"), "{:?}", a.errors);
+    }
+
+    fn stripped_spec(names: Option<Vec<&'static str>>) -> Spec {
+        Spec {
+            sections: names,
+            ..base()
+        }
+    }
+
+    #[test]
+    fn a_symtab_section_means_unstripped() {
+        let s = stripped_spec(Some(vec![".text", ".dynsym", ".symtab"]));
+        let i = parse(&build(&s)).unwrap().unwrap();
+        assert_eq!(i.symtab, Some(true));
+        assert_eq!(rules_of(&s), ["elf-not-stripped"]);
+        let sev = issues(&i)
+            .into_iter()
+            .find(|x| x.1 == "elf-not-stripped")
+            .unwrap()
+            .0;
+        assert_eq!(sev, Severity::Info);
+        // Big-endian, 32-bit: same answer.
+        for (is64, be) in [(false, false), (false, true), (true, true)] {
+            let s = Spec {
+                is64,
+                be,
+                ..stripped_spec(Some(vec![".symtab"]))
+            };
+            assert_eq!(
+                parse(&build(&s)).unwrap().unwrap().symtab,
+                Some(true),
+                "{is64} {be}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dynsym_alone_or_no_section_table_is_not_judged_as_unstripped() {
+        // Readable table, no .symtab: the binary is stripped, so no finding.
+        let s = stripped_spec(Some(vec![".text", ".dynsym", ".dynstr"]));
+        let i = parse(&build(&s)).unwrap().unwrap();
+        assert_eq!(i.symtab, Some(false));
+        assert!(rules_of(&s).is_empty());
+        // No section table at all: nothing to judge.
+        let i = parse(&build(&base())).unwrap().unwrap();
+        assert_eq!(i.symtab, None);
+        assert!(!rules_of(&base()).contains(&"elf-not-stripped"));
+    }
+
+    #[test]
+    fn a_truncated_section_table_gives_no_finding_and_no_panic() {
+        let good = build(&stripped_spec(Some(vec![".text", ".symtab"])));
+        assert_eq!(parse(&good).unwrap().unwrap().symtab, Some(true));
+        // Layout: names at 0x400, section headers from 0x420 (64 bytes each), so the .symtab
+        // header (index 2) needs its fields up to 0x420 + 2 * 64 + 40 = 1224. Before that, no answer.
+        let needed = 0x420 + 2 * 64 + 40;
+        for n in 0x400..good.len() {
+            let i = parse(&good[..n]).unwrap().unwrap();
+            if n < needed {
+                assert_eq!(i.symtab, None, "cut at {n}");
+            }
+            if i.symtab != Some(true) {
+                assert!(!issues(&i).iter().any(|x| x.1 == "elf-not-stripped"));
+            }
+        }
     }
 }
