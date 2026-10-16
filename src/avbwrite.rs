@@ -1,8 +1,10 @@
-//! Writing AVB `vbmeta` images: the part of avbtool `make_vbmeta_image` that needs no descriptors.
-//! The image is a header, an authentication block (SHA-256 digest and, for the RSA algorithms, a
-//! PKCS#1 v1.5 signature over header and auxiliary block) and an auxiliary block that holds the
-//! AVB public key. Layout from AOSP libavb `avb_vbmeta_image.h` (Apache-2.0), and byte-checked
-//! against AOSP avbtool `_generate_vbmeta_blob` (see the README row). All integers are big-endian.
+//! Writing AVB `vbmeta` images and partition hash footers: the parts of avbtool `make_vbmeta_image`,
+//! `add_hash_footer` and `erase_footer` that this crate mirrors. A vbmeta image is a header, an
+//! authentication block (SHA-256 digest and, for the RSA algorithms, a PKCS#1 v1.5 signature over
+//! header and auxiliary block) and an auxiliary block holding the descriptors and the AVB public
+//! key. Layout from AOSP libavb `avb_vbmeta_image.h`, `avb_hash_descriptor.h` and `avb_footer.h`
+//! (Apache-2.0), byte-checked against AOSP avbtool 1.3.0 (see the README rows). All integers are
+//! big-endian.
 use anyhow::{Context, Result, ensure};
 use rsa::RsaPrivateKey;
 use rsa::pkcs1::DecodeRsaPrivateKey;
@@ -14,6 +16,10 @@ use sha2::{Digest, Sha256};
 const HEADER_LEN: usize = 256;
 const AUTH_ALIGN: usize = 64;
 const RELEASE_MAX: usize = 47;
+const FOOTER_LEN: usize = 64;
+const MAX_VBMETA: usize = 64 * 1024;
+const MAX_FOOTER: usize = 4096;
+const HASH_DESCRIPTOR_TAG: u64 = 2;
 
 /// The algorithms avbtool knows without a descriptor-only path: name, AVB algorithm type, and
 /// RSA modulus size in bits (0 for NONE, which takes no key).
@@ -35,6 +41,15 @@ pub struct Options<'a> {
     pub release_string: &'a str,
 }
 
+/// What a hash footer covers: the partition name in the hash descriptor, the partition size the
+/// result is padded to, the block size, and the salt (hashed in front of the image).
+pub struct FooterOptions<'a> {
+    pub partition: &'a str,
+    pub partition_size: u64,
+    pub block_size: u64,
+    pub salt: &'a [u8],
+}
+
 /// PKCS#1 v1.5 scheme for a SHA-256 digest that is already computed (the DigestInfo prefix is
 /// written out here, so it does not depend on the digest crate's trait versions).
 fn sha256_scheme() -> Pkcs1v15Sign {
@@ -52,6 +67,20 @@ fn round_up(n: usize, to: usize) -> usize {
     n.div_ceil(to) * to
 }
 
+/// Decode a hex string (even length) into bytes.
+pub fn unhex(s: &str) -> Result<Vec<u8>> {
+    ensure!(
+        s.is_ascii() && s.len().is_multiple_of(2),
+        "hex value must be an even number of ASCII digits"
+    );
+    (0..s.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&s[i..i + 2], 16).with_context(|| format!("bad hex digits in {s}"))
+        })
+        .collect()
+}
+
 /// Read a PEM RSA private key, PKCS#8 (`BEGIN PRIVATE KEY`) or PKCS#1 (`BEGIN RSA PRIVATE KEY`).
 pub fn parse_private_key(pem: &str) -> Result<RsaPrivateKey> {
     RsaPrivateKey::from_pkcs8_pem(pem)
@@ -59,8 +88,19 @@ pub fn parse_private_key(pem: &str) -> Result<RsaPrivateKey> {
         .context("invalid PEM RSA private key")
 }
 
-/// Build a vbmeta image. `key` is required for the RSA algorithms and must match their size.
+/// Build a vbmeta image with no descriptors. `key` is required for the RSA algorithms.
 pub fn make_vbmeta(opts: &Options, key: Option<&RsaPrivateKey>) -> Result<Vec<u8>> {
+    make_vbmeta_with(opts, key, &[])
+}
+
+/// Build a vbmeta image whose auxiliary block starts with `descriptors` (already encoded, each a
+/// multiple of 8 bytes), followed by the public key. `key` is required for the RSA algorithms and
+/// must match their size.
+pub fn make_vbmeta_with(
+    opts: &Options,
+    key: Option<&RsaPrivateKey>,
+    descriptors: &[u8],
+) -> Result<Vec<u8>> {
     let &(_, alg_type, bits) = ALGORITHMS
         .iter()
         .find(|a| a.0 == opts.algorithm)
@@ -77,8 +117,9 @@ pub fn make_vbmeta(opts: &Options, key: Option<&RsaPrivateKey>) -> Result<Vec<u8
         "release string is longer than {RELEASE_MAX} bytes"
     );
 
-    // Auxiliary block: the public key (descriptors and metadata are not written by this path).
-    let mut aux = Vec::new();
+    // Auxiliary block: descriptors, then the public key (no metadata).
+    let mut aux = descriptors.to_vec();
+    let desc_size = aux.len();
     if bits > 0 {
         let key = key.context("this algorithm needs a signing key (--key)")?;
         ensure!(
@@ -89,7 +130,7 @@ pub fn make_vbmeta(opts: &Options, key: Option<&RsaPrivateKey>) -> Result<Vec<u8
         );
         aux.extend_from_slice(&crate::avb::public_key_blob(key.n()));
     }
-    let pk_size = aux.len();
+    let pk_size = aux.len() - desc_size;
     let aux_size = round_up(aux.len(), AUTH_ALIGN);
     aux.resize(aux_size, 0);
 
@@ -108,12 +149,12 @@ pub fn make_vbmeta(opts: &Options, key: Option<&RsaPrivateKey>) -> Result<Vec<u8
     h.extend_from_slice(&(hash_len as u64).to_be_bytes());
     h.extend_from_slice(&(hash_len as u64).to_be_bytes()); // signature offset
     h.extend_from_slice(&(sig_len as u64).to_be_bytes());
-    h.extend_from_slice(&0u64.to_be_bytes()); // public key offset (no descriptors before it)
+    h.extend_from_slice(&(desc_size as u64).to_be_bytes()); // public key offset
     h.extend_from_slice(&(pk_size as u64).to_be_bytes());
-    h.extend_from_slice(&(pk_size as u64).to_be_bytes()); // public key metadata offset
+    h.extend_from_slice(&((desc_size + pk_size) as u64).to_be_bytes()); // public key metadata offset
     h.extend_from_slice(&0u64.to_be_bytes()); // public key metadata size
     h.extend_from_slice(&0u64.to_be_bytes()); // descriptors offset
-    h.extend_from_slice(&0u64.to_be_bytes()); // descriptors size
+    h.extend_from_slice(&(desc_size as u64).to_be_bytes()); // descriptors size
     h.extend_from_slice(&opts.rollback_index.to_be_bytes());
     h.extend_from_slice(&opts.flags.to_be_bytes());
     h.extend_from_slice(&opts.rollback_index_location.to_be_bytes());
@@ -153,21 +194,142 @@ pub fn make_vbmeta(opts: &Options, key: Option<&RsaPrivateKey>) -> Result<Vec<u8
     Ok(out)
 }
 
+/// Encode an AVB hash descriptor (tag 2) for SHA-256: the image size, salt and digest, padded to
+/// 8 bytes. Field order from libavb `avb_hash_descriptor.h`.
+pub fn hash_descriptor(partition: &str, image_size: u64, salt: &[u8], digest: &[u8]) -> Vec<u8> {
+    let mut d = Vec::new();
+    d.extend_from_slice(&HASH_DESCRIPTOR_TAG.to_be_bytes());
+    d.extend_from_slice(&0u64.to_be_bytes()); // num_bytes_following, set below
+    d.extend_from_slice(&image_size.to_be_bytes());
+    let mut alg = [0u8; 32];
+    alg[..6].copy_from_slice(b"sha256");
+    d.extend_from_slice(&alg);
+    d.extend_from_slice(&(partition.len() as u32).to_be_bytes());
+    d.extend_from_slice(&(salt.len() as u32).to_be_bytes());
+    d.extend_from_slice(&(digest.len() as u32).to_be_bytes());
+    d.extend_from_slice(&0u32.to_be_bytes()); // flags
+    d.extend_from_slice(&[0u8; 60]); // reserved
+    d.extend_from_slice(partition.as_bytes());
+    d.extend_from_slice(salt);
+    d.extend_from_slice(digest);
+    d.resize(round_up(d.len(), 8), 0);
+    let following = (d.len() - 16) as u64;
+    d[8..16].copy_from_slice(&following.to_be_bytes());
+    d
+}
+
+fn has_footer(image: &[u8]) -> bool {
+    image.len() >= FOOTER_LEN && &image[image.len() - FOOTER_LEN..][..4] == b"AVBf"
+}
+
+/// Build a partition image with an AVB hash footer, as avbtool `add_hash_footer`: the image
+/// padded to the block size, the vbmeta image (one hash descriptor, optionally signed), zero fill,
+/// and a last block whose final 64 bytes are the footer. The output is exactly `partition_size`
+/// bytes. The input is only read.
+pub fn hash_footer(
+    image: &[u8],
+    fo: &FooterOptions,
+    opts: &Options,
+    key: Option<&RsaPrivateKey>,
+) -> Result<Vec<u8>> {
+    let block = fo.block_size as usize;
+    ensure!(
+        block > 0 && fo.partition_size.is_multiple_of(fo.block_size),
+        "partition size {} is not a multiple of the block size {}",
+        fo.partition_size,
+        fo.block_size
+    );
+    ensure!(
+        !has_footer(image),
+        "the image already has an AVB footer; erase it first"
+    );
+    let max_metadata = (MAX_VBMETA + MAX_FOOTER) as u64;
+    ensure!(
+        fo.partition_size >= max_metadata,
+        "partition size {} is below the {max_metadata} bytes of metadata",
+        fo.partition_size
+    );
+    ensure!(
+        image.len() as u64 <= fo.partition_size - max_metadata,
+        "image of {} bytes does not fit in partition size {} with its metadata",
+        image.len(),
+        fo.partition_size
+    );
+
+    let digest = {
+        let mut hasher = Sha256::new();
+        hasher.update(fo.salt);
+        hasher.update(image);
+        hasher.finalize()
+    };
+    let desc = hash_descriptor(fo.partition, image.len() as u64, fo.salt, &digest);
+    let vbmeta = make_vbmeta_with(opts, key, &desc)?;
+
+    let mut out = image.to_vec();
+    out.resize(round_up(out.len(), block), 0);
+    let vbmeta_offset = out.len();
+    out.extend_from_slice(&vbmeta);
+    out.resize(round_up(out.len(), block), 0);
+    let partition = fo.partition_size as usize;
+    ensure!(
+        out.len() <= partition - block,
+        "vbmeta does not fit before the footer block"
+    );
+    out.resize(partition - FOOTER_LEN, 0);
+    out.extend_from_slice(b"AVBf");
+    out.extend_from_slice(&1u32.to_be_bytes()); // footer major
+    out.extend_from_slice(&0u32.to_be_bytes()); // footer minor
+    out.extend_from_slice(&(image.len() as u64).to_be_bytes()); // original image size
+    out.extend_from_slice(&(vbmeta_offset as u64).to_be_bytes());
+    out.extend_from_slice(&(vbmeta.len() as u64).to_be_bytes());
+    out.extend_from_slice(&[0u8; 28]); // reserved
+    debug_assert_eq!(out.len(), partition);
+    Ok(out)
+}
+
+/// The image without its AVB footer and the vbmeta it points to: the first `original_image_size`
+/// bytes (avbtool `erase_footer` without `--keep_hashtree`).
+pub fn erase_footer(image: &[u8]) -> Result<Vec<u8>> {
+    ensure!(has_footer(image), "the image has no AVB footer");
+    let f = &image[image.len() - FOOTER_LEN..];
+    let major = u32::from_be_bytes(f[4..8].try_into().unwrap());
+    ensure!(major == 1, "unsupported AVB footer version {major}");
+    let original = u64::from_be_bytes(f[12..20].try_into().unwrap());
+    ensure!(
+        original <= (image.len() - FOOTER_LEN) as u64,
+        "footer says the original image is {original} bytes, longer than this image"
+    );
+    Ok(image[..original as usize].to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn none(release: &str) -> Options<'_> {
+        Options {
+            algorithm: "NONE",
+            rollback_index: 0,
+            flags: 0,
+            rollback_index_location: 0,
+            padding_size: 0,
+            release_string: release,
+        }
+    }
+
+    fn sample() -> Vec<u8> {
+        (0..1000).flat_map(|_| 0..=255u8).collect()
+    }
 
     /// The NONE header alone is 256 bytes and carries the algorithm type and rollback index.
     #[test]
     fn none_header_is_256_bytes_with_the_given_fields() {
         let img = make_vbmeta(
             &Options {
-                algorithm: "NONE",
                 rollback_index: 9,
                 flags: 2,
-                rollback_index_location: 0,
-                padding_size: 0,
                 release_string: "test 1",
+                ..none("")
             },
             None,
         )
@@ -185,18 +347,96 @@ mod tests {
         let key = RsaPrivateKey::new(&mut rand::thread_rng(), 1024).unwrap();
         let opts = Options {
             algorithm: "SHA256_RSA2048",
-            rollback_index: 0,
-            flags: 0,
-            rollback_index_location: 0,
-            padding_size: 0,
-            release_string: "",
+            ..none("")
         };
         assert!(make_vbmeta(&opts, Some(&key)).is_err());
-        let none = Options {
+        let padded = Options {
             algorithm: "NONE",
             padding_size: 4096,
             ..opts
         };
-        assert_eq!(make_vbmeta(&none, None).unwrap().len(), 4096);
+        assert_eq!(make_vbmeta(&padded, None).unwrap().len(), 4096);
+    }
+
+    /// Byte-identical to avbtool 1.3.0 `add_hash_footer --image img --partition_size 1048576
+    /// --partition_name boot --salt 00112233445566778899aabbccddeeff --algorithm NONE
+    /// --internal_release_string "android-doctor test"` on the same 256000-byte input.
+    #[test]
+    fn hash_footer_matches_avbtool_bytes() {
+        let image = sample();
+        let salt = unhex("00112233445566778899aabbccddeeff").unwrap();
+        let out = hash_footer(
+            &image,
+            &FooterOptions {
+                partition: "boot",
+                partition_size: 1048576,
+                block_size: 4096,
+                salt: &salt,
+            },
+            &none("android-doctor test"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::avb::hex(&Sha256::digest(&out)),
+            "be18a4a603142710144e86ddd9b7dda7ab946a7f0a440918fe5ca588445da081"
+        );
+    }
+
+    /// The footer points at a vbmeta whose one hash descriptor carries sha256(salt || image).
+    #[test]
+    fn footer_points_at_a_vbmeta_with_the_hash_descriptor() {
+        let image = sample();
+        let salt = unhex("00112233445566778899aabbccddeeff").unwrap();
+        let out = hash_footer(
+            &image,
+            &FooterOptions {
+                partition: "boot",
+                partition_size: 1048576,
+                block_size: 4096,
+                salt: &salt,
+            },
+            &none("x"),
+            None,
+        )
+        .unwrap();
+        let f = &out[out.len() - FOOTER_LEN..];
+        assert_eq!(&f[..4], b"AVBf");
+        assert_eq!(u64::from_be_bytes(f[12..20].try_into().unwrap()), 256000);
+        let at = u64::from_be_bytes(f[20..28].try_into().unwrap()) as usize;
+        let len = u64::from_be_bytes(f[28..36].try_into().unwrap()) as usize;
+        assert_eq!(at, 258048);
+        let meta = crate::avb::parse(&out[at..at + len], None).unwrap();
+        let mut hasher = Sha256::new();
+        hasher.update(&salt);
+        hasher.update(&image);
+        match &meta.descriptors[..] {
+            [crate::avb::Descriptor::Hash(h)] => {
+                assert_eq!(h.partition, "boot");
+                assert_eq!(h.algorithm, "sha256");
+                assert_eq!(h.image_size, 256000);
+                assert_eq!(h.salt, salt);
+                assert_eq!(h.digest, hasher.finalize().to_vec());
+            }
+            other => panic!("expected one hash descriptor, got {other:?}"),
+        }
+    }
+
+    /// Erasing the footer gives back the original bytes; a footer is refused twice and a
+    /// partition too small for its metadata is refused.
+    #[test]
+    fn erase_round_trips_and_refusals_hold() {
+        let image = sample();
+        let fo = |size| FooterOptions {
+            partition: "boot",
+            partition_size: size,
+            block_size: 4096,
+            salt: &[1, 2, 3, 4],
+        };
+        let out = hash_footer(&image, &fo(1048576), &none("x"), None).unwrap();
+        assert_eq!(erase_footer(&out).unwrap(), image);
+        assert!(erase_footer(&image).is_err());
+        assert!(hash_footer(&out, &fo(1048576), &none("x"), None).is_err());
+        assert!(hash_footer(&image, &fo(4096), &none("x"), None).is_err());
     }
 }

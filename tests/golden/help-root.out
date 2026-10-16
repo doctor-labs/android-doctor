@@ -18,6 +18,8 @@ Commands:
   audit       Security posture of firmware images: ADB properties, setuid files, su binaries, init services
   diff        Compare two firmware builds file by file: added, removed and modified files (by SHA-256), mode, owner, capability and SELinux-label changes, property and init-service changes; what got worse becomes findings
   avbmake     Write a new vbmeta image (avbtool make_vbmeta_image without descriptors): header, SHA-256 digest and RSA signature
+  avbfooter   Write a copy of a partition image with an AVB hash footer (avbtool add_hash_footer): the image, a vbmeta with one SHA-256 hash descriptor and the footer, padded to --partition-size. The input is never modified
+  avberase    Write a copy of a partition image without its AVB footer and vbmeta (avbtool erase_footer)
   avbkey      Write the AVB public key blob of a PEM RSA key (avbtool extract_public_key) and print its SHA-256 digest
   vbkernel    Verify a ChromeOS kernel partition (vboot 2.x): keyblock, kernel preamble and body signatures
   vbmeta      Show an AVB vbmeta image (or a partition with an AVB footer): header, key, signature, descriptors, hashes
