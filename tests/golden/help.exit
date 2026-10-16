@@ -8,6 +8,7 @@ help-unpack	0
 help-ls	0
 help-cat	0
 help-tree	0
+help-find	0
 help-audit	0
 help-diff	0
 help-vbmeta	0
