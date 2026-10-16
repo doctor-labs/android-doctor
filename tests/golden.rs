@@ -593,6 +593,34 @@ fn shell_browses_the_firmware() {
     golden("shell-tree.out", &acc);
 }
 
+/// `stat` in the shell reports one entry of an opened image: mode, owner, size and link count
+/// from the image's own directory listing, not from the host file.
+#[test]
+fn shell_stat_reports_the_entry_of_an_opened_image() {
+    let t = firmware("shell-stat");
+    let out = Command::new(bin())
+        .args([
+            "shell",
+            t.p("fw").to_str().unwrap(),
+            "-c",
+            "cd images; cd system; cd xbin; stat su",
+        ])
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(text.contains("/xbin/su"), "{text}");
+    assert!(text.contains("mode: 0755"), "{text}");
+    assert!(text.contains("type: file"), "{text}");
+    assert!(text.contains("size: 10"), "{text}");
+}
+
 /// `android-doctor audit ... | head -c0`: a closed stdout is exit 2 with one line on stderr, never
 /// a panic (101) and never a silent success (doctor-kit 0.2.2).
 #[test]
