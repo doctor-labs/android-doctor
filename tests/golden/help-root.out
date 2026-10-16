@@ -22,6 +22,7 @@ Commands:
   avberase    Write a copy of a partition image without its AVB footer and vbmeta (avbtool erase_footer)
   avbkey      Write the AVB public key blob of a PEM RSA key (avbtool extract_public_key) and print its SHA-256 digest
   vbkernel    Verify a ChromeOS kernel partition (vboot 2.x): keyblock, kernel preamble and body signatures
+  avbcert     Build AVB certificate files (avb_cert): avbtool make_certificate, make_cert_permanent_attributes, make_cert_metadata, make_cert_unlock_credential
   vbmeta      Show an AVB vbmeta image (or a partition with an AVB footer): header, key, signature, descriptors, hashes
   ramdisk     List a boot image's ramdisk (or a ramdisk file), report its ADB properties, and with -o extract it
   files       List or extract the files of an ext2/3/4, erofs or f2fs image (with SELinux labels), no root needed
