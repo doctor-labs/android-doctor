@@ -15,6 +15,7 @@ mod apk;
 mod archive;
 mod audit;
 mod avb;
+mod avbwrite;
 mod bootimg;
 mod bsdiff;
 mod ci;
@@ -264,6 +265,97 @@ enum Command {
         only: Vec<String>,
         #[command(flatten)]
         report: ReportArgs,
+    },
+    /// Write a new vbmeta image (avbtool make_vbmeta_image without descriptors): header, SHA-256 digest and RSA signature
+    Avbmake {
+        /// The new image; written to <OUTPUT>.part and renamed on success, never in place
+        #[arg(short, long)]
+        output: PathBuf,
+        /// NONE, SHA256_RSA2048, SHA256_RSA4096 or SHA256_RSA8192
+        #[arg(long, default_value = "NONE")]
+        algorithm: String,
+        /// PEM RSA private key (PKCS#8 or PKCS#1); required for the SHA256_RSA algorithms
+        #[arg(long)]
+        key: Option<PathBuf>,
+        /// Rollback index stored in the header
+        #[arg(long, default_value_t = 0)]
+        rollback_index: u64,
+        /// Header flags (avbtool --flags)
+        #[arg(long, default_value_t = 0)]
+        flags: u32,
+        /// Rollback index location (0 for the main vbmeta)
+        #[arg(long, default_value_t = 0)]
+        rollback_index_location: u32,
+        /// Zero-pad the image to a multiple of this many bytes (0 = no padding)
+        #[arg(long, default_value_t = 0)]
+        padding_size: u64,
+        /// Release string in the header (at most 47 bytes); defaults to android-doctor and its version
+        #[arg(long)]
+        release_string: Option<String>,
+        /// Replace the output if it exists
+        #[arg(long)]
+        force: bool,
+        /// Print JSON (the doctor/1 envelope) instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write a copy of a partition image with an AVB hash footer (avbtool add_hash_footer): the image, a vbmeta with one SHA-256 hash descriptor and the footer, padded to --partition-size. The input is never modified
+    Avbfooter {
+        /// The partition image to read (never modified)
+        image: PathBuf,
+        /// The new image; written to <OUTPUT>.part and renamed on success
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Partition name in the hash descriptor (avbtool --partition_name)
+        #[arg(long)]
+        partition_name: String,
+        /// Partition size in bytes, a multiple of --block-size; the output is exactly this long
+        #[arg(long)]
+        partition_size: u64,
+        /// Block size the image and the metadata are padded to
+        #[arg(long, default_value_t = 4096)]
+        block_size: u64,
+        /// Salt in hex (avbtool --salt); required, no random salt is drawn
+        #[arg(long)]
+        salt: String,
+        /// NONE, SHA256_RSA2048, SHA256_RSA4096 or SHA256_RSA8192
+        #[arg(long, default_value = "NONE")]
+        algorithm: String,
+        /// PEM RSA private key; required for the SHA256_RSA algorithms
+        #[arg(long)]
+        key: Option<PathBuf>,
+        /// Rollback index stored in the vbmeta header
+        #[arg(long, default_value_t = 0)]
+        rollback_index: u64,
+        /// Header flags
+        #[arg(long, default_value_t = 0)]
+        flags: u32,
+        /// Write a dm-verity hash tree instead of one hash descriptor (avbtool add_hashtree_footer, no FEC)
+        #[arg(long)]
+        hashtree: bool,
+        /// Release string in the header (at most 47 bytes); defaults to android-doctor and its version
+        #[arg(long)]
+        release_string: Option<String>,
+        /// Replace the output if it exists
+        #[arg(long)]
+        force: bool,
+        /// Print JSON (the doctor/1 envelope) instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write a copy of a partition image without its AVB footer and vbmeta (avbtool erase_footer)
+    Avberase {
+        /// The image to read (never modified)
+        image: PathBuf,
+        /// The new image; written to <OUTPUT>.part and renamed on success
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Replace the output if it exists
+        #[arg(long)]
+        force: bool,
+        /// Print JSON (the doctor/1 envelope) instead of text
+        #[arg(long)]
+        json: bool,
     },
     /// Write the AVB public key blob of a PEM RSA key (avbtool extract_public_key) and print its SHA-256 digest
     Avbkey {
@@ -912,6 +1004,72 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             only,
             report,
         } => diff_command(&old, &new, json, &only, &report, no_color),
+        Command::Avbmake {
+            output,
+            algorithm,
+            key,
+            rollback_index,
+            flags,
+            rollback_index_location,
+            padding_size,
+            release_string,
+            force,
+            json,
+        } => {
+            let release = release_string
+                .unwrap_or_else(|| format!("android-doctor {}", env!("CARGO_PKG_VERSION")));
+            let opts = avbwrite::Options {
+                algorithm: &algorithm,
+                rollback_index,
+                flags,
+                rollback_index_location,
+                padding_size,
+                release_string: &release,
+            };
+            make_vbmeta_command(&output, key.as_deref(), &opts, force, json)
+        }
+        Command::Avbfooter {
+            image,
+            output,
+            partition_name,
+            partition_size,
+            block_size,
+            salt,
+            algorithm,
+            key,
+            rollback_index,
+            flags,
+            hashtree,
+            release_string,
+            force,
+            json,
+        } => {
+            let release = release_string
+                .unwrap_or_else(|| format!("android-doctor {}", env!("CARGO_PKG_VERSION")));
+            let salt = avbwrite::unhex(&salt)?;
+            let fo = avbwrite::FooterOptions {
+                partition: &partition_name,
+                partition_size,
+                block_size,
+                salt: &salt,
+                hashtree,
+            };
+            let opts = avbwrite::Options {
+                algorithm: &algorithm,
+                rollback_index,
+                flags,
+                rollback_index_location: 0,
+                padding_size: 0,
+                release_string: &release,
+            };
+            avbfooter_command(&image, &output, &fo, &opts, key.as_deref(), force, json)
+        }
+        Command::Avberase {
+            image,
+            output,
+            force,
+            json,
+        } => avberase_command(&image, &output, force, json),
         Command::Avbkey { key, output, json } => avbkey_command(&key, output.as_deref(), json),
         Command::Vbkernel { image, key, json } => {
             let root = match key {
@@ -1307,6 +1465,165 @@ fn files_command(
             .map(entry_line)
             .collect::<Vec<_>>()
             .join("\n")
+    };
+    print_out(&text)
+}
+
+/// `avbmake`: write a new vbmeta image to a new path. With `--json` it prints the doctor/1
+/// envelope; this command produces no findings, so `score` is always 100 ("good").
+fn make_vbmeta_command(
+    output: &std::path::Path,
+    key: Option<&std::path::Path>,
+    opts: &avbwrite::Options,
+    force: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    use std::io::Read;
+
+    let private = match key {
+        Some(k) => {
+            refuse_blocking_file(k)?;
+            if k.is_dir() {
+                anyhow::bail!("{} is a directory, not a key file", k.display());
+            }
+            let mut pem = String::new();
+            std::fs::File::open(k)
+                .with_context(|| format!("opening {}", k.display()))?
+                .read_to_string(&mut pem)?;
+            Some(avbwrite::parse_private_key(&pem)?)
+        }
+        None => None,
+    };
+    let image = avbwrite::make_vbmeta(opts, private.as_ref())?;
+    write_atomically(output, force, |f| {
+        f.write_all(&image)?;
+        Ok(())
+    })?;
+    let text = if json {
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema": "doctor/1",
+            "tool": "android-doctor",
+            "version": env!("CARGO_PKG_VERSION"),
+            "exit_code": 0,
+            "score": {"value": 100, "label": "good", "model": "android-doctor/1", "coverage_gaps": 0},
+            "findings": [],
+            "data": {
+                "output": output.display().to_string(),
+                "algorithm": opts.algorithm,
+                "size": image.len(),
+                "sha256": avb::hex(&Sha256::digest(&image)),
+                "rollback_index": opts.rollback_index,
+                "flags": opts.flags,
+                "rollback_index_location": opts.rollback_index_location,
+                "padding_size": opts.padding_size,
+                "release_string": opts.release_string,
+            },
+        }))?
+    } else {
+        format!(
+            "wrote {} bytes ({}) to {}",
+            image.len(),
+            opts.algorithm,
+            output.display()
+        )
+    };
+    print_out(&text)
+}
+
+/// Read a PEM RSA private key for signing, if one was given.
+fn load_key(key: Option<&std::path::Path>) -> anyhow::Result<Option<rsa::RsaPrivateKey>> {
+    use std::io::Read;
+    let Some(k) = key else {
+        return Ok(None);
+    };
+    refuse_blocking_file(k)?;
+    if k.is_dir() {
+        anyhow::bail!("{} is a directory, not a key file", k.display());
+    }
+    let mut pem = String::new();
+    std::fs::File::open(k)
+        .with_context(|| format!("opening {}", k.display()))?
+        .read_to_string(&mut pem)?;
+    Ok(Some(avbwrite::parse_private_key(&pem)?))
+}
+
+/// `avbfooter`: write a partition image with an AVB hash footer to a new path.
+fn avbfooter_command(
+    image: &std::path::Path,
+    output: &std::path::Path,
+    fo: &avbwrite::FooterOptions,
+    opts: &avbwrite::Options,
+    key: Option<&std::path::Path>,
+    force: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    refuse_blocking_file(image)?;
+    let data = std::fs::read(image).with_context(|| format!("reading {}", image.display()))?;
+    let private = load_key(key)?;
+    let out = avbwrite::hash_footer(&data, fo, opts, private.as_ref())?;
+    write_atomically(output, force, |f| {
+        f.write_all(&out)?;
+        Ok(())
+    })?;
+    let text = if json {
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema": "doctor/1",
+            "tool": "android-doctor",
+            "version": env!("CARGO_PKG_VERSION"),
+            "exit_code": 0,
+            "score": {"value": 100, "label": "good", "model": "android-doctor/1", "coverage_gaps": 0},
+            "findings": [],
+            "data": {
+                "output": output.display().to_string(),
+                "partition": fo.partition,
+                "partition_size": fo.partition_size,
+                "original_size": data.len(),
+                "algorithm": opts.algorithm,
+                "sha256": avb::hex(&Sha256::digest(&out)),
+            },
+        }))?
+    } else {
+        format!(
+            "wrote {} bytes ({}) to {}",
+            out.len(),
+            opts.algorithm,
+            output.display()
+        )
+    };
+    print_out(&text)
+}
+
+/// `avberase`: write a partition image without its AVB footer and vbmeta to a new path.
+fn avberase_command(
+    image: &std::path::Path,
+    output: &std::path::Path,
+    force: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    refuse_blocking_file(image)?;
+    let data = std::fs::read(image).with_context(|| format!("reading {}", image.display()))?;
+    let out = avbwrite::erase_footer(&data)?;
+    write_atomically(output, force, |f| {
+        f.write_all(&out)?;
+        Ok(())
+    })?;
+    let text = if json {
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema": "doctor/1",
+            "tool": "android-doctor",
+            "version": env!("CARGO_PKG_VERSION"),
+            "exit_code": 0,
+            "score": {"value": 100, "label": "good", "model": "android-doctor/1", "coverage_gaps": 0},
+            "findings": [],
+            "data": {
+                "output": output.display().to_string(),
+                "original_size": data.len(),
+                "size": out.len(),
+                "sha256": avb::hex(&Sha256::digest(&out)),
+            },
+        }))?
+    } else {
+        format!("wrote {} bytes to {}", out.len(), output.display())
     };
     print_out(&text)
 }
