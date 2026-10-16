@@ -25,7 +25,7 @@
             "severity": "critical"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 78
+          "ruleIndex": 79
         },
         {
           "level": "note",
@@ -1113,6 +1113,22 @@
               "name": "elf-no-relro",
               "shortDescription": {
                 "text": "No RELRO: the GOT stays writable after relocation"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "The native binary keeps its full symbol table (.symtab): it ships unstripped"
+              },
+              "help": {
+                "text": "Strip release binaries with llvm-strip --strip-all, or keep the symbols in a separate debug file"
+              },
+              "id": "elf-not-stripped",
+              "name": "elf-not-stripped",
+              "shortDescription": {
+                "text": "The native binary keeps its full symbol table (.symtab): it ships unstripped"
               }
             },
             {

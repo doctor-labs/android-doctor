@@ -198,6 +198,7 @@ One finding per rule names a few objects; `--json` lists every object under `elf
 | `elf-partial-relro` | warn | `PT_GNU_RELRO` without `BIND_NOW` (`DT_FLAGS`, `DT_FLAGS_1` or `DT_BIND_NOW`) |
 | `elf-no-canary` | warn | no `__stack_chk_fail` in the dynamic string table (heuristic) |
 | `elf-no-fortify` | info | no `__*_chk` imports (heuristic) |
+| `elf-not-stripped` | info | the section table has a `.symtab` (full symbol table; `.dynsym` alone does not count), so the binary ships unstripped. No finding when there is no readable section table |
 
 A statically linked binary has no dynamic section, so it is not judged for the last three.
 ### 3b. Diff two builds
