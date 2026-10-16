@@ -636,6 +636,7 @@ fn help_texts() {
         "ls",
         "cat",
         "tree",
+        "find",
         "audit",
         "diff",
         "vbmeta",

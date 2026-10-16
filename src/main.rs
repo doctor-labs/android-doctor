@@ -33,6 +33,7 @@ mod ext4fs;
 mod extract;
 mod f2fsfs;
 mod fec;
+mod find;
 mod findings;
 mod fix;
 mod fstab;
@@ -265,6 +266,34 @@ enum Command {
         #[arg(long, value_name = "N")]
         depth: Option<usize>,
         /// Print JSON instead of text (doctor/1 envelope, no findings)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Find files in an ext2/3/4, erofs or f2fs image by name glob, SELinux label, setuid or setgid bit, extended attribute or content (read-only)
+    Find {
+        image: PathBuf,
+        /// Directory to search under (default: the root)
+        #[arg(default_value = "/")]
+        path: String,
+        /// Glob (`*`, `?`) for the file name
+        #[arg(long)]
+        name: Option<String>,
+        /// Glob for the SELinux label, such as `u:object_r:shell_*`
+        #[arg(long)]
+        selinux: Option<String>,
+        /// Only files with the setuid bit
+        #[arg(long)]
+        setuid: bool,
+        /// Only files with the setgid bit
+        #[arg(long)]
+        setgid: bool,
+        /// An extended attribute: `NAME` (present) or `NAME=GLOB` (value matches), such as `security.selinux=*su*`
+        #[arg(long)]
+        xattr: Option<String>,
+        /// Only regular files whose content contains this text (files up to 1 MiB; larger ones are listed as not checked)
+        #[arg(long)]
+        grep: Option<String>,
+        /// Print the doctor/1 envelope instead of text
         #[arg(long)]
         json: bool,
     },
@@ -1098,6 +1127,32 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             depth,
             json,
         } => tree_command(&image, &path, depth, json),
+        Command::Find {
+            image,
+            path,
+            name,
+            selinux,
+            setuid,
+            setgid,
+            xattr,
+            grep,
+            json,
+        } => find_command(
+            &image,
+            find::Query {
+                under: path.trim_matches('/').to_string(),
+                name,
+                selinux,
+                setuid,
+                setgid,
+                xattr: xattr.map(|x| match x.split_once('=') {
+                    Some((n, g)) => (n.to_string(), Some(g.to_string())),
+                    None => (x, None),
+                }),
+                grep,
+            },
+            json,
+        ),
         Command::Audit {
             images,
             json,
@@ -2180,6 +2235,59 @@ fn apk_files(bytes: &[u8], json: bool) -> anyhow::Result<()> {
                 term::sanitize(&e.name)
             )
         })
+        .collect::<Vec<_>>()
+        .join("\n");
+    print_out(&text)
+}
+
+fn find_command(image: &std::path::Path, q: find::Query, json: bool) -> anyhow::Result<()> {
+    if !q.has_filter() {
+        anyhow::bail!(
+            "give at least one filter: --name, --selinux, --setuid, --setgid, --xattr or --grep"
+        );
+    }
+    if q.grep.as_deref() == Some("") {
+        anyhow::bail!("--grep needs some text to look for");
+    }
+    let found = find::run(image, &q)?;
+    if json {
+        let gaps = found.not_checked.len();
+        let v = serde_json::json!({
+            "schema": "doctor/1",
+            "tool": "android-doctor",
+            "version": env!("CARGO_PKG_VERSION"),
+            "exit_code": 0,
+            // find reports no findings; the score is coverage only: files --grep could not check
+            "score": {
+                "value": 100,
+                "label": if gaps > 0 { "incomplete" } else { "good" },
+                "model": "find/1",
+                "coverage_gaps": gaps,
+            },
+            "findings": [],
+            "data": {
+                "matches": found.matches.iter().map(tree::entry_json).collect::<Vec<_>>(),
+                "not_checked": found.not_checked.iter()
+                    .map(|(p, why)| serde_json::json!({"path": format!("/{p}"), "reason": why}))
+                    .collect::<Vec<_>>(),
+            },
+        });
+        return print_out(&serde_json::to_string_pretty(&v)?);
+    }
+    for (p, why) in &found.not_checked {
+        eprintln!(
+            "not checked: {} ({})",
+            term::sanitize(&format!("/{p}")),
+            term::sanitize(why)
+        );
+    }
+    if found.matches.is_empty() {
+        return Ok(());
+    }
+    let text = found
+        .matches
+        .iter()
+        .map(|e| term::sanitize(&format!("/{}", e.path)))
         .collect::<Vec<_>>()
         .join("\n");
     print_out(&text)
