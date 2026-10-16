@@ -1212,6 +1212,28 @@ impl TreeSource for Fs {
         Ok(self.lookup(path)?.0)
     }
 
+    fn lookup_node(&self, path: &str) -> Result<(Entry, Inode)> {
+        self.lookup(path)
+    }
+
+    fn data_blocks(&self, node: &Inode) -> Result<Vec<u64>> {
+        self.check_readable(node)?;
+        if node.is_inline_data() {
+            return Ok(Vec::new());
+        }
+        let blk = self.node(node.nid, Some(node.nid))?;
+        let mut blocks = Vec::new();
+        for run in self.runs(node, &blk, node.size.div_ceil(BS))? {
+            ensure!(
+                blocks.len() as u64 + run.blocks <= crate::tree::MAX_BLOCK_LIST,
+                "the file is more than {} blocks",
+                crate::tree::MAX_BLOCK_LIST
+            );
+            blocks.extend(run.pblk..run.pblk + run.blocks);
+        }
+        Ok(blocks)
+    }
+
     fn cat_path(&self, path: &str, out: &mut dyn Write) -> Result<()> {
         let (entry, ino) = self.lookup(path)?;
         check_cat(&entry)?;
@@ -1998,6 +2020,18 @@ pub(crate) mod tests {
             fs.lookup("l").unwrap().0.link.as_deref().map(str::len),
             Some(100)
         );
+    }
+
+    #[test]
+    fn blocks_are_listed_for_file_data_and_not_for_inline_files() {
+        let fs = sample().fs();
+        let (a, blocks) = fs.blocks("a").unwrap();
+        assert_eq!((a.kind, blocks.len()), (Kind::File, 0));
+        assert!(fs.blocks("d").is_err());
+        let owners = fs.file_blocks().unwrap();
+        assert!(owners.iter().all(|(e, _)| e.kind == Kind::File));
+        let total: usize = owners.iter().map(|(_, b)| b.len()).sum();
+        assert!(total >= 2, "{total} data blocks");
     }
 
     #[test]

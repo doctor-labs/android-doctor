@@ -1329,6 +1329,25 @@ impl TreeSource for Fs {
         Ok(self.lookup(path)?.0)
     }
 
+    fn lookup_node(&self, path: &str) -> Result<(Entry, Inode)> {
+        self.lookup(path)
+    }
+
+    fn data_blocks(&self, node: &Inode) -> Result<Vec<u64>> {
+        let mut blocks = Vec::new();
+        for run in self.runs(node)? {
+            if let Some(pblk) = run.pblk {
+                ensure!(
+                    blocks.len() as u64 + run.blocks <= crate::tree::MAX_BLOCK_LIST,
+                    "the file is more than {} blocks",
+                    crate::tree::MAX_BLOCK_LIST
+                );
+                blocks.extend(pblk..pblk + run.blocks);
+            }
+        }
+        Ok(blocks)
+    }
+
     fn cat_path(&self, path: &str, out: &mut dyn Write) -> Result<()> {
         let (entry, inode) = self.lookup(path)?;
         check_cat(&entry)?;
@@ -2194,6 +2213,19 @@ mod tests {
             let s = fs.stat("s").unwrap();
             assert_eq!((s.kind, s.link.as_deref()), (Kind::Symlink, Some("a")));
             assert!(fs.stat("zzz").is_err());
+        }
+    }
+
+    #[test]
+    fn blocks_list_the_physical_blocks_of_one_file() {
+        for (isz, ext) in [(256, true), (128, false)] {
+            let fs = sample(isz, ext).fs();
+            let (a, blocks) = fs.blocks("a").unwrap();
+            assert_eq!((a.kind, blocks.len()), (Kind::File, 1));
+            assert!(blocks[0] > 0);
+            assert!(fs.blocks("d").is_err());
+            let owners = fs.file_blocks().unwrap();
+            assert!(owners.iter().any(|(e, b)| e.path == "a" && b == &blocks));
         }
     }
 

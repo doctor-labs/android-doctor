@@ -305,6 +305,32 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// List the physical block numbers holding the data of one regular file inside an ext2/3/4 or f2fs image (holes are skipped; erofs is refused)
+    Blocks {
+        image: PathBuf,
+        path: String,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Name the regular file that owns each physical block number inside an ext2/3/4 or f2fs image (blocks no file uses print as none)
+    Icheck {
+        image: PathBuf,
+        #[arg(required = true)]
+        blocks: Vec<u64>,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Name the path or paths of each inode number inside an ext2/3/4, erofs or f2fs image (inodes with no path print as none)
+    Ncheck {
+        image: PathBuf,
+        #[arg(required = true)]
+        inodes: Vec<u64>,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
     /// Security posture of firmware images: ADB properties, setuid files, su binaries, init services
     Audit {
         /// Image files (ext2/3/4, erofs or f2fs), or a directory of them (such as an `extract` output)
@@ -1162,6 +1188,17 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             json,
         ),
         Command::Stat { image, path, json } => stat_command(&image, &path, json),
+        Command::Blocks { image, path, json } => blocks_command(&image, &path, json),
+        Command::Icheck {
+            image,
+            blocks,
+            json,
+        } => icheck_command(&image, &blocks, json),
+        Command::Ncheck {
+            image,
+            inodes,
+            json,
+        } => ncheck_command(&image, &inodes, json),
         Command::Audit {
             images,
             json,
@@ -2328,6 +2365,102 @@ fn stat_command(image: &std::path::Path, path: &str, json: bool) -> anyhow::Resu
             lines.push(format!("xattr {k}: {v}"));
         }
         lines.join("\n")
+    };
+    print_out(&text)
+}
+
+fn blocks_command(image: &std::path::Path, path: &str, json: bool) -> anyhow::Result<()> {
+    let (e, blocks) = tree::Tree::open(image)?.blocks(path)?;
+    let text = if json {
+        serde_json::to_string_pretty(&serde_json::json!({
+            "path": format!("/{}", e.path),
+            "blocks": blocks,
+        }))?
+    } else {
+        blocks
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    print_out(&text)
+}
+
+fn icheck_command(image: &std::path::Path, wanted: &[u64], json: bool) -> anyhow::Result<()> {
+    let files = tree::Tree::open(image)?.file_blocks()?;
+    let mut owners: std::collections::HashMap<u64, Vec<(u64, String)>> =
+        std::collections::HashMap::new();
+    for (e, blocks) in &files {
+        for b in blocks {
+            owners
+                .entry(*b)
+                .or_default()
+                .push((e.ino, format!("/{}", e.path)));
+        }
+    }
+    let rows: Vec<(u64, Vec<(u64, String)>)> = wanted
+        .iter()
+        .map(|b| (*b, owners.get(b).cloned().unwrap_or_default()))
+        .collect();
+    let text = if json {
+        let rows: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(b, who)| {
+                let owners: Vec<serde_json::Value> = who
+                    .iter()
+                    .map(|(ino, path)| serde_json::json!({"inode": ino, "path": path}))
+                    .collect();
+                serde_json::json!({"block": b, "owners": owners})
+            })
+            .collect();
+        serde_json::to_string_pretty(&rows)?
+    } else {
+        rows.iter()
+            .flat_map(|(b, who)| {
+                if who.is_empty() {
+                    vec![format!("{b}\tnone")]
+                } else {
+                    who.iter()
+                        .map(|(ino, path)| format!("{b}\t{ino}\t{path}"))
+                        .collect()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    print_out(&text)
+}
+
+fn ncheck_command(image: &std::path::Path, wanted: &[u64], json: bool) -> anyhow::Result<()> {
+    let entries = tree::Tree::open(image)?.entries()?;
+    let rows: Vec<(u64, Vec<String>)> = wanted
+        .iter()
+        .map(|ino| {
+            let paths = entries
+                .iter()
+                .filter(|e| e.ino == *ino)
+                .map(|e| format!("/{}", e.path))
+                .collect();
+            (*ino, paths)
+        })
+        .collect();
+    let text = if json {
+        let rows: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(ino, paths)| serde_json::json!({"inode": ino, "paths": paths}))
+            .collect();
+        serde_json::to_string_pretty(&rows)?
+    } else {
+        rows.iter()
+            .flat_map(|(ino, paths)| {
+                if paths.is_empty() {
+                    vec![format!("{ino}\tnone")]
+                } else {
+                    paths.iter().map(|p| format!("{ino}\t{p}")).collect()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     };
     print_out(&text)
 }

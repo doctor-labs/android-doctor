@@ -327,6 +327,16 @@ impl TreeSource for Fs {
         Ok(self.lookup(path)?.0)
     }
 
+    fn lookup_node(&self, path: &str) -> Result<(Entry, Inode)> {
+        self.lookup(path)
+    }
+
+    fn data_blocks(&self, _node: &Inode) -> Result<Vec<u64>> {
+        bail!(
+            "erofs images do not expose data block addresses to this reader, so blocks and icheck cannot list them"
+        )
+    }
+
     fn cat_path(&self, path: &str, out: &mut dyn Write) -> Result<()> {
         let (entry, inode) = self.lookup(path)?;
         check_cat(&entry)?;
@@ -544,6 +554,13 @@ mod tests {
                 assert_eq!(cat_bytes(&fs, "f"), data, "{algo:?} {index:?}");
             }
         }
+    }
+
+    #[test]
+    fn block_addresses_are_refused_clearly() {
+        let fs = from_bytes(image()).unwrap();
+        let err = format!("{:#}", TreeSource::blocks(&fs, "a").err().unwrap());
+        assert!(err.contains("block addresses"), "{err}");
     }
 
     #[test]

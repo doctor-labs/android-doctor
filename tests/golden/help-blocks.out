@@ -1,0 +1,12 @@
+List the physical block numbers holding the data of one regular file inside an ext2/3/4 or f2fs image (holes are skipped; erofs is refused)
+
+Usage: android-doctor blocks [OPTIONS] <IMAGE> <PATH>
+
+Arguments:
+  <IMAGE>  
+  <PATH>   
+
+Options:
+      --json      Print JSON instead of text
+      --no-color  Never emit colour, even on a terminal (also honours the NO_COLOR environment variable)
+  -h, --help      Print help
