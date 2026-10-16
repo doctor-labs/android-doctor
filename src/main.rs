@@ -330,6 +330,9 @@ enum Command {
         /// Header flags
         #[arg(long, default_value_t = 0)]
         flags: u32,
+        /// Write a dm-verity hash tree instead of one hash descriptor (avbtool add_hashtree_footer, no FEC)
+        #[arg(long)]
+        hashtree: bool,
         /// Release string in the header (at most 47 bytes); defaults to android-doctor and its version
         #[arg(long)]
         release_string: Option<String>,
@@ -1036,6 +1039,7 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             key,
             rollback_index,
             flags,
+            hashtree,
             release_string,
             force,
             json,
@@ -1048,6 +1052,7 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
                 partition_size,
                 block_size,
                 salt: &salt,
+                hashtree,
             };
             let opts = avbwrite::Options {
                 algorithm: &algorithm,

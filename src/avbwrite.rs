@@ -20,6 +20,7 @@ const FOOTER_LEN: usize = 64;
 const MAX_VBMETA: usize = 64 * 1024;
 const MAX_FOOTER: usize = 4096;
 const HASH_DESCRIPTOR_TAG: u64 = 2;
+const HASHTREE_DESCRIPTOR_TAG: u64 = 1;
 
 /// The algorithms avbtool knows without a descriptor-only path: name, AVB algorithm type, and
 /// RSA modulus size in bits (0 for NONE, which takes no key).
@@ -48,6 +49,8 @@ pub struct FooterOptions<'a> {
     pub partition_size: u64,
     pub block_size: u64,
     pub salt: &'a [u8],
+    /// Write a dm-verity hash tree (avbtool add_hashtree_footer, SHA-256, no FEC) instead of one hash descriptor
+    pub hashtree: bool,
 }
 
 /// PKCS#1 v1.5 scheme for a SHA-256 digest that is already computed (the DigestInfo prefix is
@@ -218,6 +221,45 @@ pub fn hash_descriptor(partition: &str, image_size: u64, salt: &[u8], digest: &[
     d
 }
 
+/// Encode an AVB hashtree descriptor (tag 1) for dm-verity SHA-256 without FEC, padded to 8 bytes.
+/// Field order from libavb `avb_hashtree_descriptor.h`.
+pub fn hashtree_descriptor(
+    partition: &str,
+    image_size: u64,
+    tree: (u64, u64),
+    block: u32,
+    salt: &[u8],
+    root: &[u8],
+) -> Vec<u8> {
+    let mut d = Vec::new();
+    d.extend_from_slice(&HASHTREE_DESCRIPTOR_TAG.to_be_bytes());
+    d.extend_from_slice(&0u64.to_be_bytes()); // num_bytes_following, set below
+    d.extend_from_slice(&1u32.to_be_bytes()); // dm_verity_version
+    d.extend_from_slice(&image_size.to_be_bytes());
+    d.extend_from_slice(&tree.0.to_be_bytes()); // tree offset
+    d.extend_from_slice(&tree.1.to_be_bytes()); // tree size
+    d.extend_from_slice(&block.to_be_bytes()); // data block size
+    d.extend_from_slice(&block.to_be_bytes()); // hash block size
+    d.extend_from_slice(&0u32.to_be_bytes()); // FEC roots
+    d.extend_from_slice(&0u64.to_be_bytes()); // FEC offset
+    d.extend_from_slice(&0u64.to_be_bytes()); // FEC size
+    let mut alg = [0u8; 32];
+    alg[..6].copy_from_slice(b"sha256");
+    d.extend_from_slice(&alg);
+    d.extend_from_slice(&(partition.len() as u32).to_be_bytes());
+    d.extend_from_slice(&(salt.len() as u32).to_be_bytes());
+    d.extend_from_slice(&(root.len() as u32).to_be_bytes());
+    d.extend_from_slice(&0u32.to_be_bytes()); // flags
+    d.extend_from_slice(&[0u8; 60]); // reserved
+    d.extend_from_slice(partition.as_bytes());
+    d.extend_from_slice(salt);
+    d.extend_from_slice(root);
+    d.resize(round_up(d.len(), 8), 0);
+    let following = (d.len() - 16) as u64;
+    d[8..16].copy_from_slice(&following.to_be_bytes());
+    d
+}
+
 fn has_footer(image: &[u8]) -> bool {
     image.len() >= FOOTER_LEN && &image[image.len() - FOOTER_LEN..][..4] == b"AVBf"
 }
@@ -256,17 +298,49 @@ pub fn hash_footer(
         fo.partition_size
     );
 
-    let digest = {
-        let mut hasher = Sha256::new();
-        hasher.update(fo.salt);
-        hasher.update(image);
-        hasher.finalize()
-    };
-    let desc = hash_descriptor(fo.partition, image.len() as u64, fo.salt, &digest);
-    let vbmeta = make_vbmeta_with(opts, key, &desc)?;
-
     let mut out = image.to_vec();
     out.resize(round_up(out.len(), block), 0);
+    let desc = if fo.hashtree {
+        let probe = crate::avb::HashtreeDescriptor {
+            partition: fo.partition.to_string(),
+            algorithm: "sha256".to_string(),
+            version: 1,
+            image_size: image.len() as u64,
+            tree_offset: 0,
+            tree_size: 0,
+            data_block_size: block as u32,
+            hash_block_size: block as u32,
+            fec_num_roots: 0,
+            fec_offset: 0,
+            fec_size: 0,
+            salt: fo.salt.to_vec(),
+            root_digest: Vec::new(),
+            flags: 0,
+        };
+        let (root, tree) =
+            crate::hashtree::build(&mut std::io::Cursor::new(image), image.len() as u64, &probe)?;
+        let data_size = out.len() as u64;
+        let tree_offset = data_size;
+        out.extend_from_slice(&tree);
+        out.resize(round_up(out.len(), block), 0);
+        hashtree_descriptor(
+            fo.partition,
+            data_size,
+            (tree_offset, tree.len() as u64),
+            block as u32,
+            fo.salt,
+            &root,
+        )
+    } else {
+        let digest = {
+            let mut hasher = Sha256::new();
+            hasher.update(fo.salt);
+            hasher.update(image);
+            hasher.finalize()
+        };
+        hash_descriptor(fo.partition, image.len() as u64, fo.salt, &digest)
+    };
+    let vbmeta = make_vbmeta_with(opts, key, &desc)?;
     let vbmeta_offset = out.len();
     out.extend_from_slice(&vbmeta);
     out.resize(round_up(out.len(), block), 0);
@@ -372,6 +446,7 @@ mod tests {
                 partition_size: 1048576,
                 block_size: 4096,
                 salt: &salt,
+                hashtree: false,
             },
             &none("android-doctor test"),
             None,
@@ -395,6 +470,7 @@ mod tests {
                 partition_size: 1048576,
                 block_size: 4096,
                 salt: &salt,
+                hashtree: false,
             },
             &none("x"),
             None,
@@ -422,6 +498,37 @@ mod tests {
         }
     }
 
+    /// With `hashtree`, the tree sits where the descriptor says and its root matches the image.
+    #[test]
+    fn hashtree_footer_places_a_verifiable_tree() {
+        let image = sample();
+        let out = hash_footer(
+            &image,
+            &FooterOptions {
+                partition: "system",
+                partition_size: 1048576,
+                block_size: 4096,
+                salt: &[7u8; 16],
+                hashtree: true,
+            },
+            &none("x"),
+            None,
+        )
+        .unwrap();
+        let f = &out[out.len() - FOOTER_LEN..];
+        let at = u64::from_be_bytes(f[20..28].try_into().unwrap()) as usize;
+        let len = u64::from_be_bytes(f[28..36].try_into().unwrap()) as usize;
+        let meta = crate::avb::parse(&out[at..at + len], None).unwrap();
+        match &meta.descriptors[..] {
+            [crate::avb::Descriptor::Hashtree(h)] => {
+                let tree = crate::hashtree::hash_tree(&image, h).unwrap();
+                let at = h.tree_offset as usize;
+                assert_eq!(&out[at..at + h.tree_size as usize], &tree[..]);
+            }
+            other => panic!("expected one hashtree descriptor, got {other:?}"),
+        }
+    }
+
     /// Erasing the footer gives back the original bytes; a footer is refused twice and a
     /// partition too small for its metadata is refused.
     #[test]
@@ -432,6 +539,7 @@ mod tests {
             partition_size: size,
             block_size: 4096,
             salt: &[1, 2, 3, 4],
+            hashtree: false,
         };
         let out = hash_footer(&image, &fo(1048576), &none("x"), None).unwrap();
         assert_eq!(erase_footer(&out).unwrap(), image);
