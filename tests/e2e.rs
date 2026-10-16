@@ -274,3 +274,62 @@ fn dex_command_lists_tables_as_json_and_text() {
     assert!(run(&["--methods", "--grep=->sw("]).contains("Ldemo/Main;->sw(I)I"));
     assert!(run(&["--code", "demo.Main"]).contains("sparse-switch"));
 }
+
+/// `tree <image> [path] [--depth N] [--json]`: the whole tree (or a subtree) of an image, indented,
+/// directories with a trailing `/`, symlinks with their target. Built in-process, no mkfs tools.
+#[test]
+fn tree_prints_the_image_recursively() {
+    use fs_erofs::mkfs::{Node, NodeMeta, build_image};
+    use std::collections::BTreeMap;
+    let file = |data: &[u8]| Node::File {
+        mode: 0o100644,
+        data: data.to_vec(),
+        meta: NodeMeta::default(),
+        xattrs: vec![],
+    };
+    let dir = |entries: Vec<(&str, Node)>| Node::Dir {
+        mode: 0o040755,
+        entries: entries
+            .into_iter()
+            .map(|(n, v)| (n.to_string(), v))
+            .collect::<BTreeMap<_, _>>(),
+        meta: NodeMeta::default(),
+        xattrs: vec![],
+    };
+    let root = dir(vec![(
+        "system",
+        dir(vec![
+            ("build.prop", file(b"ro.secure=1\n")),
+            ("etc", dir(vec![("old.log", file(b"log"))])),
+            ("xbin", dir(vec![("su", file(b"#!/bin/sh\n"))])),
+        ]),
+    )]);
+    let d = Scratch::new("tree");
+    let img = d.0.join("system.img");
+    std::fs::write(&img, build_image(root, 12).unwrap()).unwrap();
+    let run = |args: &[&str]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+            .arg("tree")
+            .arg(&img)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8(o.stdout).unwrap()
+    };
+    assert_eq!(
+        run(&[]),
+        "system/\n  build.prop\n  etc/\n    old.log\n  xbin/\n    su\n"
+    );
+    assert_eq!(
+        run(&["/system", "--depth", "1"]),
+        "system/\n  build.prop\n  etc/\n  xbin/\n"
+    );
+    let j: serde_json::Value = serde_json::from_str(&run(&["/system/etc", "--json"])).unwrap();
+    assert!(
+        j.get("schema").is_none(),
+        "a listing is plain JSON like ls, not a doctor/1 envelope"
+    );
+    assert_eq!(j["entries"][0]["path"], "system/etc");
+    assert_eq!(j["entries"][1]["path"], "system/etc/old.log");
+}

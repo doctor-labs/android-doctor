@@ -255,6 +255,19 @@ enum Command {
     },
     /// Print one regular file from an ext2/3/4, erofs or f2fs image to standard output
     Cat { image: PathBuf, path: String },
+    /// Show the whole tree (or a subtree) of an ext2/3/4, erofs or f2fs image, recursively, without extracting it
+    Tree {
+        image: PathBuf,
+        /// Path inside the image to start from (default: the root)
+        #[arg(default_value = "/")]
+        path: String,
+        /// Show at most N levels below the start path
+        #[arg(long, value_name = "N")]
+        depth: Option<usize>,
+        /// Print JSON instead of text (doctor/1 envelope, no findings)
+        #[arg(long)]
+        json: bool,
+    },
     /// Security posture of firmware images: ADB properties, setuid files, su binaries, init services
     Audit {
         /// Image files (ext2/3/4, erofs or f2fs), or a directory of them (such as an `extract` output)
@@ -1079,6 +1092,12 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
         } => ramdisk_command(&input, output.as_deref(), json, list),
         Command::Ls { image, path, json } => ls_command(&image, &path, json),
         Command::Cat { image, path } => cat_command(&image, &path),
+        Command::Tree {
+            image,
+            path,
+            depth,
+            json,
+        } => tree_command(&image, &path, depth, json),
         Command::Audit {
             images,
             json,
@@ -1941,6 +1960,73 @@ fn ls_command(image: &std::path::Path, path: &str, json: bool) -> anyhow::Result
             .join("\n")
     };
     print_out(&text)
+}
+
+/// `tree`: the start entry (unless it is the root) and everything below it, indented two spaces per
+/// level, sorted by path components so a directory's children follow it. `--depth` counts levels below
+/// the start path. The JSON form is the doctor/1 envelope with no findings and no score (a listing has
+/// no score; the contract scope says non-finding commands may keep their own JSON).
+fn tree_command(
+    image: &std::path::Path,
+    path: &str,
+    depth: Option<usize>,
+    json: bool,
+) -> anyhow::Result<()> {
+    let all = tree::Tree::open(image)?.entries()?;
+    let base: Vec<&str> = path.split('/').filter(|c| !c.is_empty()).collect();
+    let shift = usize::from(!base.is_empty());
+    let mut shown: Vec<&tree::Entry> = Vec::new();
+    if !base.is_empty() {
+        let own = all
+            .iter()
+            .find(|e| e.path == base.join("/"))
+            .ok_or_else(|| anyhow::anyhow!("{path}: no such file or directory in the image"))?;
+        shown.push(own);
+    }
+    let mut below: Vec<&tree::Entry> = all
+        .iter()
+        .filter(|e| {
+            let parts: Vec<&str> = e.path.split('/').collect();
+            let rel = parts.len().saturating_sub(base.len());
+            parts.len() > base.len()
+                && parts[..base.len()] == base[..]
+                && depth.is_none_or(|n| rel <= n)
+        })
+        .collect();
+    below.sort_by(|a, b| {
+        a.path
+            .split('/')
+            .collect::<Vec<_>>()
+            .cmp(&b.path.split('/').collect::<Vec<_>>())
+    });
+    shown.extend(below);
+    let suffix = |e: &tree::Entry| match e.kind {
+        tree::Kind::Dir => "/".to_string(),
+        tree::Kind::Symlink => format!(" -> {}", e.link.as_deref().unwrap_or("?")),
+        _ => String::new(),
+    };
+    if json {
+        // Plain JSON like `ls --json`: a listing has no findings, so no doctor/1 envelope.
+        let v = serde_json::json!({
+            "path": base.join("/"),
+            "entries": shown.iter().map(|e| tree::entry_json(e)).collect::<Vec<_>>(),
+        });
+        return print_out(&serde_json::to_string_pretty(&v)?);
+    }
+    let lines: Vec<String> = shown
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            if i == 0 && shift == 1 {
+                return format!("{}{}", e.path, suffix(e));
+            }
+            let parts = e.path.split('/').count();
+            let rel = parts - base.len();
+            let name = e.path.rsplit('/').next().unwrap_or(&e.path);
+            format!("{}{}{}", " ".repeat(2 * (rel - 1 + shift)), name, suffix(e))
+        })
+        .collect();
+    print_out(&lines.join("\n"))
 }
 
 fn cat_command(image: &std::path::Path, path: &str) -> anyhow::Result<()> {
