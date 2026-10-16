@@ -163,6 +163,17 @@ pub fn sniff(head: &[u8]) -> Option<Identified> {
     if at0(&[0x28, 0xB5, 0x2F, 0xFD]) {
         return found("zstd", "zstd compressed data");
     }
+    // Vendor headers that prefix a partition image (magiskboot's MTK_MAGIC, DHTB_MAGIC and
+    // TEGRABLOB_MAGIC). Identified only; the payload behind them is not unwrapped.
+    if at0(&[0x88, 0x16, 0x88, 0x58]) {
+        return found("mtk-header", "MediaTek image header (mtk_hdr, 512 bytes)");
+    }
+    if at0(b"DHTB\x01\x00\x00\x00") {
+        return found("samsung-dhtb", "Samsung DHTB image header (512 bytes)");
+    }
+    if at0(b"-SIGNED-BY-SIGNBLOB-") {
+        return found("signblob", "signed blob header (blob_hdr)");
+    }
     // 32-bit ARM zImage: magic at 0x24, "HdrS" at 0x28. The first 0x24 bytes are zero, so this
     // does not clash with any offset-0 magic above.
     if let Some(info) = crate::ramdisk::zimage_header(head) {
@@ -625,6 +636,24 @@ mod tests {
         let mut f = vec![0u8; SNIFF_LEN];
         f[F2FS_MAGIC_OFFSET..F2FS_MAGIC_OFFSET + 4].copy_from_slice(&F2FS_MAGIC.to_le_bytes());
         assert_eq!(id_of(&f), "f2fs");
+    }
+
+    #[test]
+    fn mediatek_samsung_and_signblob_headers_are_identified() {
+        // Magics from magiskboot's format.rs (MTK_MAGIC, DHTB_MAGIC, TEGRABLOB_MAGIC); the
+        // headers are 512-byte mtk_hdr / dhtb_hdr and the blob_hdr of bootimg.hpp.
+        assert_eq!(
+            id_of(&head_with(0, &[0x88, 0x16, 0x88, 0x58])),
+            "mtk-header"
+        );
+        assert_eq!(
+            id_of(&head_with(0, b"DHTB\x01\x00\x00\x00")),
+            "samsung-dhtb"
+        );
+        assert_eq!(id_of(&head_with(0, b"-SIGNED-BY-SIGNBLOB-")), "signblob");
+        // DHTB needs its version word; the bare 4-byte name is not enough.
+        assert_eq!(id_of(&head_with(0, b"DHTB")), "none");
+        assert_eq!(id_of(&head_with(0, &[0x88, 0x16, 0x88, 0x59])), "none");
     }
 
     #[test]
