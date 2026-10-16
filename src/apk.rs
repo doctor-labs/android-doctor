@@ -750,6 +750,158 @@ fn parse_network_security_config(data: &[u8]) -> Result<NetworkSecurityConfig> {
     Ok(out)
 }
 
+/// Most `res/xml/` documents read, and most grants kept per document, from one APK.
+const MAX_XML_DOCS: usize = 256;
+const MAX_FILE_PATH_GRANTS: usize = 256;
+
+/// One child of a FileProvider `<paths>` document: `<root-path>`, `<external-path>`, ...
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileProviderGrant {
+    /// The `res/xml/` entry the grant came from.
+    pub entry: String,
+    /// Element name, e.g. `external-path`.
+    pub tag: String,
+    /// The `path` attribute, when present.
+    pub path: Option<String>,
+}
+
+/// Scan a binary XML document as a FileProvider `<paths>` file. Sets `is_paths` once the root
+/// element is `<paths>`; any other root returns Ok without reading further. Grants are the
+/// root's direct children, tagged with `entry`.
+fn scan_file_paths(
+    entry: &str,
+    data: &[u8],
+    grants: &mut Vec<FileProviderGrant>,
+    is_paths: &mut bool,
+) -> Result<()> {
+    ensure!(le16(data, 0)? == 0x0003, "paths: not a binary XML document");
+    let xml_header = le16(data, 2)? as usize;
+    ensure!(
+        xml_header >= 8 && xml_header <= data.len(),
+        "paths: bad xml header"
+    );
+    let (pool, _pool_start) = parse_string_pool(&data[xml_header..])?;
+    let pool_chunk_size = le32(&data[xml_header..], 4)? as usize;
+    let mut pos = xml_header + pool_chunk_size;
+    let mut depth = 0usize;
+    while pos + 8 <= data.len() {
+        let ct = le16(data, pos)?;
+        let cs = le32(data, pos + 4)? as usize;
+        ensure!(
+            cs >= 8 && pos + cs <= data.len(),
+            "paths: bad chunk size {cs}"
+        );
+        match ct {
+            0x0103 => depth = depth.saturating_sub(1),
+            0x0102 => {
+                let (tag, attrs) = parse_start_tag(data, pos, &pool)?;
+                if depth == 0 {
+                    if tag != "paths" {
+                        return Ok(());
+                    }
+                    *is_paths = true;
+                } else if depth == 1 && grants.len() < MAX_FILE_PATH_GRANTS {
+                    let path = attrs
+                        .iter()
+                        .find(|a| pool.get(a.name_idx).map(String::as_str) == Some("path"))
+                        .map(|a| a.value.clone());
+                    grants.push(FileProviderGrant {
+                        entry: entry.to_string(),
+                        tag,
+                        path,
+                    });
+                }
+                depth += 1;
+            }
+            _ => {}
+        }
+        pos += cs;
+    }
+    Ok(())
+}
+
+/// What one `res/xml/` document is, as far as the FileProvider rule is concerned.
+enum FileProviderDoc {
+    NotPaths,
+    Paths(Vec<FileProviderGrant>),
+    /// A `<paths>` document that failed part way: its grants are unknown.
+    Broken,
+}
+
+fn parse_file_paths(entry: &str, data: &[u8]) -> FileProviderDoc {
+    let mut grants = Vec::new();
+    let mut is_paths = false;
+    let result = scan_file_paths(entry, data, &mut grants, &mut is_paths);
+    if !is_paths {
+        FileProviderDoc::NotPaths
+    } else if result.is_ok() {
+        FileProviderDoc::Paths(grants)
+    } else {
+        FileProviderDoc::Broken
+    }
+}
+
+/// FileProvider findings over the APK's top-level `res/xml/` documents: broad grants, and an
+/// info per `<paths>` document that could not be parsed (its grants are not checked).
+fn file_provider_issues(zip: &mut ZipArchive<Cursor<&[u8]>>) -> Vec<ManifestIssue> {
+    let mut names: Vec<String> = zip
+        .file_names()
+        .filter(|n| n.strip_prefix("res/xml/").is_some_and(|r| !r.contains('/')))
+        .map(String::from)
+        .collect();
+    names.sort();
+    names.truncate(MAX_XML_DOCS);
+    let mut grants = Vec::new();
+    let mut issues = Vec::new();
+    for n in names {
+        let Some(bytes) = read_entry(zip, &n) else {
+            continue;
+        };
+        match parse_file_paths(&n, &bytes) {
+            FileProviderDoc::NotPaths => {}
+            FileProviderDoc::Paths(g) => grants.extend(g),
+            FileProviderDoc::Broken => issues.push(ManifestIssue {
+                rule: "apk-fileprovider-unchecked",
+                severity: Severity::Info,
+                detail: format!(
+                    "{n} is a FileProvider <paths> document that could not be parsed: its grants are not checked"
+                ),
+            }),
+        }
+    }
+    issues.extend(broad_grant_issues(&grants));
+    issues
+}
+
+/// Findings for FileProvider grants that expose a whole storage root: `<root-path>` shares the
+/// device root, and `<external-path>` with `path="."` (or "/") shares all of external storage.
+/// Scoped grants are not reported.
+fn broad_grant_issues(grants: &[FileProviderGrant]) -> Vec<ManifestIssue> {
+    grants
+        .iter()
+        .filter(|g| {
+            g.tag == "root-path"
+                || (g.tag.starts_with("external")
+                    && matches!(g.path.as_deref(), Some("" | "." | "/")))
+        })
+        .map(|g| {
+            let what = if g.tag == "root-path" {
+                "shares the whole device root"
+            } else {
+                "shares all of external storage"
+            };
+            ManifestIssue {
+                rule: "apk-fileprovider-broad-path",
+                severity: Severity::Medium,
+                detail: format!(
+                    "FileProvider <{}> in {} {what}: a URI grant reaches any file under it",
+                    g.tag, g.entry
+                ),
+            }
+        })
+        .collect()
+}
+
 /// Convert a resource reference like `@xml/network_security_config` into the APK
 /// zip entry path `res/xml/network_security_config`. Returns None for anything
 /// that is not an `@xml/` reference (e.g. a bare resource ID with no raw string).
@@ -1812,6 +1964,7 @@ pub fn audit_apk_bytes(path: &Path, bytes: &[u8]) -> ApkAudit {
         let mut code_issues = code_issues(&mut zip, activities);
         code_issues.extend(native_issues(&mut zip));
         code_issues.extend(packer_issues(&mut zip));
+        code_issues.extend(file_provider_issues(&mut zip));
         Ok(ApkInfo {
             path: path.display().to_string(),
             package_name: attrs
@@ -2957,6 +3110,17 @@ mod tests {
         w.finish().unwrap().into_inner()
     }
 
+    /// Like `apk_with`, but also embeds one `res/xml/<name>` resource (a FileProvider `paths` file).
+    fn apk_with_res_xml(manifest: &[u8], name: &str, xml: &[u8]) -> Vec<u8> {
+        let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let opt = zip::write::SimpleFileOptions::default();
+        w.start_file("AndroidManifest.xml", opt).unwrap();
+        w.write_all(manifest).unwrap();
+        w.start_file(format!("res/xml/{name}"), opt).unwrap();
+        w.write_all(xml).unwrap();
+        w.finish().unwrap().into_inner()
+    }
+
     /// `<manifest>` wrapping `<uses-sdk target>` and one `<application>`.
     fn manifest(top: Vec<A>, target: u32, app: Vec<A>, comps: Vec<El>) -> El {
         el(
@@ -3574,6 +3738,119 @@ mod tests {
             vec![],
         );
         assert_eq!(issues(&nsc), [("apk-cleartext-traffic", Severity::Warn)]);
+    }
+
+    /// Rules fired for an APK whose only extra resource is `res/xml/<name>` holding `paths`.
+    fn file_paths_rules(name: &str, paths: Vec<El>) -> Vec<&'static str> {
+        let m = manifest(vec![], 33, vec![], vec![]);
+        let xml = axml(&el("paths", vec![], paths), true);
+        let a = audit_apk_bytes(
+            Path::new("/x.apk"),
+            &apk_with_res_xml(&axml(&m, true), name, &xml),
+        );
+        assert!(a.error.is_none(), "{:?}", a.error);
+        a.info.unwrap().issues().iter().map(|i| i.rule).collect()
+    }
+
+    #[test]
+    fn file_provider_root_path_is_flagged() {
+        let rules = file_paths_rules(
+            "file_paths.xml",
+            vec![el(
+                "root-path",
+                vec![a("name", V::Str("root")), a("path", V::Str("/"))],
+                vec![],
+            )],
+        );
+        assert!(rules.contains(&"apk-fileprovider-broad-path"), "{rules:?}");
+    }
+
+    #[test]
+    fn file_provider_external_root_is_flagged_but_scoped_paths_are_clean() {
+        let broad = file_paths_rules(
+            "file_paths.xml",
+            vec![el(
+                "external-path",
+                vec![a("name", V::Str("ext")), a("path", V::Str("."))],
+                vec![],
+            )],
+        );
+        assert!(broad.contains(&"apk-fileprovider-broad-path"), "{broad:?}");
+        let scoped = file_paths_rules(
+            "file_paths.xml",
+            vec![
+                el(
+                    "files-path",
+                    vec![a("name", V::Str("img")), a("path", V::Str("images/"))],
+                    vec![],
+                ),
+                el(
+                    "external-path",
+                    vec![a("name", V::Str("pics")), a("path", V::Str("Pictures/"))],
+                    vec![],
+                ),
+            ],
+        );
+        assert!(
+            !scoped.contains(&"apk-fileprovider-broad-path"),
+            "{scoped:?}"
+        );
+    }
+
+    #[test]
+    fn file_provider_document_that_fails_to_parse_is_noted() {
+        let full = axml(
+            &el(
+                "paths",
+                vec![],
+                vec![el(
+                    "root-path",
+                    vec![a("name", V::Str("r")), a("path", V::Str("/"))],
+                    vec![],
+                )],
+            ),
+            true,
+        );
+        // Cut the final end-element chunk short: the root is still a <paths> document.
+        let cut = &full[..full.len() - 8];
+        let m = manifest(vec![], 33, vec![], vec![]);
+        let a = audit_apk_bytes(
+            Path::new("/x.apk"),
+            &apk_with_res_xml(&axml(&m, true), "file_paths.xml", cut),
+        );
+        assert!(a.error.is_none(), "{:?}", a.error);
+        let issues = a.info.unwrap().issues();
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.rule == "apk-fileprovider-unchecked" && i.severity == Severity::Info),
+            "{:?}",
+            issues.iter().map(|i| i.rule).collect::<Vec<_>>()
+        );
+        assert!(
+            !issues
+                .iter()
+                .any(|i| i.rule == "apk-fileprovider-broad-path")
+        );
+    }
+
+    #[test]
+    fn res_xml_that_is_not_a_paths_document_is_ignored() {
+        let m = manifest(vec![], 33, vec![], vec![]);
+        let xml = axml(
+            &el(
+                "PreferenceScreen",
+                vec![],
+                vec![el("root-path", vec![a("path", V::Str("/"))], vec![])],
+            ),
+            true,
+        );
+        let a = audit_apk_bytes(
+            Path::new("/x.apk"),
+            &apk_with_res_xml(&axml(&m, true), "prefs.xml", &xml),
+        );
+        let rules: Vec<_> = a.info.unwrap().issues().iter().map(|i| i.rule).collect();
+        assert!(!rules.contains(&"apk-fileprovider-broad-path"), "{rules:?}");
     }
 
     #[test]
