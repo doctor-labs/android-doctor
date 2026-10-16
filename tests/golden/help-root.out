@@ -10,6 +10,7 @@ Commands:
   fec         dm-verity forward error correction: generate Reed-Solomon parity for a file, verify a file against it, repair a damaged file
   verify-ota  Verify an OTA's signatures: the zip's whole-file (signapk) signature and the payload's metadata and payload signatures
   dex         Show the DEX files of an APK (or one .dex): header, tables, classes, methods, fields, strings, references, code
+  apk         Audit one APK file: manifest, package, version, signers, code, issues
   partitions  Show a flash manifest (Qualcomm rawprogram*.xml or MediaTek scatter.txt) and check it against the image files actually present
   unpack      Show a boot or vendor_boot image's header, and with -o write its kernel, ramdisk, dtb, ...
   ls          List a directory (or show one file) inside an ext2/3/4, erofs or f2fs image, without extracting it

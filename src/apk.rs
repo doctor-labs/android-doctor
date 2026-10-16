@@ -283,6 +283,8 @@ pub struct ManifestAttrs {
     pub direct_boot_aware: bool,
     /// Top-level `<permission>` declarations: (name, protectionLevel & 0xf).
     pub permissions: Vec<(String, u32)>,
+    /// `<uses-permission>` and `<uses-permission-sdk-23>` names the app requests, in manifest order.
+    pub uses_permissions: Vec<String>,
     /// `<application android:taskAffinity>`: inherited by activities unless overridden.
     /// `None` means absent; an empty string is the StrandHogg mitigation and is kept.
     pub app_task_affinity: Option<String>,
@@ -829,6 +831,7 @@ fn read_tag(
     let (mut read_perm, mut write_perm) = (false, false);
     let mut perm_name: Option<String> = None;
     let mut perm_level: Option<u32> = None;
+    let mut uses_perm: Option<String> = None;
     let mut comp_dba = false;
     for a in attrs {
         if tag == "manifest" {
@@ -873,6 +876,9 @@ fn read_tag(
             ("permission", "protectionLevel") if (0x10..=0x1f).contains(&a.data_type) => {
                 perm_level = Some(a.data & 0xf)
             }
+            ("uses-permission" | "uses-permission-sdk-23", "name") if !a.value.is_empty() => {
+                uses_perm = Some(a.value.clone())
+            }
             ("application", "allowTaskReparenting") => {
                 out.task_reparenting = a.as_bool() == Some(true)
             }
@@ -910,6 +916,13 @@ fn read_tag(
         && let Some(name) = perm_name
     {
         out.permissions.push((name, perm_level.unwrap_or(0)));
+    }
+    if matches!(tag, "uses-permission" | "uses-permission-sdk-23")
+        && parent.is_some_and(|(p, _)| p == "manifest")
+        && let Some(name) = uses_perm
+        && out.uses_permissions.len() < MAX_COMPONENTS
+    {
+        out.uses_permissions.push(name);
     }
     if is_component && in_app {
         if out.components.len() < MAX_COMPONENTS {
@@ -1826,6 +1839,60 @@ pub fn audit_apk_bytes(path: &Path, bytes: &[u8]) -> ApkAudit {
     }
 }
 
+/// One archive entry, as `apk --files` lists it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EntryInfo {
+    pub name: String,
+    pub size: u64,
+    pub compressed_size: u64,
+    pub method: String,
+}
+
+/// Largest number of archive entries `apk --files` lists.
+const MAX_LIST_ENTRIES: usize = 100_000;
+
+/// The entries of an APK, read from its zip central directory (name, sizes, method).
+pub fn list_entries(bytes: &[u8]) -> Result<Vec<EntryInfo>> {
+    let mut zip = ZipArchive::new(Cursor::new(bytes)).context("not a valid zip")?;
+    let count = zip.len().min(MAX_LIST_ENTRIES);
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let f = zip.by_index(i).context("reading the zip directory")?;
+        out.push(EntryInfo {
+            name: f.name().to_string(),
+            size: f.size(),
+            compressed_size: f.compressed_size(),
+            method: format!("{:?}", f.compression()),
+        });
+    }
+    Ok(out)
+}
+
+/// The decompressed bytes of one archive entry. Bounded by `MAX_ENTRY_BYTES` even when the
+/// declared size lies (a zip bomb).
+pub fn entry_bytes(bytes: &[u8], name: &str) -> Result<Vec<u8>> {
+    let mut zip = ZipArchive::new(Cursor::new(bytes)).context("not a valid zip")?;
+    let f = zip
+        .by_name(name)
+        .with_context(|| format!("no entry {name:?} in the APK"))?;
+    ensure!(
+        f.size() <= MAX_ENTRY_BYTES as u64,
+        "entry {name:?} is {} bytes, over the {} MB limit",
+        f.size(),
+        MAX_ENTRY_BYTES / (1024 * 1024)
+    );
+    let mut out = Vec::new();
+    f.take(MAX_ENTRY_BYTES as u64 + 1)
+        .read_to_end(&mut out)
+        .with_context(|| format!("reading entry {name:?}"))?;
+    ensure!(
+        out.len() <= MAX_ENTRY_BYTES,
+        "entry {name:?} decompresses past the {} MB limit",
+        MAX_ENTRY_BYTES / (1024 * 1024)
+    );
+    Ok(out)
+}
+
 /// Largest dex and total dex bytes the code rules will parse out of one APK.
 const MAX_DEX_ENTRY: u64 = 32 * 1024 * 1024;
 const MAX_DEX_TOTAL: u64 = 64 * 1024 * 1024;
@@ -2352,6 +2419,170 @@ fn the_lineage_proof_itself_is_reported() {
         new.proof_of_rotation, None,
         "the newest entry rotates to nothing"
     );
+}
+
+// --- Output functions for standalone `apk` command ---
+
+/// One APK as JSON.
+pub fn to_json(a: &ApkAudit, now: i64) -> serde_json::Value {
+    let Some(info) = &a.info else {
+        return serde_json::json!({ "error": a.error });
+    };
+    let m = &info.manifest;
+    let issues = info.issues();
+    let posture_findings = info.posture(now);
+    serde_json::json!({
+        "path": info.path,
+        "package_name": info.package_name,
+        "version_code": info.version_code,
+        "version_name": info.version_name,
+        "signers": info.signers.iter().map(|s| serde_json::json!({
+            "scheme": s.scheme,
+            "cert_sha256": s.cert_sha256,
+            "subject_cn": s.subject_cn,
+            "is_aosp_test_key": s.is_aosp_test_key,
+            "is_debug_cert": s.is_debug_cert,
+            "not_before": s.not_before,
+            "not_after": s.not_after,
+            "sig_alg": s.sig_alg,
+            "rsa_bits": s.rsa_bits,
+        })).collect::<Vec<_>>(),
+        "verification": info.verification.iter().map(|c| serde_json::json!({
+            "scheme": c.scheme,
+            "verdict": c.verdict.name(),
+            "detail": c.detail,
+            "min_sdk": c.min_sdk,
+            "max_sdk": c.max_sdk,
+        })).collect::<Vec<_>>(),
+        "manifest": {
+            "package_name": m.package_name,
+            "version_code": m.version_code,
+            "version_name": m.version_name,
+            "target_sdk": m.target_sdk,
+            "min_sdk": m.min_sdk,
+            "shared_user_id": m.shared_user_id,
+            "debuggable": m.debuggable,
+            "uses_cleartext_traffic": m.uses_cleartext_traffic,
+            "network_security_config": m.network_security_config.is_some(),
+            "allow_backup": m.allow_backup,
+            "test_only": m.test_only,
+            "task_reparenting": m.task_reparenting,
+            "direct_boot_aware": m.direct_boot_aware,
+            "application_permission": m.app_permission,
+            "uses_permissions": m.uses_permissions.iter().map(|n| serde_json::json!({
+                "name": n,
+                "protection": crate::permissions::base_level_name(n),
+                "protection_level": crate::permissions::raw_protection_level(n),
+            })).collect::<Vec<_>>(),
+            "components": m.components.iter().map(|c| serde_json::json!({
+                "kind": c.kind,
+                "name": c.name,
+                "exported": c.exported,
+                "guarded": c.guarded,
+                "intent_filter": c.has_intent_filter,
+                "intent_filters": c.intent_filters.len(),
+            })).collect::<Vec<_>>(),
+            "permissions": m.permissions.iter().map(|(n, l)| serde_json::json!({
+                "name": n,
+                "protection_level": l & 0xf,
+            })).collect::<Vec<_>>(),
+        },
+        "issues": issues.iter().map(|i| serde_json::json!({
+            "severity": i.severity.name(),
+            "rule": i.rule,
+            "detail": i.detail,
+        })).collect::<Vec<_>>(),
+        "posture_findings": posture_findings.iter().map(|(r, d)| serde_json::json!({
+            "rule": r,
+            "detail": d,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+/// One APK audit report as text.
+pub fn to_text(a: &ApkAudit, now: i64) -> String {
+    let Some(info) = &a.info else {
+        return format!("error: {}", a.error.as_deref().unwrap_or("unknown"));
+    };
+
+    let mut o = Vec::new();
+
+    // Package info
+    o.push(format!("APK: {}", info.path));
+    if !info.package_name.is_empty() {
+        o.push(format!("  Package: {}", info.package_name));
+    }
+    if let Some(ref vc) = info.version_code {
+        o.push(format!("  Version code: {}", vc));
+    }
+    if let Some(ref vn) = info.version_name {
+        o.push(format!("  Version name: {}", vn));
+    }
+
+    // Permissions the app requests (names are from the APK, so they are sanitized)
+    if !info.manifest.uses_permissions.is_empty() {
+        o.push("  Permissions requested:".to_string());
+        for n in &info.manifest.uses_permissions {
+            let level = crate::permissions::base_level_name(n).unwrap_or("not in the catalogue");
+            o.push(format!("    {} ({})", crate::term::sanitize(n), level));
+        }
+    }
+
+    // Signers
+    if !info.signers.is_empty() {
+        o.push("  Signers:".to_string());
+        for s in &info.signers {
+            let cn = s.subject_cn.as_deref().unwrap_or("");
+            let test_key = if s.is_aosp_test_key {
+                " [AOSP TEST KEY]"
+            } else {
+                ""
+            };
+            let debug_cert = if s.is_debug_cert { " [DEBUG]" } else { "" };
+            o.push(format!(
+                "    {} {} {}{test_key}{debug_cert}",
+                s.scheme, cn, s.cert_sha256
+            ));
+        }
+    }
+
+    // Verification
+    if !info.verification.is_empty() {
+        o.push("  Signatures:".to_string());
+        for c in &info.verification {
+            o.push(format!(
+                "    {}: {} ({})",
+                c.scheme,
+                c.verdict.name(),
+                c.detail
+            ));
+        }
+    }
+
+    // Issues (manifest + code)
+    let issues = info.issues();
+    if !issues.is_empty() {
+        o.push("  Issues:".to_string());
+        for i in &issues {
+            o.push(format!(
+                "    [{}] {}: {}",
+                i.severity.name(),
+                i.rule,
+                i.detail
+            ));
+        }
+    }
+
+    // Posture findings (signing posture)
+    let posture_findings = info.posture(now);
+    if !posture_findings.is_empty() {
+        o.push("  Signing posture:".to_string());
+        for (rule, detail) in posture_findings {
+            o.push(format!("    {}: {}", rule, detail));
+        }
+    }
+
+    o.join("\n")
 }
 
 #[cfg(test)]
@@ -3984,6 +4215,39 @@ mod tests {
             !rules_strong.contains(&"apk-cert-weak-hash")
                 && !rules_strong.contains(&"apk-cert-weak-key"),
             "{rules_strong:?}"
+        );
+    }
+
+    #[test]
+    fn uses_permission_and_sdk23_names_are_listed_in_order_with_their_level() {
+        let up = |tag: &'static str, n: &'static str| el(tag, vec![a("name", V::Str(n))], vec![]);
+        let m = el(
+            "manifest",
+            vec![a("package", V::Str("com.example.fx"))],
+            vec![
+                up("uses-permission", "android.permission.CAMERA"),
+                up("uses-permission-sdk-23", "android.permission.READ_CONTACTS"),
+                up("uses-permission", "com.example.custom"),
+                el("application", vec![], vec![]),
+            ],
+        );
+        let p = parse_manifest(&axml(&m, false)).unwrap();
+        assert_eq!(
+            p.uses_permissions,
+            vec![
+                "android.permission.CAMERA",
+                "android.permission.READ_CONTACTS",
+                "com.example.custom"
+            ]
+        );
+        assert_eq!(
+            crate::permissions::base_level_name("android.permission.CAMERA"),
+            Some("dangerous")
+        );
+        // not in the framework catalogue: shown without a level, not guessed
+        assert_eq!(
+            crate::permissions::base_level_name("com.example.custom"),
+            None
         );
     }
 }
