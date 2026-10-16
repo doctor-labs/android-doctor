@@ -10,6 +10,8 @@ use std::path::Path;
 pub(crate) const MAX_ENTRIES: usize = 2_000_000;
 pub(crate) const MAX_DEPTH: usize = 1024;
 pub(crate) const MAX_PATH: usize = 4096;
+/// The most physical blocks one blocks, icheck or file_blocks listing may hold.
+pub(crate) const MAX_BLOCK_LIST: u64 = 1 << 24;
 pub(crate) const MAX_SYMLINK: u64 = 4096;
 /// Largest directory a reader will list (a directory is read whole).
 pub(crate) const MAX_DIR_BYTES: u64 = 256 << 20;
@@ -95,6 +97,35 @@ pub(crate) trait TreeSource {
     /// The entries of the directory at `path` (not recursive), or the entry itself for a file.
     fn list_dir(&self, path: &str) -> Result<Vec<Entry>>;
 
+    /// The entry at `path` itself, whatever its type (symlinks are not followed).
+    fn stat(&self, path: &str) -> Result<Entry>;
+
+    /// The entry at `path` and the node the reader keeps for it (symlinks are not followed).
+    fn lookup_node(&self, path: &str) -> Result<(Entry, Self::Node)>;
+
+    /// The physical block numbers holding the data of a regular file, in file order. Holes are skipped.
+    fn data_blocks(&self, node: &Self::Node) -> Result<Vec<u64>>;
+
+    /// The entry at `path` and the physical blocks of its data; only a regular file has any.
+    fn blocks(&self, path: &str) -> Result<(Entry, Vec<u64>)> {
+        let (entry, node) = self.lookup_node(path)?;
+        check_cat(&entry)?;
+        let blocks = self.data_blocks(&node)?;
+        Ok((entry, blocks))
+    }
+
+    /// Every regular file with its physical blocks, in path order (for icheck).
+    fn file_blocks(&self) -> Result<Vec<(Entry, Vec<u64>)>> {
+        let mut out = Vec::new();
+        for (entry, node) in self.entries()? {
+            if entry.kind == Kind::File {
+                let blocks = self.data_blocks(&node)?;
+                out.push((entry, blocks));
+            }
+        }
+        Ok(out)
+    }
+
     /// Write a regular file's contents to `out` (holes as zeros). Symlinks are not followed.
     fn cat_path(&self, path: &str, out: &mut dyn std::io::Write) -> Result<()>;
 }
@@ -163,6 +194,30 @@ impl Tree {
             Tree::Ext(f) => TreeSource::list_dir(f, path),
             Tree::Erofs(f) => TreeSource::list_dir(f.as_ref(), path),
             Tree::F2fs(f) => TreeSource::list_dir(f.as_ref(), path),
+        }
+    }
+
+    pub(crate) fn stat(&self, path: &str) -> Result<Entry> {
+        match self {
+            Tree::Ext(f) => TreeSource::stat(f, path),
+            Tree::Erofs(f) => TreeSource::stat(f.as_ref(), path),
+            Tree::F2fs(f) => TreeSource::stat(f.as_ref(), path),
+        }
+    }
+
+    pub(crate) fn blocks(&self, path: &str) -> Result<(Entry, Vec<u64>)> {
+        match self {
+            Tree::Ext(f) => TreeSource::blocks(f, path),
+            Tree::Erofs(f) => TreeSource::blocks(f.as_ref(), path),
+            Tree::F2fs(f) => TreeSource::blocks(f.as_ref(), path),
+        }
+    }
+
+    pub(crate) fn file_blocks(&self) -> Result<Vec<(Entry, Vec<u64>)>> {
+        match self {
+            Tree::Ext(f) => TreeSource::file_blocks(f),
+            Tree::Erofs(f) => TreeSource::file_blocks(f.as_ref()),
+            Tree::F2fs(f) => TreeSource::file_blocks(f.as_ref()),
         }
     }
 

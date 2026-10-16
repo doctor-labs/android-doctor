@@ -1,0 +1,12 @@
+Name the path or paths of each inode number inside an ext2/3/4, erofs or f2fs image (inodes with no path print as none)
+
+Usage: android-doctor ncheck [OPTIONS] <IMAGE> <INODES>...
+
+Arguments:
+  <IMAGE>      
+  <INODES>...  
+
+Options:
+      --json      Print JSON instead of text
+      --no-color  Never emit colour, even on a terminal (also honours the NO_COLOR environment variable)
+  -h, --help      Print help

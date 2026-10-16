@@ -84,6 +84,18 @@ fn invocations(d: &Path) -> Vec<Vec<String>> {
             "x".into(),
             "--json".into(),
         ],
+        vec![
+            "stat".into(),
+            img.display().to_string(),
+            "/etc/hosts".into(),
+        ],
+        vec![
+            "blocks".into(),
+            img.display().to_string(),
+            "/etc/hosts".into(),
+        ],
+        vec!["icheck".into(), img.display().to_string(), "1".into()],
+        vec!["ncheck".into(), img.display().to_string(), "11".into()],
         vec!["files".into(), img.display().to_string()],
         vec!["audit".into(), img.display().to_string()],
         vec!["doctor".into(), ota.display().to_string()],

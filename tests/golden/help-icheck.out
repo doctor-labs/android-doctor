@@ -1,0 +1,12 @@
+Name the regular file that owns each physical block number inside an ext2/3/4 or f2fs image (blocks no file uses print as none)
+
+Usage: android-doctor icheck [OPTIONS] <IMAGE> <BLOCKS>...
+
+Arguments:
+  <IMAGE>      
+  <BLOCKS>...  
+
+Options:
+      --json      Print JSON instead of text
+      --no-color  Never emit colour, even on a terminal (also honours the NO_COLOR environment variable)
+  -h, --help      Print help
