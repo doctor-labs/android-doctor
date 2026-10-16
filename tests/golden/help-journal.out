@@ -1,0 +1,12 @@
+Show the jbd2 journal of an ext3/ext4 image: superblock fields, clean/dirty status, and the transactions found by walking from `s_first`. Read-only: the image is never modified
+
+Usage: android-doctor journal [OPTIONS] <IMAGE>
+
+Arguments:
+  <IMAGE>  An ext2/3/4 image with a journal
+
+Options:
+      --json      Print JSON instead of text
+      --no-color  Never emit colour, even on a terminal (also honours the NO_COLOR environment variable)
+      --replay    Also plan the journal replay as a read-only overlay: the blocks the committed transactions would overwrite
+  -h, --help      Print help

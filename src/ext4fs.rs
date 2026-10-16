@@ -122,23 +122,330 @@ pub struct Inode {
 pub struct Fs {
     src: Source,
     len: u64,
-    bs: u64,
+    pub(crate) bs: u64,
     inode_size: u64,
     inodes: u32,
     inodes_per_group: u32,
-    blocks: u64,
+    pub(crate) blocks: u64,
     itables: Vec<u64>,
+    /// Group descriptor size in bytes (32, or 64 and up under the 64bit feature).
+    pub(crate) desc_size: u64,
+    /// Byte offset of the group descriptor table.
+    pub(crate) gdt: u64,
 }
 
 impl Fs {
     /// Parse and return the filesystem superblock (the 1024 bytes at byte offset
     /// 1024). Read-only: this only re-reads the 1 KiB superblock block, it does
     /// not touch any file data.
-    #[allow(dead_code)] // follows up #224: wired into `ext` dump in a later PR
+    #[allow(dead_code)] // wired into `journal` dump in a later PR
     pub fn super_block(&self) -> Result<SuperBlock> {
         let sb = self.read_exact(1024, 1024)?;
         SuperBlock::parse(&sb)
     }
+
+    /// Read the ext4 journal (inode 8, `s_journal_inum`) as a flat byte vector,
+    /// by resolving its block runs in order. This is read-only: the journal is
+    /// never written back. Returns the raw journal image starting at the journal
+    /// superblock.
+    pub fn journal(&self) -> Result<Vec<u8>> {
+        // `s_journal_inum` lives at offset 0xE0 (224) in the ext superblock.
+        let sb = self.read_exact(1024, 1024)?;
+        let inum = le32(&sb, 0xE0);
+        if inum == 0 {
+            bail!("this filesystem has no journal (s_journal_inum == 0)");
+        }
+        let inode = self.inode(inum)?;
+        let runs = self.runs(&inode)?;
+        let mut out = Vec::with_capacity(inode.size as usize);
+        let bs = self.bs as usize;
+        for run in runs {
+            let start = run.lblk * self.bs;
+            if start >= inode.size {
+                break;
+            }
+            let bytes = (run.blocks * self.bs).min(inode.size - start);
+            match run.pblk {
+                None => out.extend(std::iter::repeat_n(0u8, bytes as usize)),
+                Some(p) => {
+                    let mut buf = vec![0u8; bs];
+                    let mut done = 0u64;
+                    while done < bytes {
+                        let n = (bytes - done).min(bs as u64) as usize;
+                        self.src
+                            .read_at(p * self.bs + done, &mut buf[..n])
+                            .context("reading journal data")?;
+                        out.extend_from_slice(&buf[..n]);
+                        done += n as u64;
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// A read-only view of the jbd2 (ext4) journal.
+///
+/// The journal is a log of metadata transactions kept in a dedicated inode
+/// (inode 8 on ext4, `s_journal_inum` in the superblock). This reader parses
+/// the journal superblock that opens the log and walks the block list from
+/// `s_first` to enumerate the transactions present, bounded by `s_maxlen`.
+/// It does not replay the journal into the image: reads of the host filesystem
+/// are unaffected.
+pub struct Journal {
+    /// Journal block size in bytes (`s_blocksize`).
+    pub block_size: u32,
+    /// Total number of blocks the journal log spans (`s_maxlen`).
+    pub max_blocks: u32,
+    /// First unused block when the journal was mounted (`s_first`).
+    pub first: u32,
+    /// The first sequence number the journal superblock grants (`s_sequence`).
+    pub sequence: u32,
+    /// Where the journal recovery should start (`s_start`); 0 means the
+    /// journal is clean and nothing needs replaying.
+    pub start: u32,
+    /// Journal superblock error number (`s_errno`); 0 = no error.
+    pub errno: i32,
+    /// Compatibility feature flags (`s_feature_compat`, v2 only).
+    pub feature_compat: u32,
+    /// Incompatible feature flags (`s_feature_incompat`, v2 only).
+    pub feature_incompat: u32,
+    /// Read-only-compatible feature flags (`s_feature_ro_compat`, v2 only).
+    pub feature_ro_compat: u32,
+    /// The journal UUID (`s_uuid`, 16 bytes) as a canonical string.
+    pub uuid: Option<String>,
+    /// How many filesystems have used this journal (`s_nr_users`, v2 only).
+    pub nr_users: u32,
+    /// Journal superblock version: 1 (v1) or 2 (v2).
+    pub version: u32,
+    /// Whether the journal is clean: `s_start == 0`.
+    pub clean: bool,
+    /// The transactions found by walking from `s_first`, bounded by `s_maxlen`.
+    pub transactions: Vec<Transaction>,
+}
+
+/// One journal transaction as far as the block headers reveal it.
+#[derive(Debug, Clone)]
+pub struct Transaction {
+    /// The first sequence number of this transaction.
+    pub sequence: u32,
+    /// Counts of each block type found in this transaction.
+    pub descriptor_blocks: u32,
+    pub commit_blocks: u32,
+    pub revoke_blocks: u32,
+    pub other_blocks: u32,
+}
+
+impl Journal {
+    /// Parse a jbd2 journal from its raw bytes (the contents of inode 8,
+    /// starting at the journal superblock). All multi-byte fields are big-endian
+    /// as the on-disk format requires; the block-by-block walk reads each
+    /// journal block's 12-byte header (`h_magic`, `h_blocktype`, `h_sequence`)
+    /// and stops at the first block whose magic is wrong or whose sequence
+    /// breaks the transaction chain.
+    pub fn parse(bytes: &[u8]) -> Result<Self> {
+        ensure!(
+            bytes.len() >= 12,
+            "journal is shorter than a single block header ({})",
+            bytes.len()
+        );
+        let magic = be32(bytes, 0);
+        ensure!(
+            magic == JBD2_MAGIC,
+            "bad journal magic {magic:#010x}, expected {JBD2_MAGIC:#010x}"
+        );
+        let blocktype = be32(bytes, 4);
+        ensure!(
+            blocktype == 3 || blocktype == 4,
+            "first journal block is not a superblock (type {blocktype})"
+        );
+        let version = if blocktype == 4 { 2 } else { 1 };
+        let block_size = be32(bytes, 12);
+        let max_blocks = be32(bytes, 16);
+        let first = be32(bytes, 20);
+        let sequence = be32(bytes, 24);
+        let start = be32(bytes, 28);
+        let errno = be32(bytes, 32) as i32;
+        let (feature_compat, feature_incompat, feature_ro_compat, uuid, nr_users) = if version == 2
+        {
+            (
+                be32(bytes, 36),
+                be32(bytes, 40),
+                be32(bytes, 44),
+                Some(jbd2_uuid_str(bytes, 48)),
+                be32(bytes, 64),
+            )
+        } else {
+            (0, 0, 0, None, 0)
+        };
+        // The walk is bounded by the number of blocks the superblock allows and
+        // by the bytes we actually have.
+        let blocks_avail = bytes.len().div_ceil(block_size as usize).max(1) as u32;
+        let cap = max_blocks.min(blocks_avail);
+        let mut txns = Vec::new();
+        if start != 0 {
+            // Replay starts at `start`; walk the committed log records from there.
+            let mut at = start;
+            let mut cur_seq = sequence;
+            let mut txn: Option<Transaction> = None;
+            let mut steps = 0u64;
+            const MAX_STEPS: u64 = 1 << 20;
+            while at < cap {
+                steps += 1;
+                ensure!(
+                    steps <= MAX_STEPS,
+                    "journal walk exceeded {MAX_STEPS} blocks without closing"
+                );
+                let off = (at as usize) * (block_size as usize);
+                let block = bytes
+                    .get(off..)
+                    .and_then(|b| b.get(..block_size as usize))
+                    .unwrap_or(&bytes[off..]);
+                if block.len() < 12 {
+                    break;
+                }
+                let bmagic = be32(block, 0);
+                if bmagic != JBD2_MAGIC {
+                    break;
+                }
+                let btype = be32(block, 4);
+                let bseq = be32(block, 8);
+                if btype != 2 && bseq != cur_seq {
+                    // A new transaction begins at a descriptor whose sequence
+                    // differs from the one we are collecting; close the prior
+                    // one and start fresh. A commit block (type 2) carries the
+                    // sequence of the transaction it closes.
+                    if (btype == 1) && bseq != cur_seq + txns.len() as u32 {
+                        // descriptor with a new sequence: finalize the last txn
+                        if let Some(t) = txn.take() {
+                            txns.push(t);
+                        }
+                        cur_seq = bseq;
+                        txn = Some(Transaction {
+                            sequence: bseq,
+                            descriptor_blocks: 0,
+                            commit_blocks: 0,
+                            revoke_blocks: 0,
+                            other_blocks: 0,
+                        });
+                    }
+                }
+                let t = txn.get_or_insert(Transaction {
+                    sequence: bseq,
+                    descriptor_blocks: 0,
+                    commit_blocks: 0,
+                    revoke_blocks: 0,
+                    other_blocks: 0,
+                });
+                match btype {
+                    1 => t.descriptor_blocks += 1,
+                    2 => {
+                        t.commit_blocks += 1;
+                        // A commit block ends the transaction it closes.
+                        let done = txn.take().unwrap();
+                        txns.push(done);
+                        cur_seq += 1;
+                    }
+                    5 => t.revoke_blocks += 1,
+                    _ => t.other_blocks += 1,
+                }
+                at += 1;
+            }
+            // If the log ends mid-transaction (unclean shutdown), keep the
+            // partial transaction as-is rather than inventing a commit.
+            if let Some(t) = txn {
+                txns.push(t);
+            }
+        }
+        Ok(Journal {
+            block_size,
+            max_blocks,
+            first,
+            sequence,
+            start,
+            errno,
+            feature_compat,
+            feature_incompat,
+            feature_ro_compat,
+            uuid,
+            nr_users,
+            version,
+            clean: start == 0,
+            transactions: txns,
+        })
+    }
+
+    /// A human-readable summary mirroring `debugfs logdump` for the superblock
+    /// fields and the transaction list this reader captures.
+    pub fn dump(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("Journal superblock version: {}\n", self.version));
+        out.push_str(&format!("Journal block size: {}\n", self.block_size));
+        out.push_str(&format!("Journal length: {} blocks\n", self.max_blocks));
+        out.push_str(&format!("First unused block: {}\n", self.first));
+        out.push_str(&format!("First sequence: {}\n", self.sequence));
+        out.push_str(&format!(
+            "Start block (s_start): {} ({})\n",
+            self.start,
+            if self.clean {
+                "clean, no recovery needed".to_string()
+            } else {
+                "dirty, recovery starts here".to_string()
+            }
+        ));
+        out.push_str(&format!("Error number: {}\n", self.errno));
+        if self.version == 2 {
+            out.push_str(&format!(
+                "Feature flags: compat {:#010x}, incompat {:#010x}, ro_compat {:#010x}\n",
+                self.feature_compat, self.feature_incompat, self.feature_ro_compat
+            ));
+            let uuid = self.uuid.as_deref().unwrap_or("(none)");
+            out.push_str(&format!("Journal UUID: {uuid}\n"));
+            out.push_str(&format!("Number of users: {}\n", self.nr_users));
+        }
+        out.push_str(&format!(
+            "Transactions found: {}\n",
+            self.transactions.len()
+        ));
+        for t in &self.transactions {
+            out.push_str(&format!(
+                "  seq {}: descriptor={}, commit={}, revoke={}, other={}\n",
+                t.sequence, t.descriptor_blocks, t.commit_blocks, t.revoke_blocks, t.other_blocks
+            ));
+        }
+        out
+    }
+}
+
+/// jbd2 magic number at the start of every journal block header.
+const JBD2_MAGIC: u32 = 0xC03B_3998;
+
+/// Read a big-endian u32 from `b` at `off`. The jbd2 on-disk format is big-endian.
+fn be32(b: &[u8], off: usize) -> u32 {
+    u32::from_be_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
+}
+
+/// Render a 16-byte jbd2 UUID as the canonical
+/// `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` string. The jbd2 UUID uses the same
+/// RFC 4122 byte layout as the ext4 filesystem UUID.
+fn jbd2_uuid_str(b: &[u8], off: usize) -> String {
+    let u = &b[off..(off + 16).min(b.len())];
+    let hex = |i: usize, n: usize| {
+        let mut s = String::new();
+        for b in &u[i..i + n] {
+            s.push_str(&format!("{b:02x}"));
+        }
+        s
+    };
+    format!(
+        "{}-{}-{}-{}-{}",
+        hex(0, 4),
+        hex(4, 2),
+        hex(6, 2),
+        hex(8, 2),
+        hex(10, 6),
+    )
 }
 
 /// A read-only view of the ext2/3/4 superblock.
@@ -652,10 +959,12 @@ impl Fs {
             inodes_per_group,
             blocks,
             itables,
+            desc_size,
+            gdt,
         })
     }
 
-    fn read_exact(&self, off: u64, n: usize) -> Result<Vec<u8>> {
+    pub(crate) fn read_exact(&self, off: u64, n: usize) -> Result<Vec<u8>> {
         let end = off.checked_add(n as u64).context("offset overflows")?;
         ensure!(
             end <= self.len,
@@ -669,7 +978,7 @@ impl Fs {
         Ok(buf)
     }
 
-    fn block(&self, n: u64) -> Result<Vec<u8>> {
+    pub(crate) fn block(&self, n: u64) -> Result<Vec<u8>> {
         ensure!(
             n < self.blocks,
             "block {n} is beyond the filesystem ({} blocks)",
@@ -2743,6 +3052,156 @@ mod tests {
         bad[57] = 0;
         let e = format!("{:#}", SuperBlock::parse(&bad).unwrap_err());
         assert!(e.contains("bad magic"), "{e}");
+    }
+
+    /// Build a jbd2 journal byte buffer of `blocks` blocks of `bs` bytes, with a
+    /// v2 superblock (type 4) on block 0 and the given transaction chain. Every
+    /// multi-byte field is big-endian, matching the on-disk format.
+    fn build_journal(
+        bs: usize,
+        blocks: usize,
+        first: u32,
+        sequence: u32,
+        start: u32,
+        chain: &[(u32, u32)], // (block_type, sequence) pairs, block 0 reserved for the sb
+    ) -> Vec<u8> {
+        let mut j = vec![0u8; bs * blocks];
+        // Block 0: journal superblock v2 (type 4). Header at offset 0.
+        put_be32(&mut j, 0, JBD2_MAGIC);
+        put_be32(&mut j, 4, 4); // superblock v2
+        put_be32(&mut j, 8, 0); // sequence (not sequence-tracked in the sb header)
+        put_be32(&mut j, 12, bs as u32); // s_blocksize
+        put_be32(&mut j, 16, blocks as u32); // s_maxlen
+        put_be32(&mut j, 20, first); // s_first
+        put_be32(&mut j, 24, sequence); // s_sequence
+        put_be32(&mut j, 28, start); // s_start
+        put_be32(&mut j, 32, 0); // s_errno = 0
+        // v2 feature fields
+        put_be32(&mut j, 36, 0); // s_feature_compat
+        put_be32(&mut j, 40, 0); // s_feature_incompat
+        put_be32(&mut j, 44, 0); // s_feature_ro_compat
+        // s_uuid at offset 48: 12345678-1234-1234-1234-123456789abc
+        let uuid: [u8; 16] = [
+            0x12, 0x34, 0x56, 0x78, 0x12, 0x34, 0x12, 0x34, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc,
+            0xde, 0xf0,
+        ];
+        j[48..64].copy_from_slice(&uuid);
+        put_be32(&mut j, 64, 2); // s_nr_users = 2
+        // Chain blocks starting at block 1.
+        for (i, (btype, bseq)) in chain.iter().enumerate() {
+            let off = bs * (1 + i);
+            put_be32(&mut j, off, JBD2_MAGIC);
+            put_be32(&mut j, off + 4, *btype);
+            put_be32(&mut j, off + 8, *bseq);
+        }
+        j
+    }
+
+    /// A v2 journal with one descriptor + commit block: clean superblock (s_start=0)
+    /// reports no recovery, and a dirty superblock (s_start!=0) enumerates the transaction.
+    #[test]
+    fn journal_parse_superblock_and_transaction_listing() {
+        use crate::ext4fs::Journal;
+        let bs = 1024usize;
+        // clean: s_start == 0, nothing to replay -> no transactions walked
+        let clean = build_journal(bs, 4, 0, 1, 0, &[]);
+        let j = Journal::parse(&clean).expect("clean journal");
+        assert_eq!(j.version, 2);
+        assert_eq!(j.block_size, bs as u32);
+        assert_eq!(j.max_blocks, 4);
+        assert_eq!(j.first, 0);
+        assert_eq!(j.sequence, 1);
+        assert_eq!(j.start, 0);
+        assert!(j.clean);
+        assert_eq!(j.errno, 0);
+        assert_eq!(j.nr_users, 2);
+        assert_eq!(j.feature_incompat, 0);
+        assert_eq!(j.transactions.len(), 0, "clean journal has no txns to walk");
+        // dirty: s_start = 1, walk block 1 (descriptor seq=1) then block 2 (commit seq=1)
+        let dirty = build_journal(bs, 4, 0, 1, 1, &[(1, 1), (2, 1)]);
+        let j = Journal::parse(&dirty).expect("dirty journal");
+        assert!(!j.clean);
+        assert_eq!(j.start, 1);
+        assert_eq!(j.transactions.len(), 1);
+        let t = &j.transactions[0];
+        assert_eq!(t.sequence, 1);
+        assert_eq!(t.descriptor_blocks, 1);
+        assert_eq!(t.commit_blocks, 1);
+        assert!(j.dump().contains("dirty, recovery starts here"));
+        assert!(j.dump().contains("seq 1"));
+        // the UUID renders as the canonical string
+        let d = j.dump();
+        assert!(d.contains("Journal UUID:"));
+    }
+
+    /// The walk is bounded by `s_maxlen` and stops at the first bad magic or a
+    /// sequence that breaks the chain.
+    #[test]
+    fn journal_walk_stops_on_bad_magic_or_broken_chain() {
+        use crate::ext4fs::Journal;
+        let bs = 1024usize;
+        // chain: descriptor(1), commit(1) -> one txn, then a block with a wrong magic
+        let mut j = build_journal(bs, 5, 0, 1, 1, &[(1, 1), (2, 1), (1, 2)]);
+        // corrupt the magic of block 3 (the second descriptor)
+        put_be32(&mut j, bs * 3, 0xDEAD_BEEF);
+        let res = Journal::parse(&j).expect("stops cleanly");
+        assert_eq!(
+            res.transactions.len(),
+            1,
+            "walked one closed txn then stopped"
+        );
+        // a broken sequence: descriptor with seq=5 after a commit of seq=1
+        let j = build_journal(bs, 5, 0, 1, 1, &[(1, 1), (2, 1), (1, 5), (2, 5)]);
+        let res = Journal::parse(&j).expect("broken chain still parses");
+        // the new descriptor starts a fresh txn with seq=5
+        assert_eq!(res.transactions.len(), 2);
+        assert_eq!(res.transactions[1].sequence, 5);
+    }
+
+    /// A truncated journal or a non-superblock first block is rejected, never panicked.
+    #[test]
+    fn journal_parse_rejects_short_input_and_bad_first_block() {
+        use crate::ext4fs::Journal;
+        assert!(Journal::parse(&[]).is_err());
+        assert!(Journal::parse(&[0u8; 11]).is_err());
+        // first block is a descriptor, not a superblock
+        let bs = 1024usize;
+        let mut j = vec![0u8; bs * 4];
+        put_be32(&mut j, 0, JBD2_MAGIC);
+        put_be32(&mut j, 4, 1); // descriptor, not a superblock
+        assert!(Journal::parse(&j).is_err());
+        // bad magic
+        let mut j = vec![0u8; bs * 4];
+        put_be32(&mut j, 0, 0x1234_5678);
+        assert!(Journal::parse(&j).is_err());
+    }
+
+    /// Reading the journal through the ext4 reader: inode 8 holds the journal
+    /// bytes and `Fs::journal()` returns them, which `Journal::parse` consumes.
+    #[test]
+    fn journal_read_through_ext4_inode_reader() {
+        use crate::ext4fs::Journal;
+        let bs = 1024usize;
+        let buf = build_journal(bs, 4, 0, 7, 2, &[(1, 7), (2, 7)]);
+        let mut m = Img::new(256, true);
+        // wire inode 8 to the journal bytes; set s_journal_inum = 8 in the ext sb
+        put32(&mut m.img[1024..2048], 0xE0, 8);
+        let blocks = m.alloc(&buf);
+        let (map, f) = m.mapping(&blocks);
+        m.inode(8, 0o100644, buf.len() as u64, 1, f, map);
+        let fs = m.fs();
+        let bytes = fs.journal().expect("journal present");
+        assert_eq!(bytes.len(), buf.len());
+        let j = Journal::parse(&bytes).expect("parses via Fs");
+        assert_eq!(j.version, 2);
+        assert_eq!(j.sequence, 7);
+        assert_eq!(j.start, 2);
+        assert!(!j.clean);
+        assert_eq!(j.transactions.len(), 1);
+    }
+
+    fn put_be32(b: &mut [u8], off: usize, v: u32) {
+        b[off..off + 4].copy_from_slice(&v.to_be_bytes());
     }
 
     fn tempfile_like() -> File {

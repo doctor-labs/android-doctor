@@ -5,6 +5,7 @@ help-amlogic	0
 help-dt	0
 help-partitions	0
 help-unpack	0
+help-journal	0
 help-ls	0
 help-cat	0
 help-tree	0
