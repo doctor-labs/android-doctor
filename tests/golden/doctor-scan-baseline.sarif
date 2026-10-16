@@ -26,7 +26,7 @@
             "severity": "critical"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 79
+          "ruleIndex": 80
         },
         {
           "baselineState": "new",

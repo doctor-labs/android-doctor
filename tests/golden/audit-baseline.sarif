@@ -61,7 +61,7 @@
             "severity": "high"
           },
           "ruleId": "insecure-adb",
-          "ruleIndex": 76
+          "ruleIndex": 77
         },
         {
           "baselineState": "new",
@@ -87,7 +87,7 @@
             "severity": "high"
           },
           "ruleId": "su-binary",
-          "ruleIndex": 84
+          "ruleIndex": 85
         }
       ],
       "tool": {

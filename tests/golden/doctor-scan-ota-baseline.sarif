@@ -26,7 +26,7 @@
             "severity": "low"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 79
+          "ruleIndex": 80
         },
         {
           "baselineState": "new",
@@ -86,7 +86,7 @@
             "severity": "info"
           },
           "ruleId": "selinux_label_gaps",
-          "ruleIndex": 81
+          "ruleIndex": 82
         },
         {
           "baselineState": "new",
@@ -112,7 +112,7 @@
             "severity": "info"
           },
           "ruleId": "mode_anomalies",
-          "ruleIndex": 78
+          "ruleIndex": 79
         },
         {
           "baselineState": "new",
@@ -129,7 +129,7 @@
             "severity": "info"
           },
           "ruleId": "init_service_hygiene",
-          "ruleIndex": 75
+          "ruleIndex": 76
         },
         {
           "baselineState": "new",
