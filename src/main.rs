@@ -314,6 +314,19 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Turn a raw image into an Android sparse image
+    Sparse {
+        /// Raw image to convert
+        input: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Block size in bytes, a multiple of 4
+        #[arg(long, default_value_t = sparse::DEFAULT_BLOCK_SIZE)]
+        block_size: u32,
+        /// Replace an existing output file instead of refusing
+        #[arg(long)]
+        force: bool,
+    },
     /// Turn Android sparse image(s) into a raw image
     Unsparse {
         /// Sparse file(s); several files that describe the same image are applied in the order given
@@ -906,6 +919,12 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             output,
             json,
         } => files_command(&image, output.as_deref(), json),
+        Command::Sparse {
+            input,
+            output,
+            block_size,
+            force,
+        } => sparse::pack_run(&input, &output, block_size, force),
         Command::Unsparse {
             inputs,
             output,

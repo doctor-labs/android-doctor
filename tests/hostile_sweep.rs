@@ -192,6 +192,12 @@ fn invocations(d: &Path) -> Vec<Vec<String>> {
             d.join("r").display().to_string(),
         ],
         vec![
+            "sparse".into(),
+            img.display().to_string(),
+            "-o".into(),
+            d.join("sparse.simg").display().to_string(),
+        ],
+        vec![
             "unsparse".into(),
             img.display().to_string(),
             "-o".into(),

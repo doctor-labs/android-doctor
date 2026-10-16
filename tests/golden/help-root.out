@@ -21,6 +21,7 @@ Commands:
   vbmeta      Show an AVB vbmeta image (or a partition with an AVB footer): header, key, signature, descriptors, hashes
   ramdisk     List a boot image's ramdisk (or a ramdisk file), report its ADB properties, and with -o extract it
   files       List or extract the files of an ext2/3/4, erofs or f2fs image (with SELinux labels), no root needed
+  sparse      Turn a raw image into an Android sparse image
   unsparse    Turn Android sparse image(s) into a raw image
   identify    Say what each file is, by its magic bytes (never by name)
   report      Staleness verdict from the OTA's build metadata

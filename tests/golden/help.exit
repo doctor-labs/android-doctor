@@ -12,6 +12,7 @@ help-diff	0
 help-vbmeta	0
 help-ramdisk	0
 help-files	0
+help-sparse	0
 help-unsparse	0
 help-identify	0
 help-report	0
