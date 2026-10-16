@@ -89,6 +89,8 @@ pub enum Compression {
     Lz4Legacy,
     /// Legacy LZMA (`.lzma` container, not `.xz`).
     Lzma,
+    /// `lzop` (`.lzo`): LZO1X blocks in the lzop 1.x container.
+    Lzop,
 }
 
 impl Compression {
@@ -102,6 +104,7 @@ impl Compression {
             Self::Lz4Frame => "lz4",
             Self::Lz4Legacy => "lz4-legacy",
             Self::Lzma => "lzma",
+            Self::Lzop => "lzop",
         }
     }
 }
@@ -121,6 +124,8 @@ pub fn compression_of(head: &[u8]) -> Option<Compression> {
         Compression::Lz4Frame
     } else if at0(&LEGACY_LZ4_MAGIC.to_le_bytes()) {
         Compression::Lz4Legacy
+    } else if at0(LZOP_MAGIC) {
+        Compression::Lzop
     } else if at0(b"070701") || at0(b"070702") {
         Compression::None
     } else if at0(&[0x5D]) && head.len() >= 13 {
@@ -200,12 +205,14 @@ pub fn classify_section(head: &[u8]) -> (&'static str, String) {
     ("unknown", "no known format".into())
 }
 
-/// Reader for the legacy lz4 format (`lz4 -l`): magic, then blocks of `u32 size` + data.
+/// Reader for the legacy lz4 format (`lz4 -l`): magic, then blocks of `u32 size` + data. LG's
+/// `lz4_lg` adds a `u32` total of the decoded bytes after the last block; it is accepted here.
 struct LegacyLz4<R: Read> {
     inner: R,
     buf: Vec<u8>,
     pos: usize,
     started: bool,
+    produced: u64,
 }
 
 impl<R: Read> Read for LegacyLz4<R> {
@@ -237,19 +244,34 @@ impl<R: Read> Read for LegacyLz4<R> {
                 return Err(std::io::Error::other("lz4: bad magic"));
             }
             let size = value as usize;
-            if size == 0 || size > LEGACY_LZ4_BLOCK + LEGACY_LZ4_BLOCK / 255 + 16 {
+            // The LG trailer is the decoded size so far; it may be larger than one block.
+            let trailer = self.produced > 0 && value as u64 == self.produced;
+            let valid = (1..=LEGACY_LZ4_BLOCK + LEGACY_LZ4_BLOCK / 255 + 16).contains(&size);
+            if !valid && !trailer {
                 return Err(std::io::Error::other(format!(
                     "lz4: block of {size} bytes is not valid"
                 )));
             }
-            let mut block = vec![0u8; size];
-            self.inner
-                .read_exact(&mut block)
-                .map_err(|_| std::io::Error::other("lz4: file ends inside a block"))?;
+            let mut block = Vec::new();
+            (&mut self.inner)
+                .take(size as u64)
+                .read_to_end(&mut block)?;
+            if trailer && block.is_empty() {
+                return Ok(0);
+            }
+            if !valid {
+                return Err(std::io::Error::other(format!(
+                    "lz4: block of {size} bytes is not valid"
+                )));
+            }
+            if block.len() != size {
+                return Err(std::io::Error::other("lz4: file ends inside a block"));
+            }
             let mut plain = vec![0u8; LEGACY_LZ4_BLOCK];
             let n = lz4_flex::block::decompress_into(&block, &mut plain)
                 .map_err(|e| std::io::Error::other(format!("lz4: {e}")))?;
             plain.truncate(n);
+            self.produced += n as u64;
             self.buf = plain;
             self.pos = 0;
         }
@@ -301,8 +323,329 @@ pub(crate) fn decoder<'a, R: Read + 'a>(c: Compression, r: R) -> Result<Box<dyn 
             buf: Vec::new(),
             pos: 0,
             started: false,
+            produced: 0,
+        }),
+        Compression::Lzop => Box::new(Lzop {
+            inner: r,
+            started: false,
+            done: false,
+            flags: 0,
+            buf: Vec::new(),
+            pos: 0,
         }),
     })
+}
+
+const LZOP_MAGIC: &[u8] = b"\x89LZO\x00\x0d\x0a\x1a\x0a";
+/// lzop's largest block (`--blocksize` tops out at 64 MiB).
+const LZOP_MAX_BLOCK: usize = 64 << 20;
+/// Header flags that change the layout this reader does not follow: extra header field
+/// (0x40), multipart (0x400), header filter (0x800), compressed-data checksums (0x02, 0x200).
+const LZOP_UNSUPPORTED_FLAGS: u32 = 0x40 | 0x400 | 0x800 | 0x02 | 0x200;
+const LZOP_F_ADLER32_D: u32 = 0x01;
+const LZOP_F_CRC32_D: u32 = 0x100;
+
+/// Adler-32 (RFC 1950), the block checksum lzop writes by default.
+fn adler32(data: &[u8]) -> u32 {
+    let (mut a, mut b) = (1u32, 0u32);
+    for chunk in data.chunks(5552) {
+        for &x in chunk {
+            a += u32::from(x);
+            b += a;
+        }
+        a %= 65521;
+        b %= 65521;
+    }
+    (b << 16) | a
+}
+
+/// Decodes one LZO1X block (what `lzop` writes, end-of-stream marker included) to `out_len`
+/// bytes. Every read and copy is bounds-checked against the input and `out_len`.
+fn lzo1x_decode(src: &[u8], out_len: usize) -> std::result::Result<Vec<u8>, String> {
+    let mut d = Lzo1x {
+        src,
+        ip: 0,
+        out: Vec::with_capacity(out_len),
+        cap: out_len,
+    };
+    d.run()?;
+    if d.out.len() != out_len {
+        return Err(format!(
+            "lzo: block made {} bytes, expected {out_len}",
+            d.out.len()
+        ));
+    }
+    if d.ip != src.len() {
+        return Err("lzo: bytes after the end marker".into());
+    }
+    Ok(d.out)
+}
+
+#[derive(Clone, Copy)]
+enum LzoState {
+    /// Next token may be a literal run or a match.
+    Token,
+    /// Right after a literal run: a token below 16 is a 3-byte short match.
+    First,
+    /// Right after literals that follow a match: the token must be a match.
+    Match,
+}
+
+struct Lzo1x<'a> {
+    src: &'a [u8],
+    ip: usize,
+    out: Vec<u8>,
+    cap: usize,
+}
+
+impl Lzo1x<'_> {
+    fn byte(&mut self) -> std::result::Result<u8, String> {
+        let b = *self.src.get(self.ip).ok_or("lzo: input ends early")?;
+        self.ip += 1;
+        Ok(b)
+    }
+
+    fn half_word(&mut self) -> std::result::Result<(usize, u8), String> {
+        let lo = self.byte()?;
+        let hi = self.byte()?;
+        Ok(((usize::from(lo) | usize::from(hi) << 8) >> 2, lo))
+    }
+
+    /// Zero bytes (255 each), then one byte; the length is `base` plus all of that.
+    fn extended(&mut self, base: usize) -> std::result::Result<usize, String> {
+        let mut n = 0usize;
+        while self.src.get(self.ip) == Some(&0) {
+            n += 255;
+            self.ip += 1;
+        }
+        Ok(n + base + usize::from(self.byte()?))
+    }
+
+    fn literals(&mut self, n: usize) -> std::result::Result<(), String> {
+        let end = self
+            .ip
+            .checked_add(n)
+            .filter(|&e| e <= self.src.len())
+            .ok_or("lzo: literal run past the input")?;
+        if self.out.len() + n > self.cap {
+            return Err("lzo: block is larger than its declared size".into());
+        }
+        self.out.extend_from_slice(&self.src[self.ip..end]);
+        self.ip = end;
+        Ok(())
+    }
+
+    fn copy(&mut self, dist: usize, len: usize) -> std::result::Result<(), String> {
+        if dist == 0 || dist > self.out.len() {
+            return Err("lzo: match points before the start of the block".into());
+        }
+        if self.out.len() + len > self.cap {
+            return Err("lzo: block is larger than its declared size".into());
+        }
+        let start = self.out.len() - dist;
+        for i in 0..len {
+            let b = self.out[start + i];
+            self.out.push(b);
+        }
+        Ok(())
+    }
+
+    fn run(&mut self) -> std::result::Result<(), String> {
+        let mut state = LzoState::Token;
+        if self.src.first().is_some_and(|&b| b > 17) {
+            let n = usize::from(self.byte()? - 17);
+            self.literals(n)?;
+            state = if n < 4 {
+                LzoState::Match
+            } else {
+                LzoState::First
+            };
+        }
+        loop {
+            let t = self.byte()?;
+            match state {
+                LzoState::Token if t < 16 => {
+                    let n = if t == 0 {
+                        self.extended(15)?
+                    } else {
+                        usize::from(t)
+                    };
+                    self.literals(n + 3)?;
+                    state = LzoState::First;
+                    continue;
+                }
+                LzoState::Match if t < 16 => return Err("lzo: expected a match".into()),
+                _ => {}
+            }
+            let (dist, len, trailing) = if t < 16 {
+                // Short match (M1): 3 bytes, distance 2049 to 3072.
+                let b = self.byte()?;
+                (
+                    0x801 + usize::from(t >> 2) + (usize::from(b) << 2),
+                    3,
+                    t & 3,
+                )
+            } else if t >= 64 {
+                // M2: distance up to 2048, length 3 to 8.
+                let b = self.byte()?;
+                let dist = 1 + usize::from((t >> 2) & 7) + (usize::from(b) << 3);
+                (dist, usize::from(t >> 5) + 1, t & 3)
+            } else if t >= 32 {
+                // M3: distance up to 16384.
+                let l = if t & 31 == 0 {
+                    self.extended(31)?
+                } else {
+                    usize::from(t & 31)
+                };
+                let (d, lo) = self.half_word()?;
+                (1 + d, l + 2, lo & 3)
+            } else {
+                // M4: distance 16385 and up; a zero distance with bit 3 clear is the end marker.
+                let l = if t & 7 == 0 {
+                    self.extended(7)?
+                } else {
+                    usize::from(t & 7)
+                };
+                let (d, lo) = self.half_word()?;
+                let high = usize::from(t & 8) << 11;
+                if high == 0 && d == 0 {
+                    return Ok(());
+                }
+                (0x4000 + high + d, l + 2, lo & 3)
+            };
+            self.copy(dist, len)?;
+            if trailing == 0 {
+                state = LzoState::Token;
+            } else {
+                self.literals(usize::from(trailing))?;
+                state = LzoState::Match;
+            }
+        }
+    }
+}
+
+/// An lzop (`.lzo`) stream: the header is skipped, and each block is LZO1X data (or stored
+/// bytes when it did not shrink), checked with Adler-32 when lzop wrote one.
+struct Lzop<R: Read> {
+    inner: R,
+    started: bool,
+    done: bool,
+    flags: u32,
+    buf: Vec<u8>,
+    pos: usize,
+}
+
+impl<R: Read> Lzop<R> {
+    fn fixed<const N: usize>(&mut self) -> std::io::Result<[u8; N]> {
+        let mut b = [0u8; N];
+        self.inner
+            .read_exact(&mut b)
+            .map_err(|_| std::io::Error::other("lzop: file ends inside the header or a block"))?;
+        Ok(b)
+    }
+
+    fn be32(&mut self) -> std::io::Result<u32> {
+        Ok(u32::from_be_bytes(self.fixed()?))
+    }
+
+    fn header(&mut self) -> std::io::Result<()> {
+        let magic: [u8; 9] = self.fixed()?;
+        if magic != *LZOP_MAGIC {
+            return Err(std::io::Error::other("lzop: bad magic"));
+        }
+        let version = u16::from_be_bytes(self.fixed()?);
+        if version < 0x0940 {
+            return Err(std::io::Error::other(format!(
+                "lzop: version {version:#06x} is too old"
+            )));
+        }
+        let _lib_version: [u8; 2] = self.fixed()?;
+        let _version_needed: [u8; 2] = self.fixed()?;
+        let [method, _level]: [u8; 2] = self.fixed()?;
+        if !(1..=3).contains(&method) {
+            return Err(std::io::Error::other(format!(
+                "lzop: method {method} is not LZO1X"
+            )));
+        }
+        self.flags = self.be32()?;
+        if self.flags & LZOP_UNSUPPORTED_FLAGS != 0 {
+            return Err(std::io::Error::other(format!(
+                "lzop: header flags {:#010x} are not supported",
+                self.flags
+            )));
+        }
+        // mode, mtime (low and high), then the file name, then the header checksum: skipped.
+        let _meta: [u8; 12] = self.fixed()?;
+        let [name_len]: [u8; 1] = self.fixed()?;
+        let mut name = vec![0u8; usize::from(name_len)];
+        self.inner.read_exact(&mut name)?;
+        let _checksum: [u8; 4] = self.fixed()?;
+        Ok(())
+    }
+
+    fn next_block(&mut self) -> std::io::Result<()> {
+        let u_len = self.be32()? as usize;
+        if u_len == 0 {
+            self.done = true;
+            return Ok(());
+        }
+        let c_len = self.be32()? as usize;
+        if u_len > LZOP_MAX_BLOCK || c_len == 0 || c_len > u_len + u_len / 16 + 67 {
+            return Err(std::io::Error::other(format!(
+                "lzop: block sizes {u_len}/{c_len} are not valid"
+            )));
+        }
+        if self.flags & LZOP_F_CRC32_D != 0 {
+            return Err(std::io::Error::other(
+                "lzop: CRC-32 blocks are not supported",
+            ));
+        }
+        let want = if self.flags & LZOP_F_ADLER32_D != 0 {
+            Some(self.be32()?)
+        } else {
+            None
+        };
+        let mut data = vec![0u8; c_len];
+        self.inner
+            .read_exact(&mut data)
+            .map_err(|_| std::io::Error::other("lzop: file ends inside a block"))?;
+        let plain = match c_len.cmp(&u_len) {
+            std::cmp::Ordering::Less => {
+                lzo1x_decode(&data, u_len).map_err(std::io::Error::other)?
+            }
+            std::cmp::Ordering::Equal => data,
+            std::cmp::Ordering::Greater => {
+                return Err(std::io::Error::other(
+                    "lzop: stored block longer than its size",
+                ));
+            }
+        };
+        if want.is_some_and(|w| w != adler32(&plain)) {
+            return Err(std::io::Error::other("lzop: block checksum mismatch"));
+        }
+        self.buf = plain;
+        self.pos = 0;
+        Ok(())
+    }
+}
+
+impl<R: Read> Read for Lzop<R> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if !self.started {
+            self.started = true;
+            self.header()?;
+        }
+        while self.pos >= self.buf.len() {
+            if self.done {
+                return Ok(0);
+            }
+            self.next_block()?;
+        }
+        let n = out.len().min(self.buf.len() - self.pos);
+        out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -1070,6 +1413,24 @@ mod tests {
                 }
                 out
             }
+            Compression::Lzop => {
+                // Stored blocks only (there is no LZO encoder here); the header, block lengths
+                // and Adler-32 are the lzop 1.04 layout.
+                let mut out = LZOP_MAGIC.to_vec();
+                out.extend([0x10, 0x40, 0x20, 0xa0, 0x09, 0x40, 0x01, 0x05]);
+                out.extend(0x0000_0001u32.to_be_bytes());
+                out.extend([0u8; 12]);
+                out.push(0);
+                out.extend([0u8; 4]);
+                for chunk in data.chunks(1 << 16) {
+                    out.extend((chunk.len() as u32).to_be_bytes());
+                    out.extend((chunk.len() as u32).to_be_bytes());
+                    out.extend(adler32(chunk).to_be_bytes());
+                    out.extend(chunk);
+                }
+                out.extend([0u8; 4]);
+                out
+            }
             Compression::Lzma => {
                 let mut w = lzma_rust2::LzmaWriter::new_use_header(
                     Vec::new(),
@@ -1083,7 +1444,7 @@ mod tests {
         }
     }
 
-    const ALL: [Compression; 8] = [
+    const ALL: [Compression; 9] = [
         Compression::None,
         Compression::Gzip,
         Compression::Bzip2,
@@ -1092,7 +1453,55 @@ mod tests {
         Compression::Lz4Frame,
         Compression::Lz4Legacy,
         Compression::Lzma,
+        Compression::Lzop,
     ];
+
+    /// `lzop -c` (lzop 1.04) of a 72-byte text: an LZO1X block with matches, a literal run and
+    /// the end marker, after the header and the Adler-32 of the block.
+    const LZOP_SAMPLE: &[u8] = &[
+        0x89, 0x4c, 0x5a, 0x4f, 0x00, 0x0d, 0x0a, 0x1a, 0x0a, 0x10, 0x40, 0x20, 0xa0, 0x09, 0x40,
+        0x01, 0x05, 0x03, 0x00, 0x00, 0x09, 0x00, 0x00, 0x81, 0xa4, 0x6a, 0xcf, 0xcd, 0x41, 0x00,
+        0x00, 0x00, 0x00, 0x05, 0x61, 0x2e, 0x74, 0x78, 0x74, 0x5a, 0x1d, 0x06, 0xcc, 0x00, 0x00,
+        0x00, 0x48, 0x00, 0x00, 0x00, 0x37, 0xc7, 0x1b, 0x1a, 0x3a, 0x03, 0x68, 0x65, 0x6c, 0x6c,
+        0x6f, 0x20, 0x30, 0x14, 0x00, 0x0e, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x2c, 0x20, 0x6c, 0x7a,
+        0x6f, 0x70, 0x20, 0x74, 0x65, 0x73, 0x74, 0x2e, 0x2a, 0x8c, 0x00, 0x00, 0x01, 0x20, 0x68,
+        0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x77, 0x6f, 0x72, 0x6c,
+        0x64, 0x0a, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+
+    #[test]
+    fn lzop_stream_decodes_to_the_original_bytes() {
+        let text = b"hello hello hello hello world, lzop test. hello hello hello hello world\n";
+        assert_eq!(compression_of(LZOP_SAMPLE), Some(Compression::Lzop));
+        let mut out = Vec::new();
+        decoder(Compression::Lzop, LZOP_SAMPLE)
+            .unwrap()
+            .read_to_end(&mut out)
+            .unwrap();
+        assert_eq!(out, text);
+    }
+
+    #[test]
+    fn lzop_truncated_or_damaged_streams_fail_without_panicking() {
+        for n in 0..LZOP_SAMPLE.len() {
+            let mut out = Vec::new();
+            let res = decoder(Compression::Lzop, &LZOP_SAMPLE[..n])
+                .unwrap()
+                .read_to_end(&mut out);
+            assert!(
+                res.is_err(),
+                "prefix of {n} bytes must not read as complete"
+            );
+        }
+        for i in 0..LZOP_SAMPLE.len() {
+            let mut bad = LZOP_SAMPLE.to_vec();
+            bad[i] ^= 0x55;
+            let mut out = Vec::new();
+            let _ = decoder(Compression::Lzop, bad.as_slice())
+                .unwrap()
+                .read_to_end(&mut out);
+        }
+    }
 
     fn data(n: usize, seed: u8) -> Vec<u8> {
         (0..n)
@@ -1561,6 +1970,18 @@ mod tests {
         garbage_block.extend([0xFFu8; 16]);
         assert!(e(&garbage_block).contains("lz4"));
         assert!(e(&good[..6]).contains("lz4") || e(&good[..6]).contains("ends"));
+    }
+
+    #[test]
+    fn lg_lz4_trailer_is_read_and_checked() {
+        // lz4_lg is the legacy stream followed by a u32 total of the decoded bytes (magiskboot).
+        let archive = cpio(&[file("a", &data(300_000, 5))]);
+        let mut lg = compress(Compression::Lz4Legacy, &archive);
+        lg.extend((archive.len() as u32).to_le_bytes());
+        assert_eq!(read(&lg).unwrap().entries[0].size, 300_000);
+        let mut wrong = compress(Compression::Lz4Legacy, &archive);
+        wrong.extend((archive.len() as u32 + 1).to_le_bytes());
+        assert!(format!("{:#}", read(&wrong).unwrap_err()).contains("ends"));
     }
 
     fn scratch(tag: &str) -> crate::testutil::Scratch {
