@@ -25,7 +25,7 @@
             "severity": "low"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 80
+          "ruleIndex": 82
         },
         {
           "level": "note",
@@ -50,7 +50,7 @@
             "severity": "info"
           },
           "ruleId": "avb_signature",
-          "ruleIndex": 51
+          "ruleIndex": 53
         },
         {
           "level": "note",
@@ -66,7 +66,7 @@
             "severity": "info"
           },
           "ruleId": "duplicate_properties",
-          "ruleIndex": 62
+          "ruleIndex": 64
         },
         {
           "level": "note",
@@ -82,7 +82,7 @@
             "severity": "info"
           },
           "ruleId": "selinux_label_gaps",
-          "ruleIndex": 84
+          "ruleIndex": 86
         },
         {
           "level": "note",
@@ -107,7 +107,7 @@
             "severity": "info"
           },
           "ruleId": "mode_anomalies",
-          "ruleIndex": 79
+          "ruleIndex": 81
         },
         {
           "level": "note",
@@ -123,7 +123,7 @@
             "severity": "info"
           },
           "ruleId": "init_service_hygiene",
-          "ruleIndex": 76
+          "ruleIndex": 78
         },
         {
           "level": "note",
@@ -148,7 +148,7 @@
             "severity": "info"
           },
           "ruleId": "debug_leftovers",
-          "ruleIndex": 55
+          "ruleIndex": 57
         }
       ],
       "tool": {
@@ -366,6 +366,22 @@
             },
             {
               "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "An APK's code reads a device identifier and sends an SMS in the same method"
+              },
+              "help": {
+                "text": "Treat as possible malware: a device identifier leaving the device by SMS is the usual shape of data theft; trace the flow before trusting the app"
+              },
+              "id": "apk-code-device-id-sms",
+              "name": "apk-code-device-id-sms",
+              "shortDescription": {
+                "text": "An APK's code reads a device identifier and sends an SMS in the same method"
+              }
+            },
+            {
+              "defaultConfiguration": {
                 "level": "warning"
               },
               "fullDescription": {
@@ -474,6 +490,22 @@
               "name": "apk-code-screenshot",
               "shortDescription": {
                 "text": "An APK never sets FLAG_SECURE"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK's code sends SMS messages"
+              },
+              "help": {
+                "text": "Check that every SMS is sent for the user and that premium or hidden-recipient messages are not sent in the background"
+              },
+              "id": "apk-code-sms-send",
+              "name": "apk-code-sms-send",
+              "shortDescription": {
+                "text": "An APK's code sends SMS messages"
               }
             },
             {

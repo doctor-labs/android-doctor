@@ -35,7 +35,7 @@
             "severity": "high"
           },
           "ruleId": "diff-debuggable-build",
-          "ruleIndex": 57
+          "ruleIndex": 59
         },
         {
           "baselineState": "new",
@@ -61,7 +61,7 @@
             "severity": "high"
           },
           "ruleId": "diff-insecure-adb",
-          "ruleIndex": 58
+          "ruleIndex": 60
         },
         {
           "baselineState": "new",
@@ -87,7 +87,7 @@
             "severity": "high"
           },
           "ruleId": "diff-su-binary",
-          "ruleIndex": 64
+          "ruleIndex": 66
         },
         {
           "baselineState": "new",
@@ -113,7 +113,7 @@
             "severity": "high"
           },
           "ruleId": "diff-new-setuid",
-          "ruleIndex": 60
+          "ruleIndex": 62
         },
         {
           "baselineState": "new",
@@ -139,7 +139,7 @@
             "severity": "info"
           },
           "ruleId": "diff-prop-changed",
-          "ruleIndex": 61
+          "ruleIndex": 63
         },
         {
           "baselineState": "new",
@@ -165,7 +165,7 @@
             "severity": "info"
           },
           "ruleId": "diff-prop-changed",
-          "ruleIndex": 61
+          "ruleIndex": 63
         }
       ],
       "tool": {
@@ -383,6 +383,22 @@
             },
             {
               "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "An APK's code reads a device identifier and sends an SMS in the same method"
+              },
+              "help": {
+                "text": "Treat as possible malware: a device identifier leaving the device by SMS is the usual shape of data theft; trace the flow before trusting the app"
+              },
+              "id": "apk-code-device-id-sms",
+              "name": "apk-code-device-id-sms",
+              "shortDescription": {
+                "text": "An APK's code reads a device identifier and sends an SMS in the same method"
+              }
+            },
+            {
+              "defaultConfiguration": {
                 "level": "warning"
               },
               "fullDescription": {
@@ -491,6 +507,22 @@
               "name": "apk-code-screenshot",
               "shortDescription": {
                 "text": "An APK never sets FLAG_SECURE"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK's code sends SMS messages"
+              },
+              "help": {
+                "text": "Check that every SMS is sent for the user and that premium or hidden-recipient messages are not sent in the background"
+              },
+              "id": "apk-code-sms-send",
+              "name": "apk-code-sms-send",
+              "shortDescription": {
+                "text": "An APK's code sends SMS messages"
               }
             },
             {
