@@ -91,10 +91,19 @@ const SENSITIVE: [&str; 6] = [
     "apikey",
     "credential",
 ];
+/// TelephonyManager getters that return a device or subscriber identifier.
+const DEVICE_IDS: [&str; 5] = [
+    "getDeviceId",
+    "getImei",
+    "getSubscriberId",
+    "getSimSerialNumber",
+    "getLine1Number",
+];
 const BROKEN_CIPHERS: [&str; 5] = ["DES", "RC2", "RC4", "ARCFOUR", "BLOWFISH"];
 
 fn judge(s: &Site, c: &mut Collector) {
     let at = &s.method;
+    let (mut sms, mut device_id) = (false, false);
     for call in &s.calls {
         let f = call.callee.as_str();
         let a = &call.args;
@@ -369,6 +378,22 @@ fn judge(s: &Site, c: &mut Collector) {
                 at,
             );
         }
+        // SMS sent from code, and the device identifiers a malware sends off with it
+        if f.starts_with("Landroid/telephony/SmsManager;->send") {
+            c.add(
+                "apk-code-sms-send",
+                Severity::Medium,
+                "sends an SMS from code",
+                at,
+            );
+            sms = true;
+        }
+        if DEVICE_IDS
+            .iter()
+            .any(|n| f.starts_with(&format!("Landroid/telephony/TelephonyManager;->{n}(")))
+        {
+            device_id = true;
+        }
         // Command execution
         if f.starts_with("Ljava/lang/Runtime;->exec(")
             || f == "Ljava/lang/ProcessBuilder;->start()Ljava/lang/Process;"
@@ -391,6 +416,15 @@ fn judge(s: &Site, c: &mut Collector) {
                 at,
             );
         }
+    }
+    // Method-level co-occurrence only: no data flow is traced from the identifier to the SMS.
+    if sms && device_id {
+        c.add(
+            "apk-code-device-id-sms",
+            Severity::High,
+            "reads a device identifier and sends an SMS in the same method",
+            at,
+        );
     }
     // Trust-everything classes
     let implements = |n: &str| s.class.interfaces.iter().any(|i| i == n);
@@ -701,6 +735,7 @@ mod tests {
     const RISKY: &[u8] = include_bytes!("../../tests/fixtures/dex/risky.dex");
     const CLEAN: &[u8] = include_bytes!("../../tests/fixtures/dex/demo.dex");
     const ENDPOINTS: &[u8] = include_bytes!("../../tests/fixtures/dex/endpoints.dex");
+    const BEHAVIOUR: &[u8] = include_bytes!("../../tests/fixtures/dex/behaviour.dex");
 
     fn run(bytes: &[u8], activities: usize) -> Vec<ManifestIssue> {
         let d = dex::parse("classes.dex", bytes).unwrap();
@@ -713,6 +748,30 @@ mod tests {
             .unwrap_or_else(|| panic!("{rule} {sev:?} missing from {v:#?}"))
             .detail
             .as_str()
+    }
+
+    #[test]
+    fn sms_sending_and_device_identifier_exfiltration_are_found() {
+        // behaviour.dex (tests/fixtures/dex/Behaviour.java): exfiltrate reads the IMEI and sends
+        // it by SMS; spam sends an SMS alone; identify reads the IMEI alone
+        let v = run(BEHAVIOUR, 0);
+        let combo = detail(&v, "apk-code-device-id-sms", Severity::High);
+        assert!(combo.contains("exfiltrate"), "{combo}");
+        assert!(
+            !combo.contains("spam") && !combo.contains("identify"),
+            "{combo}"
+        );
+        let sms = detail(&v, "apk-code-sms-send", Severity::Medium);
+        assert!(
+            sms.starts_with("2 site(s)") && sms.contains("exfiltrate") && sms.contains("spam"),
+            "{sms}"
+        );
+        assert!(
+            run(CLEAN, 0)
+                .iter()
+                .all(|i| i.rule != "apk-code-sms-send" && i.rule != "apk-code-device-id-sms"),
+            "demo.dex sends no SMS"
+        );
     }
 
     #[test]

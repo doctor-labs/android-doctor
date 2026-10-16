@@ -663,6 +663,16 @@ pub fn help(rule: &str) -> Option<Help> {
             "Use https:// for every endpoint and disallow cleartext in the network security config",
             Low,
         ),
+        "apk-code-sms-send" => (
+            "An APK's code sends SMS messages",
+            "Check that every SMS is sent for the user and that premium or hidden-recipient messages are not sent in the background",
+            Medium,
+        ),
+        "apk-code-device-id-sms" => (
+            "An APK's code reads a device identifier and sends an SMS in the same method",
+            "Treat as possible malware: a device identifier leaving the device by SMS is the usual shape of data theft; trace the flow before trusting the app",
+            High,
+        ),
         "apk-packer" => (
             "An APK is packed or protected by a known packer",
             "Unpack the APK (run it and dump the decrypted dex) before trusting code findings; a packer is not a vulnerability by itself",
@@ -986,6 +996,8 @@ const KNOWN_RULES: &[&str] = &[
     "apk-code-anti-analysis",
     "apk-code-hardcoded-ip",
     "apk-code-cleartext-url",
+    "apk-code-sms-send",
+    "apk-code-device-id-sms",
     "apk-packer",
     "apk-code-unscanned",
     "apk-tracker-sdk",
