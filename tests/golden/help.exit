@@ -9,6 +9,10 @@ help-ls	0
 help-cat	0
 help-tree	0
 help-find	0
+help-stat	0
+help-blocks	0
+help-icheck	0
+help-ncheck	0
 help-audit	0
 help-diff	0
 help-vbmeta	0
