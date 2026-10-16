@@ -34,6 +34,7 @@ and take `path` (`diff`: `old`, `new`, `only`), `baseline`, `fail_on`, `sarif`; 
 | What changed between two builds of an APK (sizes, entries, features, patch estimate) | `android-doctor apkcompare <old.apk> <new.apk> --json` (doctor/1 envelope, no findings; no download size) |
 | Find in an image | `android-doctor find <image> [path] --name '*.so' \| --selinux GLOB \| --setuid \| --xattr NAME[=GLOB] \| --grep TEXT [--json]` |
 | Browse an image | `android-doctor ls <image> [path]`, `android-doctor cat <image> <path>`, `android-doctor stat <image> <path> [--json]` (one path's metadata, no symlink follow), `android-doctor blocks <image> <path> [--json]` (a file block list), `android-doctor icheck <image> <block>...` (block owners), `android-doctor ncheck <image> <inode>...` (inode paths) |
+| Deleted files in an ext image | `android-doctor deleted <ext.img> [--output <dir>] [--max-bytes N]` (lists inodes with links=0 but mode≠0, like `debugfs lsdel`; `--output` recovers their data blocks to a new dir; ext2/3/4 only; other filesystems reported as unsupported) |
 
 `audit --json` and `doctor scan --json` print the doctor/1 envelope (`docs/doctor-contract.md`):
 `schema`, `tool`, `version`, `exit_code`, `score` (`value`, `label`, `model`, `coverage_gaps`),

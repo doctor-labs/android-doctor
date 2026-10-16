@@ -40,6 +40,12 @@ opening <TMP>/nope.img
 opening <TMP>/nope.img
   caused by: No such file or directory (os error 2)
 
+=== deleted (exit 2)
+--- stdout
+--- stderr
+opening <TMP>/nope.img
+  caused by: No such file or directory (os error 2)
+
 === vbmeta (exit 2)
 --- stdout
 --- stderr

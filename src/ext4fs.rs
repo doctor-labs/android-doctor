@@ -678,7 +678,7 @@ impl Fs {
         self.read_exact(n * self.bs, self.bs as usize)
     }
 
-    pub fn inode(&self, ino: u32) -> Result<Inode> {
+    fn inode_offset(&self, ino: u32) -> Result<u64> {
         ensure!(
             ino >= 1 && ino <= self.inodes,
             "inode {ino} is out of range (1..={})",
@@ -690,10 +690,14 @@ impl Fs {
             group < self.itables.len(),
             "inode {ino} is in group {group}, which does not exist"
         );
-        let at = self.itables[group]
+        self.itables[group]
             .checked_mul(self.bs)
             .and_then(|t| t.checked_add((idx % self.inodes_per_group as u64) * self.inode_size))
-            .with_context(|| format!("inode {ino} location overflows"))?;
+            .with_context(|| format!("inode {ino} location overflows"))
+    }
+
+    pub fn inode(&self, ino: u32) -> Result<Inode> {
+        let at = self.inode_offset(ino)?;
         let raw = self
             .read_exact(at, self.inode_size as usize)
             .with_context(|| format!("reading inode {ino}"))?;
@@ -872,6 +876,29 @@ impl Fs {
             pblk: Some(p),
         });
         Ok(())
+    }
+
+    /// Whether the inode still has data blocks (or an extent tree with entries).
+    ///
+    /// Linux clears a deleted inode's extent tree or block pointers in `ext4_delete_inode`, so
+    /// a deleted inode with an empty block map has already had its data freed. We must not
+    /// report zero-filled holes as recovered data.
+    pub fn has_data(&self, inode: &Inode) -> bool {
+        if inode.flags & INODE_EXTENTS != 0 {
+            // The extent header: magic (2), entries (2), max (2), depth (2), then leaves.
+            if inode.block.len() < 6 {
+                return false;
+            }
+            // Extent magic is 0xF30A; if it's gone the tree is cleared.
+            if le16(&inode.block, 0) != 0xF30A {
+                return false;
+            }
+            // Number of entries at offset 2.
+            le16(&inode.block, 2) > 0
+        } else {
+            // Block pointers: 15 × 4 bytes at offset 0..60.
+            (0..15).any(|i| le32(&inode.block, i * 4) != 0)
+        }
     }
 
     fn runs(&self, inode: &Inode) -> Result<Vec<Run>> {
@@ -1296,10 +1323,66 @@ impl Fs {
     }
 }
 
+/// One deleted (unlinked but not freed) inode found by scanning the inode table.
+///
+/// A deleted inode has `links == 0` (no directory entry points to it) but `mode != 0`
+/// (the inode still carries a file type and its data blocks). `debugfs lsdel` reports
+/// the same set. The `name` is not stored in the inode on ext4 — only the directory
+/// entry held it, and that is gone — so we report the inode number and let the caller
+/// name recovered files by inode (e.g. `lost+found/ino-<n>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeletedInode {
+    pub ino: u32,
+    pub mode: u16,
+    pub uid: u32,
+    pub gid: u32,
+    pub size: u64,
+    pub mtime: i64,
+}
+
 impl Fs {
     /// Extract the tree under `out_dir/files` with `manifest.json` beside it, all or nothing.
     pub fn extract(&self, out_dir: &Path, collisions: Option<Collisions>) -> Result<Vec<Entry>> {
         crate::tree::extract(self, out_dir, collisions)
+    }
+}
+
+impl Fs {
+    /// Scan every inode in the table and return those that are deleted but not yet
+    /// overwritten: `i_links_count == 0` and `i_mode != 0`, the same set `debugfs lsdel`
+    /// reports. The inode's own data blocks (extent tree or block map) may still hold the
+    /// file content, so the caller can read it via [`Fs::inode`] + [`Fs::runs`].
+    ///
+    /// This does not read file data, only the small inode records, and it bounds the
+    /// number of inodes it will scan.
+    pub fn deleted_inodes(&self) -> Result<Vec<DeletedInode>> {
+        ensure!(self.inodes > 0, "the filesystem has no inodes");
+        ensure!(
+            u64::from(self.inodes) <= MAX_GROUPS,
+            "too many inodes to scan"
+        );
+        let mut out = Vec::with_capacity(self.inodes as usize);
+        for ino in 1..=self.inodes {
+            // Read the 16-bit mode and link count directly from the inode table so we
+            // don't pay for the full parse (xattrs, block runs, ...) on every inode.
+            let at = self.inode_offset(ino)?;
+            let raw = self.read_exact(at, self.inode_size as usize)?;
+            let mode = le16(&raw, 0);
+            let links = le16(&raw, 26);
+            if links == 0 && mode != 0 {
+                // Parse the full inode to get uid/gid/size/mtime for the listing.
+                let ino_full = self.inode(ino)?;
+                out.push(DeletedInode {
+                    ino,
+                    mode,
+                    uid: ino_full.uid,
+                    gid: ino_full.gid,
+                    size: ino_full.size,
+                    mtime: ino_full.mtime,
+                });
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -2533,6 +2616,123 @@ mod tests {
         assert!(text.contains("Free blocks: 966"));
         assert!(text.contains("Block count: 1024"));
         assert!(text.contains("Inode count: 128"));
+    }
+
+    #[test]
+    fn deleted_inodes_lists_unlinked_but_live_inodes() {
+        // Inode 11 is a regular file with links=2 (hardlink). Inode 13 is a file with links=1.
+        // We delete inode 11 by zeroing its link count while keeping its mode and data.
+        let mut m = sample(256, true);
+        let raw11 = m.raw(11);
+        // Zero the link count at offset 26 (i_links_count), keep mode non-zero.
+        put16(raw11, 26, 0);
+        let fs = m.fs();
+        let deleted = fs.deleted_inodes().unwrap();
+        assert_eq!(deleted.len(), 1, "only inode 11 should be deleted");
+        let d = &deleted[0];
+        assert_eq!(d.ino, 11);
+        assert_eq!(d.mode, 0o100644);
+        assert_eq!(d.size, 6); // "hello\n"
+        assert_eq!(d.uid, 0);
+        assert_eq!(d.gid, 0);
+        // Inode 13 (d/b, links=1) must NOT appear — it is still linked.
+        assert!(!deleted.iter().any(|d| d.ino == 13));
+        // Inode 2 (root dir, links=2) must NOT appear.
+        assert!(!deleted.iter().any(|d| d.ino == 2));
+    }
+
+    #[test]
+    fn deleted_inodes_finds_none_on_a_clean_tree() {
+        let m = sample(256, true);
+        let fs = m.fs();
+        let deleted = fs.deleted_inodes().unwrap();
+        assert_eq!(deleted.len(), 0, "no deleted inodes in the sample tree");
+    }
+
+    #[test]
+    fn deleted_inodes_recovers_data_of_a_deleted_file() {
+        let mut m = sample(256, true);
+        // Delete inode 11 ("hello\n") by zeroing its link count.
+        put16(&mut m.img, ITABLE * BS + (11 - 1) * 256 + 26, 0);
+        let fs = m.fs();
+        let deleted = fs.deleted_inodes().unwrap();
+        assert_eq!(deleted.len(), 1);
+        let ino = fs.inode(11).unwrap();
+        let mut out = Vec::new();
+        fs.cat(&ino, &mut out).unwrap();
+        assert_eq!(&out, b"hello\n", "deleted file data is still readable");
+    }
+
+    #[test]
+    fn has_data_detects_a_cleared_extent_tree() {
+        let mut m = sample(256, true);
+        // Simulate ext4_delete_inode clearing the extent header: zero the entries count.
+        let at = ITABLE * BS + (11 - 1) * 256 + 40; // i_block at offset 40 within the inode
+        put16(&mut m.img, at + 2, 0); // extent entries = 0
+        let fs = m.fs();
+        // A live file (inode 11) should have data before we clear its extent tree.
+        // After clearing, it should not.
+        let ino = fs.inode(11).unwrap();
+        assert!(
+            !fs.has_data(&ino),
+            "an inode with a zeroed extent tree has no recoverable data"
+        );
+    }
+
+    #[test]
+    fn has_data_detects_a_cleared_block_map() {
+        // Use non-extent mode (no INODE_EXTENTS flag) for a block-pointer inode.
+        let mut m = sample(128, false);
+        // Simulate clearing: zero all 15 direct/indirect pointers.
+        for i in 0..15 {
+            put32(&mut m.img, ITABLE * BS + (11 - 1) * 128 + 40 + i * 4, 0);
+        }
+        let fs = m.fs();
+        let ino = fs.inode(11).unwrap();
+        assert!(
+            !fs.has_data(&ino),
+            "an inode with all-zero block pointers has no recoverable data"
+        );
+    }
+
+    #[test]
+    fn deleted_inode_with_cleared_block_map_is_unrecoverable() {
+        let mut m = sample(256, true);
+        // Delete inode 11 by zeroing its link count.
+        put16(&mut m.img, ITABLE * BS + (11 - 1) * 256 + 26, 0);
+        // Simulate ext4_delete_inode clearing the extent tree: zero the entries count.
+        let at = ITABLE * BS + (11 - 1) * 256 + 40; // i_block at offset 40 within the inode
+        put16(&mut m.img, at + 2, 0); // extent entries = 0
+        let fs = m.fs();
+        let deleted = fs.deleted_inodes().unwrap();
+        assert_eq!(deleted.len(), 1);
+        let ino = fs.inode(11).unwrap();
+        assert!(
+            !fs.has_data(&ino),
+            "the deleted inode's extent tree was cleared"
+        );
+    }
+
+    #[test]
+    fn deleted_inode_that_is_a_directory_cat_fails() {
+        // A deleted directory inode has links=0 but mode still says dir.
+        // cat() should reject it ("not a regular file"), not produce zero-filled output.
+        let mut m = sample(256, true);
+        // Delete the root directory (inode 2) by zeroing its link count.
+        put16(&mut m.img, ITABLE * BS + 256 + 26, 0);
+        let fs = m.fs();
+        let deleted = fs.deleted_inodes().unwrap();
+        let root = deleted
+            .iter()
+            .find(|d| d.ino == 2)
+            .expect("root should be deleted");
+        assert_eq!(root.mode & 0o170000, 0o040000, "root is a directory");
+        let ino = fs.inode(2).unwrap();
+        let mut out = Vec::new();
+        // cat() rejects directories — this is a non-cap error path.
+        let e = fs.cat(&ino, &mut out).unwrap_err();
+        assert!(format!("{e:#}").contains("not a regular file"), "{e:#}");
+        assert!(out.is_empty(), "no data written for a directory");
     }
 
     #[test]

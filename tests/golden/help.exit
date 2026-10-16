@@ -13,6 +13,7 @@ help-stat	0
 help-blocks	0
 help-icheck	0
 help-ncheck	0
+help-deleted	0
 help-audit	0
 help-diff	0
 help-vbmeta	0

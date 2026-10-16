@@ -1,0 +1,13 @@
+List deleted inodes in an ext2/3/4 image (like debugfs lsdel) and optionally recover their data
+
+Usage: android-doctor deleted [OPTIONS] <IMAGE>
+
+Arguments:
+  <IMAGE>  
+
+Options:
+      --no-color               Never emit colour, even on a terminal (also honours the NO_COLOR environment variable)
+  -o, --output <OUTPUT>        Write recovered files into this new directory (files/ plus manifest.json); without it, list only
+      --max-bytes <MAX_BYTES>  Maximum bytes of recovered data per file (default 1 MiB) [default: 1048576]
+      --json                   Print JSON instead of text
+  -h, --help                   Print help
