@@ -638,6 +638,7 @@ mod tests {
             aux_size: 0,
             signature_len: 0,
             public_key_bits: None,
+            public_key_bytes: None,
             public_key_sha256: None,
             public_key_metadata_len: 0,
             digest_ok: None,
