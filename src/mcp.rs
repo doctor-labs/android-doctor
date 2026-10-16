@@ -5,6 +5,7 @@ use anyhow::Result;
 use doctor_kit::McpTool;
 use doctor_kit::mcp::{ExecOpts, exec_self_fmt};
 use serde_json::{Value, json};
+use std::time::Duration;
 
 /// Flags the findings tools accept besides the target path(s). Excluded over MCP: `--json`
 /// (always on), `--score`, `--no-color` (never any colour in JSON), `help` and `version`.
@@ -13,6 +14,7 @@ const FLAGS: &str = r#""baseline":{"type":"string","description":"Previous --jso
 /// The tools this server exposes, in MCP `tools/list` shape.
 pub fn tool_list() -> Value {
     let one = r#""path":{"type":"string"}"#;
+    let image = r#""image":{"type":"string","description":"Image file (ext2/3/4, erofs or f2fs)"}"#;
     let many = r#""paths":{"type":"array","items":{"type":"string"},"description":"Image files or directories"}"#;
     let schema = |p: &str, req: &str, flags: bool| {
         let f = if flags {
@@ -31,7 +33,54 @@ pub fn tool_list() -> Value {
               &schema(&format!("{one},{many}"), "", true)),
         tool("diff", "diff --json: the doctor/1 envelope comparing two firmware builds file by file; findings are what the new build made worse",
               &schema(r#""old":{"type":"string","description":"Old image or directory of images"},"new":{"type":"string","description":"New image or directory of images"},"only":{"type":"array","items":{"type":"string","enum":["added","removed","modified","metadata"]},"description":"List only these file changes under data"}"#, r#""old","new""#, true)),
+        tool("ls", "ls --json: list a directory (or show one file) inside an ext2/3/4, erofs or f2fs image, without extracting it; a JSON array of entries",
+              &schema(&format!(r#"{image},"path":{{"type":"string","description":"Path inside the image (default /)"}}"#), r#""image""#, false)),
+        tool("cat", "cat: the bytes of one regular file inside an ext2/3/4, erofs or f2fs image, as text; capped at 1 MiB",
+              &schema(&format!(r#"{image},"path":{{"type":"string","description":"Path of the file inside the image"}}"#), r#""image","path""#, false)),
+        tool("info", "info --json: the metadata of a firmware file or OTA",
+              &schema(one, r#""path""#, false)),
+        tool("vbmeta", "vbmeta --json: the header, key, signature, descriptors and hashes of an AVB vbmeta image (or a partition with an AVB footer)",
+              &schema(one, r#""path""#, false)),
+        tool("ramdisk", "ramdisk --json: the files listed in a boot image's ramdisk and its ADB properties (listed only, never extracted)",
+              &schema(one, r#""path""#, false)),
+        tool("files", "files --json: the files of an ext2/3/4, erofs or f2fs image with SELinux labels (listed only, never extracted)",
+              &schema(image, r#""image""#, false)),
+        tool("unpack", "unpack --json: the header of a boot or vendor_boot image (sections listed, never written)",
+              &schema(one, r#""path""#, false)),
     ] })
+}
+
+/// Browsing tools: read-only (no output option is offered, so the CLI never writes) and bounded.
+const BROWSE: [&str; 7] = ["ls", "cat", "info", "vbmeta", "ramdisk", "files", "unpack"];
+
+/// The largest stdout a browsing tool returns; more is an error, never a truncated answer.
+const BROWSE_MAX_BYTES: usize = 1 << 20;
+
+/// The CLI arguments for a browsing tool call. `cat` prints raw bytes (it has no `--json`).
+fn browse_args(name: &str, args: &Value) -> Result<Vec<String>> {
+    let text = |k: &str| {
+        args.get(k)
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+    };
+    let need = |k: &str| {
+        text(k)
+            .map(String::from)
+            .ok_or_else(|| anyhow::anyhow!("missing required argument \"{k}\""))
+    };
+    let mut argv: Vec<String> = match name {
+        "ls" => vec!["ls".into(), "--json".into(), "--".into(), need("image")?],
+        "cat" => vec!["cat".into(), "--".into(), need("image")?, need("path")?],
+        "files" => vec!["files".into(), "--json".into(), "--".into(), need("image")?],
+        "info" | "vbmeta" | "ramdisk" | "unpack" => {
+            vec![name.into(), "--json".into(), "--".into(), need("path")?]
+        }
+        other => anyhow::bail!("unknown tool {other}"),
+    };
+    if name == "ls" {
+        argv.extend(text("path").map(String::from));
+    }
+    Ok(argv)
 }
 
 fn tool(name: &str, description: &str, schema: &str) -> Value {
@@ -44,6 +93,9 @@ fn tool(name: &str, description: &str, schema: &str) -> Value {
 
 /// The CLI arguments for a tool call (everything after the binary name).
 fn cli_args(name: &str, args: &Value) -> Result<Vec<String>> {
+    if BROWSE.contains(&name) {
+        return browse_args(name, args);
+    }
     let text = |k: &str| args.get(k).and_then(Value::as_str);
     let mut argv: Vec<String> = match name {
         "identify" => vec!["identify".into()],
@@ -105,16 +157,22 @@ pub fn tools() -> Vec<McpTool> {
                 call: Box::new(move |args| {
                     let mut argv = vec!["--no-color".to_string()];
                     argv.extend(cli_args(&name, args).map_err(|e| format!("{e:#}"))?);
-                    exec_self_fmt(
-                        &argv,
-                        &ExecOpts {
+                    let opts = if BROWSE.contains(&name.as_str()) {
+                        ExecOpts {
+                            // exit 1 is a result here too (vbmeta: signature or hash mismatch)
+                            ok_codes: vec![0, 1, 3],
+                            timeout: Some(Duration::from_secs(60)),
+                            max_bytes: BROWSE_MAX_BYTES,
+                        }
+                    } else {
+                        ExecOpts {
                             ok_codes: vec![0, 1, 3],
                             // the CLI's output was never capped or timed
                             max_bytes: usize::MAX / 2,
                             ..Default::default()
-                        },
-                        Some("{stderr} (exit {code})"),
-                    )
+                        }
+                    };
+                    exec_self_fmt(&argv, &opts, Some("{stderr} (exit {code})"))
                 }),
             }
         })
@@ -188,6 +246,44 @@ mod tests {
                 .unwrap()
                 .contains("path")
         );
+    }
+
+    #[test]
+    fn browse_tools_are_listed_and_read_only() {
+        let r = handle(&doctor(), &req("tools/list", Some(6))).unwrap();
+        let tools = r["result"]["tools"].as_array().unwrap();
+        for name in ["ls", "cat", "info", "vbmeta", "ramdisk", "files", "unpack"] {
+            let t = tools
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap_or_else(|| panic!("tool {name} missing"));
+            // read-only: no option can ask for an output directory or a force overwrite
+            let props = t["inputSchema"]["properties"].as_object().unwrap();
+            assert!(
+                !props.contains_key("output") && !props.contains_key("force"),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn browse_args_map_to_the_cli() {
+        let a = json!({ "image": "sys.img", "path": "/etc" });
+        assert_eq!(
+            cli_args("ls", &a).unwrap(),
+            ["ls", "--json", "--", "sys.img", "/etc"]
+        );
+        let a = json!({ "image": "sys.img", "path": "/etc/hosts" });
+        assert_eq!(
+            cli_args("cat", &a).unwrap(),
+            ["cat", "--", "sys.img", "/etc/hosts"]
+        );
+        let a = json!({ "path": "boot.img" });
+        assert_eq!(
+            cli_args("unpack", &a).unwrap(),
+            ["unpack", "--json", "--", "boot.img"]
+        );
+        assert!(cli_args("cat", &json!({ "image": "sys.img" })).is_err());
     }
 
     #[test]
