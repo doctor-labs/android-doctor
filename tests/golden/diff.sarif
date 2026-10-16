@@ -34,7 +34,7 @@
             "severity": "high"
           },
           "ruleId": "diff-debuggable-build",
-          "ruleIndex": 59
+          "ruleIndex": 62
         },
         {
           "level": "error",
@@ -59,7 +59,7 @@
             "severity": "high"
           },
           "ruleId": "diff-insecure-adb",
-          "ruleIndex": 60
+          "ruleIndex": 63
         },
         {
           "level": "error",
@@ -84,7 +84,7 @@
             "severity": "high"
           },
           "ruleId": "diff-su-binary",
-          "ruleIndex": 66
+          "ruleIndex": 69
         },
         {
           "level": "error",
@@ -109,7 +109,7 @@
             "severity": "high"
           },
           "ruleId": "diff-new-setuid",
-          "ruleIndex": 62
+          "ruleIndex": 65
         },
         {
           "level": "note",
@@ -134,7 +134,7 @@
             "severity": "info"
           },
           "ruleId": "diff-prop-changed",
-          "ruleIndex": 63
+          "ruleIndex": 66
         },
         {
           "level": "note",
@@ -159,7 +159,7 @@
             "severity": "info"
           },
           "ruleId": "diff-prop-changed",
-          "ruleIndex": 63
+          "ruleIndex": 66
         }
       ],
       "tool": {

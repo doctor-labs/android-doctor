@@ -25,7 +25,7 @@
             "severity": "low"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 82
+          "ruleIndex": 85
         },
         {
           "level": "note",
@@ -50,7 +50,7 @@
             "severity": "info"
           },
           "ruleId": "avb_signature",
-          "ruleIndex": 53
+          "ruleIndex": 56
         },
         {
           "level": "note",
@@ -66,7 +66,7 @@
             "severity": "info"
           },
           "ruleId": "duplicate_properties",
-          "ruleIndex": 64
+          "ruleIndex": 67
         },
         {
           "level": "note",
@@ -82,7 +82,7 @@
             "severity": "info"
           },
           "ruleId": "selinux_label_gaps",
-          "ruleIndex": 86
+          "ruleIndex": 89
         },
         {
           "level": "note",
@@ -107,7 +107,7 @@
             "severity": "info"
           },
           "ruleId": "mode_anomalies",
-          "ruleIndex": 81
+          "ruleIndex": 84
         },
         {
           "level": "note",
@@ -123,7 +123,7 @@
             "severity": "info"
           },
           "ruleId": "init_service_hygiene",
-          "ruleIndex": 78
+          "ruleIndex": 81
         },
         {
           "level": "note",
@@ -148,7 +148,7 @@
             "severity": "info"
           },
           "ruleId": "debug_leftovers",
-          "ruleIndex": 57
+          "ruleIndex": 60
         }
       ],
       "tool": {
@@ -337,6 +337,22 @@
                 "level": "note"
               },
               "fullDescription": {
+                "text": "An APK sends an implicit broadcast without a receiver permission"
+              },
+              "help": {
+                "text": "Set a package on the Intent or pass a permission that receivers must hold"
+              },
+              "id": "apk-code-broadcast-no-permission",
+              "name": "apk-code-broadcast-no-permission",
+              "shortDescription": {
+                "text": "An APK sends an implicit broadcast without a receiver permission"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
                 "text": "Cleartext http:// URLs are hardcoded in an APK's code"
               },
               "help": {
@@ -462,6 +478,22 @@
             },
             {
               "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An APK wraps an implicit Intent in a PendingIntent"
+              },
+              "help": {
+                "text": "Set an explicit component or package on the Intent, and use FLAG_IMMUTABLE"
+              },
+              "id": "apk-code-pending-implicit-intent",
+              "name": "apk-code-pending-implicit-intent",
+              "shortDescription": {
+                "text": "An APK wraps an implicit Intent in a PendingIntent"
+              }
+            },
+            {
+              "defaultConfiguration": {
                 "level": "warning"
               },
               "fullDescription": {
@@ -474,6 +506,22 @@
               "name": "apk-code-raw-sql",
               "shortDescription": {
                 "text": "An APK's code builds raw SQL by string concatenation"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK registers a dynamic broadcast receiver that any app can send to"
+              },
+              "help": {
+                "text": "Pass a permission to registerReceiver, or set RECEIVER_NOT_EXPORTED on API 33+"
+              },
+              "id": "apk-code-receiver-unprotected",
+              "name": "apk-code-receiver-unprotected",
+              "shortDescription": {
+                "text": "An APK registers a dynamic broadcast receiver that any app can send to"
               }
             },
             {
