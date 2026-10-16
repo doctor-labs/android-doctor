@@ -35,7 +35,7 @@
             "severity": "high"
           },
           "ruleId": "diff-debuggable-build",
-          "ruleIndex": 59
+          "ruleIndex": 62
         },
         {
           "baselineState": "new",
@@ -61,7 +61,7 @@
             "severity": "high"
           },
           "ruleId": "diff-insecure-adb",
-          "ruleIndex": 60
+          "ruleIndex": 63
         },
         {
           "baselineState": "new",
@@ -87,7 +87,7 @@
             "severity": "high"
           },
           "ruleId": "diff-su-binary",
-          "ruleIndex": 66
+          "ruleIndex": 69
         },
         {
           "baselineState": "new",
@@ -113,7 +113,7 @@
             "severity": "high"
           },
           "ruleId": "diff-new-setuid",
-          "ruleIndex": 62
+          "ruleIndex": 65
         },
         {
           "baselineState": "new",
@@ -139,7 +139,7 @@
             "severity": "info"
           },
           "ruleId": "diff-prop-changed",
-          "ruleIndex": 63
+          "ruleIndex": 66
         },
         {
           "baselineState": "new",
@@ -165,7 +165,7 @@
             "severity": "info"
           },
           "ruleId": "diff-prop-changed",
-          "ruleIndex": 63
+          "ruleIndex": 66
         }
       ],
       "tool": {
@@ -354,6 +354,22 @@
                 "level": "note"
               },
               "fullDescription": {
+                "text": "An APK sends an implicit broadcast without a receiver permission"
+              },
+              "help": {
+                "text": "Set a package on the Intent or pass a permission that receivers must hold"
+              },
+              "id": "apk-code-broadcast-no-permission",
+              "name": "apk-code-broadcast-no-permission",
+              "shortDescription": {
+                "text": "An APK sends an implicit broadcast without a receiver permission"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
                 "text": "Cleartext http:// URLs are hardcoded in an APK's code"
               },
               "help": {
@@ -479,6 +495,22 @@
             },
             {
               "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An APK wraps an implicit Intent in a PendingIntent"
+              },
+              "help": {
+                "text": "Set an explicit component or package on the Intent, and use FLAG_IMMUTABLE"
+              },
+              "id": "apk-code-pending-implicit-intent",
+              "name": "apk-code-pending-implicit-intent",
+              "shortDescription": {
+                "text": "An APK wraps an implicit Intent in a PendingIntent"
+              }
+            },
+            {
+              "defaultConfiguration": {
                 "level": "warning"
               },
               "fullDescription": {
@@ -491,6 +523,22 @@
               "name": "apk-code-raw-sql",
               "shortDescription": {
                 "text": "An APK's code builds raw SQL by string concatenation"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An APK registers a dynamic broadcast receiver that any app can send to"
+              },
+              "help": {
+                "text": "Pass a permission to registerReceiver, or set RECEIVER_NOT_EXPORTED on API 33+"
+              },
+              "id": "apk-code-receiver-unprotected",
+              "name": "apk-code-receiver-unprotected",
+              "shortDescription": {
+                "text": "An APK registers a dynamic broadcast receiver that any app can send to"
               }
             },
             {

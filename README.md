@@ -347,6 +347,9 @@ MobSF `android_apis` / `android_rules` and qark, not a copy of either rule set.
 | `apk-code-command-exec` | medium | `Runtime.exec`, `ProcessBuilder.start` |
 | `apk-code-sms-send` | medium | `SmsManager.send*` called from code |
 | `apk-code-device-id-sms` | high | a `TelephonyManager` device identifier getter (IMEI, subscriber id, SIM serial, line number) and an SMS send in the same method (method-level only, no data flow) |
+| `apk-code-receiver-unprotected` | medium | `registerReceiver` with no permission (constant null) and no `RECEIVER_NOT_EXPORTED` flag (constant flags) |
+| `apk-code-pending-implicit-intent` | medium / low | `PendingIntent.get*` over an Intent with no explicit target in the method: mutable flag (medium), otherwise low |
+| `apk-code-broadcast-no-permission` | low | `sendBroadcast(Intent)` or `sendBroadcast(Intent, null)` with no explicit target in the method |
 | `apk-code-tapjacking` | info | the APK has activities and never calls `setFilterTouchesWhenObscured(true)` |
 | `apk-code-screenshot` | info | the APK has activities and never sets `FLAG_SECURE` |
 | `apk-code-anti-analysis` | info | root, emulator or frida marker strings, `Debug.isDebuggerConnected` |

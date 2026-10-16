@@ -101,9 +101,31 @@ const DEVICE_IDS: [&str; 5] = [
 ];
 const BROKEN_CIPHERS: [&str; 5] = ["DES", "RC2", "RC4", "ARCFOUR", "BLOWFISH"];
 
+// Framework constants, checked with `javap -constants` against platforms/android-34/android.jar.
+const FLAG_MUTABLE: i64 = 0x0200_0000; // PendingIntent.FLAG_MUTABLE
+const RECEIVER_NOT_EXPORTED: i64 = 4; // Context.RECEIVER_NOT_EXPORTED
+
+/// Whether the method names a target for an Intent (setPackage, setComponent, setClass,
+/// setClassName, or a constructor taking a Context or Class). When it does, the method's Intents
+/// are not judged implicit: the rules do not track which Intent each call receives. Ceiling: a
+/// target set in another method is not seen, so such an Intent is still judged implicit.
+fn names_target(calls: &[Call]) -> bool {
+    const SETTERS: [&str; 4] = ["setPackage(", "setComponent(", "setClass(", "setClassName("];
+    const CTORS: [&str; 2] = [
+        "<init>(Landroid/content/Context;",
+        "<init>(Ljava/lang/String;Landroid/net/Uri;Landroid/content/Context;",
+    ];
+    calls.iter().any(|c| {
+        c.callee
+            .strip_prefix("Landroid/content/Intent;->")
+            .is_some_and(|r| SETTERS.iter().chain(CTORS.iter()).any(|m| r.starts_with(m)))
+    })
+}
+
 fn judge(s: &Site, c: &mut Collector) {
     let at = &s.method;
     let (mut sms, mut device_id) = (false, false);
+    let explicit = names_target(&s.calls);
     for call in &s.calls {
         let f = call.callee.as_str();
         let a = &call.args;
@@ -402,6 +424,65 @@ fn judge(s: &Site, c: &mut Collector) {
                 "apk-code-command-exec",
                 Severity::Medium,
                 "runs an external command",
+                at,
+            );
+        }
+        // Dynamic receivers: no permission guards them and they are not RECEIVER_NOT_EXPORTED.
+        // Flags and permission are judged only when they are constants (null is const 0).
+        let flags_open = |i: usize| int(a.get(i)).is_some_and(|v| v & RECEIVER_NOT_EXPORTED == 0);
+        let no_perm = |i: usize| a.get(i) == Some(&Some(Val::Int(0)));
+        let proto = f.split_once("->registerReceiver(").map(|x| x.1);
+        let open_receiver = match proto {
+            Some(p) if p.starts_with("Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;)") => true,
+            Some(p) if p.starts_with("Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;I)") => flags_open(3),
+            Some(p) if p.starts_with("Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;Ljava/lang/String;Landroid/os/Handler;)") => no_perm(3),
+            Some(p) if p.starts_with("Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;Ljava/lang/String;Landroid/os/Handler;I)") => {
+                no_perm(3) && flags_open(5)
+            }
+            _ => false,
+        };
+        if open_receiver {
+            c.add(
+                "apk-code-receiver-unprotected",
+                Severity::Medium,
+                "dynamic broadcast receiver has no permission and is not RECEIVER_NOT_EXPORTED: any app can send to it",
+                at,
+            );
+        }
+        // Implicit Intent wrapped in a PendingIntent: the recipient may fill in its target, and a
+        // mutable PendingIntent lets it rewrite the fields that were left open.
+        if !explicit
+            && f.starts_with("Landroid/app/PendingIntent;->get")
+            && f.contains("(Landroid/content/Context;ILandroid/content/Intent;I")
+        {
+            if int(a.get(3)).is_some_and(|v| v & FLAG_MUTABLE != 0) {
+                c.add(
+                    "apk-code-pending-implicit-intent",
+                    Severity::Medium,
+                    "mutable PendingIntent wraps an implicit Intent: a receiving app can redirect it",
+                    at,
+                );
+            } else {
+                c.add(
+                    "apk-code-pending-implicit-intent",
+                    Severity::Warn,
+                    "PendingIntent wraps an implicit Intent with no explicit target",
+                    at,
+                );
+            }
+        }
+        // Broadcasts without a receiver permission: any matching receiver in any app gets them.
+        if !explicit
+            && (has(f, "sendBroadcast(Landroid/content/Intent;)V")
+                || (has(
+                    f,
+                    "sendBroadcast(Landroid/content/Intent;Ljava/lang/String;)V",
+                ) && no_perm(2)))
+        {
+            c.add(
+                "apk-code-broadcast-no-permission",
+                Severity::Warn,
+                "implicit broadcast sent without a receiver permission",
                 at,
             );
         }
@@ -883,6 +964,35 @@ mod tests {
                 Some(Val::Str("AES/GCM/NoPadding".into()))
             ]
         );
+    }
+
+    #[test]
+    fn intent_and_receiver_rules_judge_constants_and_skip_explicit_targets() {
+        // tests/fixtures/dex/Ipc.java: one case per method, named in the details.
+        const IPC: &[u8] = include_bytes!("../../tests/fixtures/dex/ipc.dex");
+        let v = run(IPC, 0);
+        let pending_mut = detail(&v, "apk-code-pending-implicit-intent", Severity::Medium);
+        assert!(pending_mut.contains("implicitMutable"), "{pending_mut}");
+        assert!(!pending_mut.contains("explicitTarget"), "{pending_mut}");
+        let pending_imm = detail(&v, "apk-code-pending-implicit-intent", Severity::Warn);
+        assert!(pending_imm.contains("implicitImmutable"), "{pending_imm}");
+        assert!(!pending_imm.contains("explicitTarget"), "{pending_imm}");
+
+        let recv = detail(&v, "apk-code-receiver-unprotected", Severity::Medium);
+        for m in ["recvNoArgs", "recvExportedFlag", "recvNullPerm"] {
+            assert!(recv.contains(m), "{m} missing from {recv}");
+        }
+        for m in ["recvNotExported", "recvPerm", "recvNullPermNotExported"] {
+            assert!(!recv.contains(m), "{m} wrongly flagged in {recv}");
+        }
+
+        let bcast = detail(&v, "apk-code-broadcast-no-permission", Severity::Warn);
+        assert!(bcast.contains("broadcastNoPerm"), "{bcast}");
+        assert!(bcast.contains("broadcastNullPerm"), "{bcast}");
+        assert!(!bcast.contains("broadcastPerm"), "{bcast}");
+        assert!(!bcast.contains("explicitBroadcast"), "{bcast}");
+        // no other rule fires on this fixture: pending (medium, low), receiver, broadcast
+        assert_eq!(v.len(), 4, "{v:#?}");
     }
 
     #[test]
