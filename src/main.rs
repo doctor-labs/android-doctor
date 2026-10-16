@@ -68,6 +68,7 @@ mod testutil;
 mod transfer_list;
 mod tree;
 mod treeout;
+mod vbkernel;
 
 #[derive(Parser)]
 #[command(version, about = "Extract and audit Android OTA/ROM images")]
@@ -271,6 +272,17 @@ enum Command {
         /// Write the blob here instead of just printing the digest
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify a ChromeOS kernel partition (vboot 2.x): keyblock, kernel preamble and body signatures
+    Vbkernel {
+        /// A kernel partition image (the CHROMEOS keyblock at offset 0)
+        image: PathBuf,
+        /// Root public key (PEM) that signed the keyblock; without it the keyblock is not checked
+        #[arg(long, value_name = "FILE")]
+        key: Option<PathBuf>,
         /// Print JSON instead of text
         #[arg(long)]
         json: bool,
@@ -901,6 +913,26 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             report,
         } => diff_command(&old, &new, json, &only, &report, no_color),
         Command::Avbkey { key, output, json } => avbkey_command(&key, output.as_deref(), json),
+        Command::Vbkernel { image, key, json } => {
+            let root = match key {
+                Some(k) => Some(avb::read_key(&k)?),
+                None => None,
+            };
+            let r = vbkernel::verify(&image, root.as_ref())?;
+            print_out(&if json {
+                serde_json::to_string_pretty(&r.to_json())?
+            } else {
+                r.to_text()
+            })?;
+            if r.any_invalid() {
+                return Err(reporting::Gate {
+                    code: doctor_core::ExitCode::Findings,
+                    message: "a kernel signature does not verify".into(),
+                }
+                .into());
+            }
+            Ok(())
+        }
         Command::Vbmeta {
             image,
             images,
