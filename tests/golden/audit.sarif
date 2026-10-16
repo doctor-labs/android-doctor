@@ -59,7 +59,7 @@
             "severity": "high"
           },
           "ruleId": "insecure-adb",
-          "ruleIndex": 82
+          "ruleIndex": 87
         },
         {
           "level": "error",
@@ -84,7 +84,7 @@
             "severity": "high"
           },
           "ruleId": "su-binary",
-          "ruleIndex": 92
+          "ruleIndex": 97
         }
       ],
       "tool": {
@@ -1082,6 +1082,71 @@
               "name": "debuggable-build",
               "shortDescription": {
                 "text": "Build is debuggable: adbd runs as root"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "diff-avb-descriptor"
+              },
+              "id": "diff-avb-descriptor",
+              "name": "diff-avb-descriptor",
+              "shortDescription": {
+                "text": "diff-avb-descriptor"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "diff-avb-hash-algorithm"
+              },
+              "id": "diff-avb-hash-algorithm",
+              "name": "diff-avb-hash-algorithm",
+              "shortDescription": {
+                "text": "diff-avb-hash-algorithm"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "diff-avb-rollback-index"
+              },
+              "id": "diff-avb-rollback-index",
+              "name": "diff-avb-rollback-index",
+              "shortDescription": {
+                "text": "diff-avb-rollback-index"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "diff-avb-security-state"
+              },
+              "id": "diff-avb-security-state",
+              "name": "diff-avb-security-state",
+              "shortDescription": {
+                "text": "diff-avb-security-state"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "diff-avb-unchecked"
+              },
+              "id": "diff-avb-unchecked",
+              "name": "diff-avb-unchecked",
+              "shortDescription": {
+                "text": "diff-avb-unchecked"
               }
             },
             {

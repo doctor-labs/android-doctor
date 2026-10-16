@@ -4,6 +4,7 @@
 //! properties and init services. What got worse becomes findings (rules `diff-*`) so the diff
 //! gates CI like `audit`; the raw file-level changes go under `data`. Nothing is extracted.
 use crate::audit::{self, ImageAudit, Service};
+use crate::avb::{self, Descriptor, Vbmeta};
 use crate::findings::{self, Finding, Severity};
 use crate::term::sanitize;
 use crate::tree::{Entry, Kind, Tree};
@@ -217,8 +218,148 @@ fn is_sepolicy(path: &str) -> bool {
         .any(|n| p.ends_with(n))
 }
 
+/// One AVB change between the old and the new vbmeta of an image.
+struct AvbChange {
+    rule: &'static str,
+    severity: Severity,
+    subject: String,
+    message: String,
+    remedy: &'static str,
+}
+
+/// AVB changes between two vbmeta images: the rollback index lowered, a security state newly set
+/// (verification or hashtree disabled, unlocked device), a partition descriptor added or removed,
+/// or a partition's hash algorithm changed. Digests and salts change with every rebuild, so they
+/// are not findings.
+fn avb_changes(name: &str, old: &Vbmeta, new: &Vbmeta) -> Vec<AvbChange> {
+    let mut out = Vec::new();
+    if new.rollback_index < old.rollback_index {
+        out.push(AvbChange {
+            rule: "diff-avb-rollback-index",
+            severity: Severity::High,
+            subject: name.into(),
+            message: format!(
+                "rollback index lowered from {} to {}",
+                old.rollback_index, new.rollback_index
+            ),
+            remedy: "Never ship a lower rollback index: devices that saw the higher one refuse it",
+        });
+    }
+    let before = old.security_states();
+    for s in new
+        .security_states()
+        .into_iter()
+        .filter(|s| !before.contains(s))
+    {
+        out.push(AvbChange {
+            rule: "diff-avb-security-state",
+            severity: Severity::High,
+            subject: name.into(),
+            message: format!("{}: {}", s.as_str(), s.explanation()),
+            remedy: "Build the vbmeta without the flag that disables verification",
+        });
+    }
+    // Partition descriptors keyed by kind and partition name; the value is the hash algorithm.
+    let descriptors = |m: &Vbmeta| -> BTreeMap<(&'static str, String), Option<String>> {
+        m.descriptors
+            .iter()
+            .filter_map(|d| match d {
+                Descriptor::Hash(h) => {
+                    Some((("hash", h.partition.clone()), Some(h.algorithm.clone())))
+                }
+                Descriptor::Hashtree(h) => {
+                    Some((("hashtree", h.partition.clone()), Some(h.algorithm.clone())))
+                }
+                Descriptor::ChainPartition { partition, .. } => {
+                    Some((("chain", partition.clone()), None))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    let (o, n) = (descriptors(old), descriptors(new));
+    for k in o.keys().chain(n.keys()).collect::<BTreeSet<_>>() {
+        let (kind, partition) = (k.0, &k.1);
+        let change = match (o.get(k), n.get(k)) {
+            (Some(Some(a)), Some(Some(b))) if a != b => Some((
+                "diff-avb-hash-algorithm",
+                format!("{kind} descriptor for {partition} changed hash algorithm from {a} to {b}"),
+            )),
+            (None, Some(_)) => Some((
+                "diff-avb-descriptor",
+                format!("{kind} descriptor for {partition} was added"),
+            )),
+            (Some(_), None) => Some((
+                "diff-avb-descriptor",
+                format!("{kind} descriptor for {partition} was removed"),
+            )),
+            _ => None,
+        };
+        if let Some((rule, message)) = change {
+            out.push(AvbChange {
+                rule,
+                severity: Severity::Medium,
+                subject: partition.clone(),
+                message,
+                remedy: "Review the partition's verification chain before shipping",
+            });
+        }
+    }
+    out
+}
+
+/// Whether a file carries an AVB header (`AVB0` at the start) or footer (`AVBf` in its last 64
+/// bytes). Plain filesystem images carry neither, so they are not AVB images at all.
+fn has_avb_marker(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut head = [0u8; 4];
+    if f.read_exact(&mut head).is_ok() && &head == b"AVB0" {
+        return true;
+    }
+    let Ok(len) = f.seek(SeekFrom::End(0)) else {
+        return false;
+    };
+    let mut tail = [0u8; 4];
+    len >= 64
+        && f.seek(SeekFrom::End(-64)).is_ok()
+        && f.read_exact(&mut tail).is_ok()
+        && &tail == b"AVBf"
+}
+
+/// The AVB changes of one image pair. An image whose vbmeta cannot be read is noted as
+/// `diff-avb-unchecked` when it has an AVB marker, so its AVB state is never silently skipped;
+/// an image with no AVB marker is not an AVB image and is left out.
+fn avb_pair(name: &str, old: &Path, new: &Path) -> Vec<AvbChange> {
+    match (avb::read_input(old, None), avb::read_input(new, None)) {
+        (Ok(x), Ok(y)) => avb_changes(name, &x, &y),
+        (x, y) => [("old", old, x.err()), ("new", new, y.err())]
+            .into_iter()
+            .filter_map(|(side, path, err)| {
+                let err = err?;
+                has_avb_marker(path).then(|| AvbChange {
+                    rule: "diff-avb-unchecked",
+                    severity: Severity::Info,
+                    subject: format!("{name} ({side})"),
+                    message: format!(
+                        "the {side} image's AVB vbmeta could not be read, so AVB was not checked: {err:#}"
+                    ),
+                    remedy: "Fix or re-sign the image so its vbmeta parses, then diff again",
+                })
+            })
+            .collect(),
+    }
+}
+
 /// What the new build does worse than the old one.
-fn security_findings(old: &ImageAudit, new: &ImageAudit, d: &ImageDiff) -> Vec<Finding> {
+fn security_findings(
+    old: &ImageAudit,
+    new: &ImageAudit,
+    d: &ImageDiff,
+    avb_diffs: &[AvbChange],
+) -> Vec<Finding> {
     let mut out = Vec::new();
     let mut add = |rule: String,
                    severity,
@@ -347,6 +488,16 @@ fn security_findings(old: &ImageAudit, new: &ImageAudit, d: &ImageDiff) -> Vec<F
             );
         }
     }
+    for c in avb_diffs {
+        add(
+            c.rule.into(),
+            c.severity,
+            &c.subject,
+            "",
+            c.message.clone(),
+            Some(c.remedy.into()),
+        );
+    }
     for p in &d.props {
         let (file, key) = (
             p["file"].as_str().unwrap_or(""),
@@ -399,7 +550,11 @@ pub fn run(old: &Path, new: &Path) -> Result<Outcome> {
             props: diff_props(&a, &b),
             services: diff_services(&a, &b),
         };
-        all.extend(security_findings(&a, &b, &d));
+        let avb_diffs = match (&o, &n) {
+            (Some(p), Some(q)) => avb_pair(&name, p, q),
+            _ => Vec::new(),
+        };
+        all.extend(security_findings(&a, &b, &d, &avb_diffs));
         images.push(d);
     }
     Ok(Outcome {
@@ -469,5 +624,122 @@ mod tests {
         assert!(is_sepolicy("system/etc/selinux/plat_sepolicy.cil"));
         assert!(is_sepolicy("vendor/etc/selinux/vendor_file_contexts"));
         assert!(!is_sepolicy("system/etc/hosts"));
+    }
+
+    fn vbmeta(rollback_index: u64, flags: u32, descriptors: Vec<Descriptor>) -> Vbmeta {
+        Vbmeta {
+            libavb: (1, 0),
+            algorithm: 0,
+            rollback_index,
+            flags,
+            rollback_index_location: 0,
+            release: String::new(),
+            auth_size: 0,
+            aux_size: 0,
+            signature_len: 0,
+            public_key_bits: None,
+            public_key_bytes: None,
+            public_key_sha256: None,
+            public_key_metadata_len: 0,
+            digest_ok: None,
+            signature_verified: crate::avb::SignatureStatus::Absent,
+            descriptors,
+            footer: None,
+            coverage: None,
+        }
+    }
+
+    fn hash(partition: &str, algorithm: &str) -> Descriptor {
+        Descriptor::Hash(crate::avb::HashDescriptor {
+            partition: partition.into(),
+            algorithm: algorithm.into(),
+            image_size: 0,
+            salt: vec![],
+            digest: vec![],
+            flags: 0,
+        })
+    }
+
+    fn rules(v: &[AvbChange]) -> Vec<(&'static str, Severity)> {
+        v.iter().map(|c| (c.rule, c.severity)).collect()
+    }
+
+    #[test]
+    fn avb_rollback_index_going_down_is_high_and_going_up_is_quiet() {
+        let old = vbmeta(5, 0, vec![]);
+        assert_eq!(
+            rules(&avb_changes("vbmeta", &old, &vbmeta(4, 0, vec![]))),
+            vec![("diff-avb-rollback-index", Severity::High)]
+        );
+        assert!(avb_changes("vbmeta", &old, &vbmeta(6, 0, vec![])).is_empty());
+    }
+
+    #[test]
+    fn avb_newly_disabled_verification_is_high_but_an_inherited_one_is_not() {
+        let old = vbmeta(1, 0, vec![]);
+        let disabled = vbmeta(1, 2, vec![]);
+        assert_eq!(
+            rules(&avb_changes("vbmeta", &old, &disabled)),
+            vec![("diff-avb-security-state", Severity::High)]
+        );
+        assert!(avb_changes("vbmeta", &disabled, &disabled).is_empty());
+    }
+
+    #[test]
+    fn avb_descriptor_added_removed_or_re_algorithmed_is_reported() {
+        let old = vbmeta(1, 0, vec![hash("boot", "sha256"), hash("dtbo", "sha256")]);
+        let new = vbmeta(1, 0, vec![hash("boot", "sha1"), hash("vendor", "sha256")]);
+        assert_eq!(
+            rules(&avb_changes("vbmeta", &old, &new)),
+            vec![
+                ("diff-avb-hash-algorithm", Severity::Medium),
+                ("diff-avb-descriptor", Severity::Medium),
+                ("diff-avb-descriptor", Severity::Medium),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unreadable_vbmeta_with_an_avb_marker_is_noted_not_skipped() {
+        let d = crate::testutil::Scratch::new("avb-unchecked");
+        let plain = d.join("plain.img");
+        let broken = d.join("broken.img");
+        std::fs::write(&plain, vec![0u8; 4096]).unwrap();
+        // A footer that points at a vbmeta block with no AVB0 magic.
+        let mut img = vec![0u8; 128];
+        let mut footer = vec![0u8; 64];
+        footer[..4].copy_from_slice(b"AVBf");
+        footer[20..28].copy_from_slice(&0u64.to_be_bytes());
+        footer[28..36].copy_from_slice(&64u64.to_be_bytes());
+        img.truncate(64);
+        img.extend_from_slice(&footer);
+        std::fs::write(&broken, img).unwrap();
+        // The plain image is no AVB image: nothing to say.
+        assert!(avb_pair("system", &plain, &plain).is_empty());
+        let found = avb_pair("system", &plain, &broken);
+        assert_eq!(
+            found.len(),
+            1,
+            "{:?}",
+            found.iter().map(|c| c.rule).collect::<Vec<_>>()
+        );
+        assert_eq!(found[0].rule, "diff-avb-unchecked");
+        assert_eq!(found[0].severity, Severity::Info);
+        assert!(found[0].subject.contains("new"));
+    }
+
+    #[test]
+    fn avb_digest_churn_on_the_same_descriptors_is_not_a_finding() {
+        let old = vbmeta(1, 0, vec![hash("boot", "sha256")]);
+        let mut new = old.clone();
+        new.descriptors = vec![Descriptor::Hash(crate::avb::HashDescriptor {
+            partition: "boot".into(),
+            algorithm: "sha256".into(),
+            image_size: 9,
+            salt: vec![1],
+            digest: vec![2],
+            flags: 0,
+        })];
+        assert!(avb_changes("vbmeta", &old, &new).is_empty());
     }
 }

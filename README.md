@@ -223,7 +223,7 @@ the text report, never the findings.
 What the new build made worse becomes findings, all `diff-*`: every `audit` finding about a path
 the old build did not have (`diff-debuggable-build`, `diff-su-binary`, `diff-insecure-adb`, ...),
 `diff-new-setuid` (high), `diff-new-capability` (medium), `diff-root-service` (a new init service
-that runs as root, medium), `diff-sepolicy-changed` (medium) and `diff-prop-changed` (info). Scoring
+that runs as root, medium), `diff-sepolicy-changed` (medium) and `diff-prop-changed` (info). Partition images with an AVB footer or vbmeta header also get their vbmeta compared: `diff-avb-rollback-index` (high, the index went down), `diff-avb-security-state` (high, verification or hashtree newly disabled, or unlocked), `diff-avb-hash-algorithm` and `diff-avb-descriptor` (medium, a partition's hash algorithm changed or a descriptor was added or removed). Scoring
 is `android/1`. `--fail-on` defaults to `high` (a diff lists only what is new, so the gate is safe);
 `--baseline`, `--sarif` and `--score` work as for `audit`. In a terminal the grouped digest is
 shown; pipe the output, or use `--json`, for the file list.
