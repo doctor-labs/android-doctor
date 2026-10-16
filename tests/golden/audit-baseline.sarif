@@ -87,7 +87,7 @@
             "severity": "high"
           },
           "ruleId": "su-binary",
-          "ruleIndex": 85
+          "ruleIndex": 87
         }
       ],
       "tool": {

@@ -82,7 +82,7 @@
             "severity": "info"
           },
           "ruleId": "selinux_label_gaps",
-          "ruleIndex": 82
+          "ruleIndex": 84
         },
         {
           "level": "note",
