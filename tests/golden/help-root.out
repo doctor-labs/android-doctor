@@ -32,6 +32,7 @@ Commands:
   avbmake     Write a new vbmeta image (avbtool make_vbmeta_image without descriptors): header, SHA-256 digest and RSA signature
   avbfooter   Write a copy of a partition image with an AVB hash footer (avbtool add_hash_footer): the image, a vbmeta with one SHA-256 hash descriptor and the footer, padded to --partition-size. The input is never modified
   avberase    Write a copy of a partition image without its AVB footer and vbmeta (avbtool erase_footer)
+  apk-diff    Compare two builds of one APK: requested permissions, new or newly exported components and the signing certificate; what got worse becomes findings
   avbkey      Write the AVB public key blob of a PEM RSA key (avbtool extract_public_key) and print its SHA-256 digest
   avbkeygen   Generate an RSA private key as a PKCS#1 PEM file (avbtool gen_key); prints only the public key digest
   vbkernel    Verify a ChromeOS kernel partition (vboot 2.x): keyblock, kernel preamble and body signatures
