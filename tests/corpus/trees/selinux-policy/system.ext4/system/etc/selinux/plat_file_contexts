@@ -1,0 +1,5 @@
+# Synthetic file_contexts for unit tests. Not taken from a real device.
+/system/bin/healthd  u:object_r:healthd_exec:s0
+/system/bin/debug(/.*)?  -- u:object_r:system_file:s0
+/dev/test_node  -c u:object_r:unconfined_test:s0
+/system/lonely

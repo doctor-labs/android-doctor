@@ -1,0 +1,46 @@
+{
+  "audit": [
+    {
+      "id": "selinux-file-context-unconfined",
+      "severity": "medium",
+      "subject": "system"
+    },
+    {
+      "id": "selinux-permissive-domain",
+      "severity": "high",
+      "subject": "system"
+    },
+    {
+      "id": "selinux-permissive-domain",
+      "severity": "high",
+      "subject": "system"
+    },
+    {
+      "id": "selinux-permissive-domain",
+      "severity": "high",
+      "subject": "system"
+    }
+  ],
+  "doctor": [
+    {
+      "id": "avb_signature",
+      "severity": "info",
+      "subject": "vbmeta.img"
+    },
+    {
+      "id": "partition_coverage",
+      "severity": "warn",
+      "subject": "boot.img"
+    },
+    {
+      "id": "partition_coverage",
+      "severity": "warn",
+      "subject": "vendor.img"
+    },
+    {
+      "id": "selinux_label_gaps",
+      "severity": "info",
+      "subject": "system"
+    }
+  ]
+}

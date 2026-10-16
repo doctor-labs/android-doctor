@@ -1359,6 +1359,38 @@
             },
             {
               "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "A file_contexts label names a permissive domain"
+              },
+              "help": {
+                "text": "Label the path with a confined domain"
+              },
+              "id": "selinux-file-context-unconfined",
+              "name": "selinux-file-context-unconfined",
+              "shortDescription": {
+                "text": "A file_contexts label names a permissive domain"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "A domain is typepermissive in the shipped SELinux policy"
+              },
+              "help": {
+                "text": "Remove the typepermissive statement and fix the denials it hides, or confine the domain"
+              },
+              "id": "selinux-permissive-domain",
+              "name": "selinux-permissive-domain",
+              "shortDescription": {
+                "text": "A domain is typepermissive in the shipped SELinux policy"
+              }
+            },
+            {
+              "defaultConfiguration": {
                 "level": "note"
               },
               "fullDescription": {

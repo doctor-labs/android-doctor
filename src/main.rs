@@ -60,6 +60,7 @@ mod report;
 mod reporting;
 mod rockchip;
 mod sdat;
+mod sepolicy;
 mod skill;
 mod sonysin;
 mod sparse;

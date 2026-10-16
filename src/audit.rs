@@ -130,6 +130,8 @@ pub struct ImageAudit {
     pub apks: Vec<ApkAudit>,
     /// Exploit-mitigation triage of native ELF objects.
     pub elf: crate::elf::ElfAudit,
+    /// Permissive domains and file_contexts labels from the shipped text SELinux policy.
+    pub sepolicy: crate::sepolicy::SepolicyAudit,
 }
 
 pub(crate) fn label_of(e: &Entry) -> String {
@@ -326,6 +328,7 @@ fn analyse_with(
     a.content_findings = hits;
     a.content_bytes_scanned = scanned;
     a.elf = crate::elf::scan_tree(entries, read);
+    a.sepolicy = crate::sepolicy::scan(entries, read);
     let (f, keys) = findings(&a).into_iter().unzip();
     a.findings = f;
     a.finding_keys = keys;
@@ -675,6 +678,31 @@ fn findings(a: &ImageAudit) -> Vec<(Finding, (String, String))> {
             );
         }
     }
+    for c in &a.sepolicy.cil {
+        for d in &c.permissive {
+            add(
+                Severity::High,
+                "selinux-permissive-domain",
+                format!(
+                    "{d} is typepermissive in {}: its denials are logged, not enforced",
+                    c.file
+                ),
+                &c.file,
+                d,
+            );
+        }
+    }
+    for c in &a.sepolicy.contexts {
+        for (re, ctx) in &c.unconfined {
+            add(
+                Severity::Medium,
+                "selinux-file-context-unconfined",
+                format!("{re} is labelled {ctx} in {}: a permissive domain", c.file),
+                &c.file,
+                re,
+            );
+        }
+    }
     f.extend(crate::elf::findings(&a.elf));
     let fstab_findings: Vec<_> = a
         .fstab
@@ -834,29 +862,39 @@ fn special_json(s: &Special) -> Value {
 pub fn to_json(audits: &[ImageAudit]) -> Value {
     json!({
         "adb": adb_summary(audits),
-        "images": audits.iter().map(|a| json!({
-            "name": a.name,
-            "entries": a.entries.len(),
-            "properties": a.props.iter().map(|p| json!({"file": p.file, "key": p.key, "value": p.value})).collect::<Vec<_>>(),
-            "setuid_files": a.setuid.iter().map(special_json).collect::<Vec<_>>(),
-            "file_capabilities": a.capabilities.iter().map(|(p, v)| json!({"path": p, "value": v})).collect::<Vec<_>>(),
-            "world_writable_files": a.world_writable.iter().map(special_json).collect::<Vec<_>>(),
-            "su_binaries": a.su,
-            "services": a.services.iter().map(|s| json!({
-                "file": s.file, "name": s.name, "command": s.command, "user": s.user,
-                "seclabel": s.seclabel, "disabled": s.disabled,
-            })).collect::<Vec<_>>(),
-            "findings": a.findings.iter().map(|f| json!({
-                "severity": f.severity.name(), "rule": f.rule, "detail": f.detail,
-            })).collect::<Vec<_>>(),
-            "content_findings": a.content_findings.iter().map(|f| json!({
-                "severity": f.severity, "rule": f.rule, "detail": f.detail,
-            })).collect::<Vec<_>>(),
-            "content_bytes_scanned": a.content_bytes_scanned,
-            "apks": a.apks.iter().map(apk_json).collect::<Vec<Value>>(),
-            "elf": crate::elf::to_json(&a.elf),
-        })).collect::<Vec<_>>(),
+        "images": audits.iter().map(image_json).collect::<Vec<_>>(),
     })
+}
+
+fn image_json(a: &ImageAudit) -> Value {
+    let mut v = json!({
+        "name": a.name,
+        "entries": a.entries.len(),
+        "properties": a.props.iter().map(|p| json!({"file": p.file, "key": p.key, "value": p.value})).collect::<Vec<_>>(),
+        "setuid_files": a.setuid.iter().map(special_json).collect::<Vec<_>>(),
+        "file_capabilities": a.capabilities.iter().map(|(p, v)| json!({"path": p, "value": v})).collect::<Vec<_>>(),
+        "world_writable_files": a.world_writable.iter().map(special_json).collect::<Vec<_>>(),
+        "su_binaries": a.su,
+        "services": a.services.iter().map(|s| json!({
+            "file": s.file, "name": s.name, "command": s.command, "user": s.user,
+            "seclabel": s.seclabel, "disabled": s.disabled,
+        })).collect::<Vec<_>>(),
+        "findings": a.findings.iter().map(|f| json!({
+            "severity": f.severity.name(), "rule": f.rule, "detail": f.detail,
+        })).collect::<Vec<_>>(),
+        "content_findings": a.content_findings.iter().map(|f| json!({
+            "severity": f.severity, "rule": f.rule, "detail": f.detail,
+        })).collect::<Vec<_>>(),
+        "content_bytes_scanned": a.content_bytes_scanned,
+        "apks": a.apks.iter().map(apk_json).collect::<Vec<Value>>(),
+        "elf": crate::elf::to_json(&a.elf),
+    });
+    // Only images that ship text SELinux policy carry the key, so reports without it are unchanged.
+    let sp = &a.sepolicy;
+    if !sp.cil.is_empty() || !sp.contexts.is_empty() || sp.skipped > 0 {
+        v["sepolicy"] = crate::sepolicy::to_json(sp);
+    }
+    v
 }
 
 fn capped<T>(items: &[T], show: impl Fn(&T) -> String) -> Vec<String> {
@@ -1597,6 +1635,45 @@ service plain /system/bin/plain
             assert!(t.contains(want), "{want} in {t}");
         }
         assert!(to_text(&[run(vec![], &[])], true).contains("no findings"));
+    }
+
+    #[test]
+    fn shipped_selinux_policy_flags_permissive_domains_and_unconfined_labels() {
+        let cil = "(block healthd (type process) (typepermissive process))\n(typepermissive unconfined_test)\n(neverallow a b (file (write)))\n";
+        let fc = "/dev/test_node -c u:object_r:unconfined_test:s0\n/system/bin/x u:object_r:system_file:s0\n";
+        let a = run(
+            vec![
+                file("etc/selinux/plat_sepolicy.cil", 0o644),
+                file("etc/selinux/plat_file_contexts", 0o644),
+                file("etc/unrelated.cil", 0o644),
+            ],
+            &[
+                ("etc/selinux/plat_sepolicy.cil", cil),
+                ("etc/selinux/plat_file_contexts", fc),
+                ("etc/unrelated.cil", "(typepermissive ignored)"),
+            ],
+        );
+        assert_eq!(a.sepolicy.cil[0].neverallow, 1);
+        assert_eq!(
+            rules(&a),
+            [
+                "selinux-permissive-domain",
+                "selinux-permissive-domain",
+                "selinux-file-context-unconfined"
+            ]
+        );
+        let j = to_json(std::slice::from_ref(&a));
+        assert_eq!(
+            j["images"][0]["sepolicy"]["cil_files"][0]["permissive_domains"][0],
+            "healthd.process"
+        );
+        assert_eq!(
+            j["images"][0]["sepolicy"]["cil_files"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
