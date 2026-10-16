@@ -359,6 +359,7 @@ fn a_fifo_never_blocks_a_reader() {
     for cmd in [
         "identify",
         "journal",
+        "fsck",
         "ls",
         "tree",
         "audit",

@@ -29,6 +29,7 @@ mod dt;
 mod elf;
 mod engine;
 mod erofsfs;
+mod ext4check;
 mod ext4fs;
 mod extract;
 mod f2fsfs;
@@ -253,6 +254,19 @@ enum Command {
         /// Print JSON instead of text
         #[arg(long)]
         json: bool,
+        /// Also plan the journal replay as a read-only overlay: the blocks the committed transactions would overwrite
+        #[arg(long)]
+        replay: bool,
+    },
+    /// Cross-check an ext2/3/4 image superblock, group descriptors and allocation bitmaps (e2fsck-class), read-only
+    Fsck {
+        /// An ext2/3/4 image
+        image: PathBuf,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        report: ReportArgs,
     },
     /// List a directory (or show one file) inside an ext2/3/4, erofs or f2fs image, without extracting it
     Ls {
@@ -1188,7 +1202,16 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
                 print_out(&text)
             }
         }
-        Command::Journal { image, json } => journal_command(&image, json),
+        Command::Journal {
+            image,
+            json,
+            replay,
+        } => journal_command(&image, json, replay),
+        Command::Fsck {
+            image,
+            json,
+            report,
+        } => fsck_command(&image, json, &report, no_color),
         Command::Ramdisk {
             input,
             output,
@@ -2440,13 +2463,23 @@ fn blocks_command(image: &std::path::Path, path: &str, json: bool) -> anyhow::Re
     print_out(&text)
 }
 
-/// `journal`: describe the jbd2 journal of an ext3/ext4 image, read-only.
-fn journal_command(image: &std::path::Path, json: bool) -> anyhow::Result<()> {
+/// `journal`: describe the jbd2 journal of an ext3/ext4 image, read-only. `--replay` adds the replay
+/// plan as an overlay; the image is never written.
+fn journal_command(image: &std::path::Path, json: bool, replay: bool) -> anyhow::Result<()> {
     let fs = ext4fs::Fs::open(image)?;
     let bytes = fs.journal()?;
     let j = ext4fs::Journal::parse(&bytes)?;
+    let plan = if replay {
+        Some(ext4check::Overlay::plan(
+            &j,
+            fs.super_block()?.block_size,
+            &bytes,
+        )?)
+    } else {
+        None
+    };
     let text = if json {
-        serde_json::to_string_pretty(&serde_json::json!({
+        let mut value = serde_json::json!({
             "version": j.version,
             "block_size": j.block_size,
             "max_blocks": j.max_blocks,
@@ -2467,9 +2500,17 @@ fn journal_command(image: &std::path::Path, json: bool) -> anyhow::Result<()> {
                 "revoke_blocks": t.revoke_blocks,
                 "other_blocks": t.other_blocks,
             })).collect::<Vec<_>>(),
-        }))?
+        });
+        if let Some(p) = &plan {
+            value["replay"] = p.to_json();
+        }
+        serde_json::to_string_pretty(&value)?
     } else {
-        j.dump()
+        let mut text = j.dump();
+        if let Some(p) = &plan {
+            text.push_str(&p.dump());
+        }
+        text
     };
     print_out(&text)
 }
@@ -2746,6 +2787,34 @@ fn deleted_command(
         };
         print_out(&text)
     }
+}
+
+/// `fsck`: read-only consistency check of an ext2/3/4 image (superblock, group descriptors, bitmaps)
+/// after an in-memory journal replay.
+fn fsck_command(
+    image: &std::path::Path,
+    json: bool,
+    report: &ReportArgs,
+    no_color: bool,
+) -> anyhow::Result<()> {
+    let fs = ext4fs::Fs::open(image)?;
+    let scope = image
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let (all, groups) = ext4check::fsck(&fs, &scope)?;
+    emit(
+        Emit {
+            json,
+            fail_default: None,
+            no_color,
+            domain_replaces_face: true,
+        },
+        report,
+        all,
+        || serde_json::json!({ "groups": groups }),
+        || None,
+    )
 }
 
 fn audit_command(

@@ -15,6 +15,7 @@ Commands:
   partitions  Show a flash manifest (Qualcomm rawprogram*.xml or MediaTek scatter.txt) and check it against the image files actually present
   unpack      Show a boot or vendor_boot image's header, and with -o write its kernel, ramdisk, dtb, ...
   journal     Show the jbd2 journal of an ext3/ext4 image: superblock fields, clean/dirty status, and the transactions found by walking from `s_first`. Read-only: the image is never modified
+  fsck        Cross-check an ext2/3/4 image superblock, group descriptors and allocation bitmaps (e2fsck-class), read-only
   ls          List a directory (or show one file) inside an ext2/3/4, erofs or f2fs image, without extracting it
   cat         Print one regular file from an ext2/3/4, erofs or f2fs image to standard output
   tree        Show the whole tree (or a subtree) of an ext2/3/4, erofs or f2fs image, recursively, without extracting it

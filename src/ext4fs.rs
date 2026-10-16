@@ -122,12 +122,16 @@ pub struct Inode {
 pub struct Fs {
     src: Source,
     len: u64,
-    bs: u64,
+    pub(crate) bs: u64,
     inode_size: u64,
     inodes: u32,
     inodes_per_group: u32,
-    blocks: u64,
+    pub(crate) blocks: u64,
     itables: Vec<u64>,
+    /// Group descriptor size in bytes (32, or 64 and up under the 64bit feature).
+    pub(crate) desc_size: u64,
+    /// Byte offset of the group descriptor table.
+    pub(crate) gdt: u64,
 }
 
 impl Fs {
@@ -955,10 +959,12 @@ impl Fs {
             inodes_per_group,
             blocks,
             itables,
+            desc_size,
+            gdt,
         })
     }
 
-    fn read_exact(&self, off: u64, n: usize) -> Result<Vec<u8>> {
+    pub(crate) fn read_exact(&self, off: u64, n: usize) -> Result<Vec<u8>> {
         let end = off.checked_add(n as u64).context("offset overflows")?;
         ensure!(
             end <= self.len,
@@ -972,7 +978,7 @@ impl Fs {
         Ok(buf)
     }
 
-    fn block(&self, n: u64) -> Result<Vec<u8>> {
+    pub(crate) fn block(&self, n: u64) -> Result<Vec<u8>> {
         ensure!(
             n < self.blocks,
             "block {n} is beyond the filesystem ({} blocks)",

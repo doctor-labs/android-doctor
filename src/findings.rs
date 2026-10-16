@@ -90,7 +90,7 @@ fn norm_subject(s: &str) -> String {
     s.to_string()
 }
 
-fn fingerprint(rule: &str, scope: &str, subject: &str, key: &str) -> String {
+pub fn fingerprint(rule: &str, scope: &str, subject: &str, key: &str) -> String {
     let mut buf = Vec::new();
     for part in [rule, scope, &norm_subject(subject), key] {
         buf.extend_from_slice(part.as_bytes());

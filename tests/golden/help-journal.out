@@ -8,4 +8,5 @@ Arguments:
 Options:
       --json      Print JSON instead of text
       --no-color  Never emit colour, even on a terminal (also honours the NO_COLOR environment variable)
+      --replay    Also plan the journal replay as a read-only overlay: the blocks the committed transactions would overwrite
   -h, --help      Print help
