@@ -12,6 +12,7 @@ use crate::detect::refuse_blocking_file;
 
 mod amlogic;
 mod apk;
+mod apkcompare;
 mod archive;
 mod audit;
 mod avb;
@@ -205,6 +206,17 @@ enum Command {
         /// Print one archive entry's decompressed bytes to standard output (exit 2 if missing)
         #[arg(long, value_name = "ENTRY", conflicts_with_all = ["json", "files"])]
         cat: Option<String>,
+    },
+    /// Compare two builds of one APK: sizes, added, removed and changed entries, uses-feature changes and a patch-size estimate (no download size)
+    #[command(name = "apkcompare")]
+    ApkCompare {
+        /// The older APK
+        old: PathBuf,
+        /// The newer APK
+        new: PathBuf,
+        /// Print JSON (doctor/1 envelope) instead of text
+        #[arg(long)]
+        json: bool,
     },
     /// Show a flash manifest (Qualcomm rawprogram*.xml or MediaTek scatter.txt) and check it
     /// against the image files actually present
@@ -1258,6 +1270,14 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             files,
             cat,
         } => apk_command(&input, json, files, cat.as_deref()),
+        Command::ApkCompare { old, new, json } => {
+            let c = apkcompare::compare_files(&old, &new)?;
+            print_out(&if json {
+                serde_json::to_string_pretty(&c.to_json())?
+            } else {
+                c.to_text(&display_name(&old), &display_name(&new))
+            })
+        }
         Command::Amlogic { input } => {
             let img = amlogic::describe_file(&input)?;
             print_out(&amlogic::to_text(&img, &display_name(&input)))

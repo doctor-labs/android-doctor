@@ -30,6 +30,7 @@ and take `path` (`diff`: `old`, `new`, `only`), `baseline`, `fail_on`, `sarif`).
 | Gate a repository's CI on findings | `android-doctor ci install --path <fw dir> --fail-on <level>` (writes `.github/workflows/android-doctor.yml`, pinned to this version; `--print` writes nothing, `--force` replaces) |
 | Browse findings interactively | `android-doctor shell <dir\|image> -c "ls; why 1" --json`, `android-doctor explore <dir\|image>` |
 | Inspect the DEX code of an APK | `android-doctor dex <apk> --classes --methods --refs [--grep TEXT] --json` |
+| What changed between two builds of an APK (sizes, entries, features, patch estimate) | `android-doctor apkcompare <old.apk> <new.apk> --json` (doctor/1 envelope, no findings; no download size) |
 | Browse an image | `android-doctor ls <image> [path]`, `android-doctor cat <image> <path>` |
 
 `audit --json` and `doctor scan --json` print the doctor/1 envelope (`docs/doctor-contract.md`):
