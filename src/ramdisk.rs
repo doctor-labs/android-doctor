@@ -205,12 +205,14 @@ pub fn classify_section(head: &[u8]) -> (&'static str, String) {
     ("unknown", "no known format".into())
 }
 
-/// Reader for the legacy lz4 format (`lz4 -l`): magic, then blocks of `u32 size` + data.
+/// Reader for the legacy lz4 format (`lz4 -l`): magic, then blocks of `u32 size` + data. LG's
+/// `lz4_lg` adds a `u32` total of the decoded bytes after the last block; it is accepted here.
 struct LegacyLz4<R: Read> {
     inner: R,
     buf: Vec<u8>,
     pos: usize,
     started: bool,
+    produced: u64,
 }
 
 impl<R: Read> Read for LegacyLz4<R> {
@@ -242,19 +244,34 @@ impl<R: Read> Read for LegacyLz4<R> {
                 return Err(std::io::Error::other("lz4: bad magic"));
             }
             let size = value as usize;
-            if size == 0 || size > LEGACY_LZ4_BLOCK + LEGACY_LZ4_BLOCK / 255 + 16 {
+            // The LG trailer is the decoded size so far; it may be larger than one block.
+            let trailer = self.produced > 0 && value as u64 == self.produced;
+            let valid = (1..=LEGACY_LZ4_BLOCK + LEGACY_LZ4_BLOCK / 255 + 16).contains(&size);
+            if !valid && !trailer {
                 return Err(std::io::Error::other(format!(
                     "lz4: block of {size} bytes is not valid"
                 )));
             }
-            let mut block = vec![0u8; size];
-            self.inner
-                .read_exact(&mut block)
-                .map_err(|_| std::io::Error::other("lz4: file ends inside a block"))?;
+            let mut block = Vec::new();
+            (&mut self.inner)
+                .take(size as u64)
+                .read_to_end(&mut block)?;
+            if trailer && block.is_empty() {
+                return Ok(0);
+            }
+            if !valid {
+                return Err(std::io::Error::other(format!(
+                    "lz4: block of {size} bytes is not valid"
+                )));
+            }
+            if block.len() != size {
+                return Err(std::io::Error::other("lz4: file ends inside a block"));
+            }
             let mut plain = vec![0u8; LEGACY_LZ4_BLOCK];
             let n = lz4_flex::block::decompress_into(&block, &mut plain)
                 .map_err(|e| std::io::Error::other(format!("lz4: {e}")))?;
             plain.truncate(n);
+            self.produced += n as u64;
             self.buf = plain;
             self.pos = 0;
         }
@@ -306,6 +323,7 @@ pub(crate) fn decoder<'a, R: Read + 'a>(c: Compression, r: R) -> Result<Box<dyn 
             buf: Vec::new(),
             pos: 0,
             started: false,
+            produced: 0,
         }),
         Compression::Lzop => Box::new(Lzop {
             inner: r,
@@ -1952,6 +1970,18 @@ mod tests {
         garbage_block.extend([0xFFu8; 16]);
         assert!(e(&garbage_block).contains("lz4"));
         assert!(e(&good[..6]).contains("lz4") || e(&good[..6]).contains("ends"));
+    }
+
+    #[test]
+    fn lg_lz4_trailer_is_read_and_checked() {
+        // lz4_lg is the legacy stream followed by a u32 total of the decoded bytes (magiskboot).
+        let archive = cpio(&[file("a", &data(300_000, 5))]);
+        let mut lg = compress(Compression::Lz4Legacy, &archive);
+        lg.extend((archive.len() as u32).to_le_bytes());
+        assert_eq!(read(&lg).unwrap().entries[0].size, 300_000);
+        let mut wrong = compress(Compression::Lz4Legacy, &archive);
+        wrong.extend((archive.len() as u32 + 1).to_le_bytes());
+        assert!(format!("{:#}", read(&wrong).unwrap_err()).contains("ends"));
     }
 
     fn scratch(tag: &str) -> crate::testutil::Scratch {
