@@ -67,6 +67,7 @@ mod sqliteinfo;
 mod term;
 #[cfg(test)]
 mod testutil;
+mod trackers;
 mod transfer_list;
 mod tree;
 mod treeout;

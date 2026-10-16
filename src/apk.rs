@@ -1929,6 +1929,17 @@ fn code_issues(zip: &mut ZipArchive<Cursor<&[u8]>>, activities: usize) -> Vec<Ma
         return Vec::new(); // no dex (a native-only APK): nothing to judge
     }
     let mut out = rules::scan(&dexes, activities);
+    let trackers = crate::trackers::detect(&dexes);
+    if !trackers.is_empty() {
+        out.push(ManifestIssue {
+            rule: "apk-tracker-sdk",
+            severity: Severity::Warn,
+            detail: format!(
+                "third-party tracker SDKs in the code: {}",
+                trackers.join(", ")
+            ),
+        });
+    }
     if !failed.is_empty() {
         out.push(ManifestIssue {
             rule: "apk-code-unscanned",

@@ -25,7 +25,7 @@
             "severity": "critical"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 79
+          "ruleIndex": 80
         },
         {
           "level": "note",
@@ -50,7 +50,7 @@
             "severity": "info"
           },
           "ruleId": "avb_signature",
-          "ruleIndex": 50
+          "ruleIndex": 51
         }
       ],
       "tool": {
@@ -840,6 +840,22 @@
               "name": "apk-test-only",
               "shortDescription": {
                 "text": "An APK is marked android:testOnly"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "Third-party tracker or analytics SDKs are present in an APK's code"
+              },
+              "help": {
+                "text": "Review what each SDK collects, disclose it in the privacy policy and remove the ones you do not need"
+              },
+              "id": "apk-tracker-sdk",
+              "name": "apk-tracker-sdk",
+              "shortDescription": {
+                "text": "Third-party tracker or analytics SDKs are present in an APK's code"
               }
             },
             {

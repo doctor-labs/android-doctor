@@ -34,7 +34,7 @@
             "severity": "high"
           },
           "ruleId": "debuggable-build",
-          "ruleIndex": 55
+          "ruleIndex": 56
         },
         {
           "level": "error",
@@ -59,7 +59,7 @@
             "severity": "high"
           },
           "ruleId": "insecure-adb",
-          "ruleIndex": 76
+          "ruleIndex": 77
         },
         {
           "level": "error",
@@ -84,7 +84,7 @@
             "severity": "high"
           },
           "ruleId": "su-binary",
-          "ruleIndex": 84
+          "ruleIndex": 85
         }
       ],
       "tool": {
@@ -874,6 +874,22 @@
               "name": "apk-test-only",
               "shortDescription": {
                 "text": "An APK is marked android:testOnly"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "Third-party tracker or analytics SDKs are present in an APK's code"
+              },
+              "help": {
+                "text": "Review what each SDK collects, disclose it in the privacy policy and remove the ones you do not need"
+              },
+              "id": "apk-tracker-sdk",
+              "name": "apk-tracker-sdk",
+              "shortDescription": {
+                "text": "Third-party tracker or analytics SDKs are present in an APK's code"
               }
             },
             {
