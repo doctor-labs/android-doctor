@@ -61,6 +61,7 @@ mod pac;
 mod payload;
 mod permissions;
 mod ramdisk;
+mod ramdisk_edit;
 mod report;
 mod reporting;
 mod rockchip;
@@ -659,6 +660,26 @@ enum Command {
         /// Replace an existing output file instead of refusing
         #[arg(long)]
         force: bool,
+    },
+    /// Put files into, or remove them from, the ramdisk of a boot image; writes a NEW image (dry run without --yes)
+    RamdiskEdit {
+        /// Boot image (header versions 0 to 2, uncompressed cpio ramdisk)
+        image: PathBuf,
+        /// Copy a file into the ramdisk: SRC=DEST, DEST is a path inside the cpio (sbin/adbd or /sbin/adbd)
+        #[arg(long = "put", value_name = "SRC=DEST")]
+        put: Vec<String>,
+        /// Remove a file or an empty directory from the ramdisk
+        #[arg(long = "rm", value_name = "PATH")]
+        rm: Vec<String>,
+        /// New image to write; the input is never changed
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Replace an existing output file instead of refusing
+        #[arg(long)]
+        force: bool,
+        /// Write the output; without it the edit is only checked and printed
+        #[arg(long)]
+        yes: bool,
     },
     /// Turn Android sparse image(s) into a raw image
     Unsparse {
@@ -1526,6 +1547,14 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             };
             bootimg::pack_run(&parts, &output, force)
         }
+        Command::RamdiskEdit {
+            image,
+            put,
+            rm,
+            output,
+            force,
+            yes,
+        } => ramdisk_edit::run(&image, &put, &rm, &output, force, yes),
         Command::Unsparse {
             inputs,
             output,
