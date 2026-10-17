@@ -541,6 +541,26 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Re-sign a ChromeOS kernel partition (vboot 2.x): the data key replaces the data key in the keyblock and signs the preamble and body, the root key signs the keyblock; the output is verified before it is written
+    Vbsign {
+        /// The kernel partition to re-sign (never modified)
+        image: PathBuf,
+        /// Data private key (PEM, PKCS#8 or PKCS#1); must match the size and exponent the keyblock records
+        #[arg(long, value_name = "FILE")]
+        data_key: PathBuf,
+        /// Root private key (PEM) that signs the keyblock
+        #[arg(long, value_name = "FILE")]
+        root_key: PathBuf,
+        /// The new image; written to <OUTPUT>.part and renamed on success
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Replace the output if it exists
+        #[arg(long)]
+        force: bool,
+        /// Print JSON (the doctor/1 envelope) instead of text
+        #[arg(long)]
+        json: bool,
+    },
     /// Build AVB certificate files (avb_cert): avbtool make_certificate, make_cert_permanent_attributes, make_cert_metadata, make_cert_unlock_credential
     Avbcert {
         #[command(subcommand)]
@@ -1400,6 +1420,14 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             json,
         } => avberase_command(&image, &output, force, json),
         Command::Avbkey { key, output, json } => avbkey_command(&key, output.as_deref(), json),
+        Command::Vbsign {
+            image,
+            data_key,
+            root_key,
+            output,
+            force,
+            json,
+        } => vbkernel_sign_command(&image, &data_key, &root_key, &output, force, json),
         Command::Vbkernel { image, key, json } => {
             let root = match key {
                 Some(k) => Some(avb::read_key(&k)?),
@@ -1996,6 +2024,49 @@ fn avberase_command(
         }))?
     } else {
         format!("wrote {} bytes to {}", out.len(), output.display())
+    };
+    print_out(&text)
+}
+
+/// `vbsign`: re-sign a ChromeOS kernel partition into a new file (verified before writing).
+fn vbkernel_sign_command(
+    image: &std::path::Path,
+    data_key: &std::path::Path,
+    root_key: &std::path::Path,
+    output: &std::path::Path,
+    force: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    refuse_blocking_file(image)?;
+    let bytes = std::fs::read(image).with_context(|| format!("reading {}", image.display()))?;
+    let data = avbcert::load_private_key(data_key)?;
+    let root = avbcert::load_private_key(root_key)?;
+    let out = vbkernel::sign(&image.display().to_string(), &bytes, &data, &root)?;
+    write_atomically(output, force, |f| {
+        f.write_all(&out)?;
+        Ok(())
+    })?;
+    let text = if json {
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema": "doctor/1",
+            "tool": "android-doctor",
+            "version": env!("CARGO_PKG_VERSION"),
+            "exit_code": 0,
+            "score": {"value": 100, "label": "good", "model": "android-doctor/1", "coverage_gaps": 0},
+            "findings": [],
+            "data": {
+                "output": output.display().to_string(),
+                "size": out.len(),
+                "sha256": avb::hex(&Sha256::digest(&out)),
+                "verdict": "valid",
+            },
+        }))?
+    } else {
+        format!(
+            "wrote {} bytes to {} (verified: valid)",
+            out.len(),
+            output.display()
+        )
     };
     print_out(&text)
 }

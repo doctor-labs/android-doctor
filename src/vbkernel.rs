@@ -1,5 +1,5 @@
 //! ChromeOS kernel partition (vboot 2.x) verification: the keyblock, the kernel preamble and the
-//! kernel body (`vbkernel`, issue #176). Read-only; signing is not built.
+//! kernel body (`vbkernel`, issue #176). `sign` (`vbsign`) re-signs an image with a data key and a root key.
 //!
 //! Layouts and constants are from vboot_reference: `firmware/2lib/include/2struct.h` (keyblock
 //! magic "CHROMEOS", `vb2_keyblock` 112 bytes, `vb2_packed_key` 32 bytes, `vb2_signature` 24
@@ -14,10 +14,10 @@
 //! keyblock hashes for unsigned keys, the 2.0/2.1 preamble, and any device-side rollback data.
 
 use crate::detect::refuse_blocking_file;
-use anyhow::{Result, anyhow, bail, ensure};
+use anyhow::{Result, anyhow, ensure};
 use rsa::pkcs1v15::Pkcs1v15Sign;
 use rsa::traits::PublicKeyParts;
-use rsa::{BigUint, RsaPublicKey};
+use rsa::{BigUint, RsaPrivateKey, RsaPublicKey};
 use serde_json::{Value, json};
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha512};
@@ -320,24 +320,53 @@ pub fn verify(path: &Path, root: Option<&RsaPublicKey>) -> Result<Report> {
         path.display()
     );
     let image = std::fs::read(path)?;
-    if image.len() < KEYBLOCK_HEADER_LEN || &image[..8] != KEYBLOCK_MAGIC {
-        bail!(
-            "{} has no ChromeOS keyblock (CHROMEOS) at offset 0",
-            path.display()
-        );
-    }
+    verify_image(&path.display().to_string(), &image, root)
+}
 
-    // keyblock: vb2_keyblock
+fn check_magic(name: &str, image: &[u8]) -> Result<()> {
     ensure!(
-        u32_at(&image, 8)? == 2,
+        image.len() >= KEYBLOCK_HEADER_LEN && &image[..8] == KEYBLOCK_MAGIC,
+        "{name} has no ChromeOS keyblock (CHROMEOS) at offset 0"
+    );
+    Ok(())
+}
+
+/// Keyblock size from its header; the keyblock is the first `size` bytes of the image.
+fn keyblock_len(image: &[u8]) -> Result<usize> {
+    ensure!(
+        u32_at(image, 8)? == 2,
         "unsupported keyblock header version"
     );
-    let keyblock_size = u32_at(&image, 16)? as usize;
+    let size = u32_at(image, 16)? as usize;
     ensure!(
-        keyblock_size >= KEYBLOCK_HEADER_LEN,
+        size >= KEYBLOCK_HEADER_LEN,
         "keyblock is smaller than its header"
     );
-    let keyblock = range(&image, 0, keyblock_size)?;
+    Ok(size)
+}
+
+/// Size of the preamble at `at` (the end of the keyblock); anything older than 2.2 is refused.
+fn preamble_len(image: &[u8], at: usize) -> Result<usize> {
+    let size = u32_at(image, at)? as usize;
+    ensure!(
+        u32_at(image, at + 32)? == 2,
+        "unsupported kernel preamble header version"
+    );
+    let minor = u32_at(image, at + 36)?;
+    ensure!(minor >= 2, "kernel preamble 2.{minor} is older than 2.2");
+    ensure!(
+        size >= PREAMBLE_2_2_LEN,
+        "kernel preamble is smaller than 2.2"
+    );
+    Ok(size)
+}
+
+fn verify_image(name: &str, image: &[u8], root: Option<&RsaPublicKey>) -> Result<Report> {
+    check_magic(name, image)?;
+
+    // keyblock: vb2_keyblock
+    let keyblock_size = keyblock_len(image)?;
+    let keyblock = range(image, 0, keyblock_size)?;
     let data_key = unpack_key(keyblock, 80)?;
     let kb_sig = sig_at(keyblock, 24)?;
 
@@ -357,21 +386,9 @@ pub fn verify(path: &Path, root: Option<&RsaPublicKey>) -> Result<Report> {
     };
 
     // kernel preamble: vb2_kernel_preamble 2.x, after the keyblock
-    let preamble_size = u32_at(&image, keyblock_size)? as usize;
-    ensure!(
-        u32_at(&image, keyblock_size + 32)? == 2,
-        "unsupported kernel preamble header version"
-    );
-    let header_minor = u32_at(&image, keyblock_size + 36)?;
-    ensure!(
-        header_minor >= 2,
-        "kernel preamble 2.{header_minor} is older than 2.2"
-    );
-    ensure!(
-        preamble_size >= PREAMBLE_2_2_LEN,
-        "kernel preamble is smaller than 2.2"
-    );
-    let preamble = range(&image, keyblock_size, preamble_size)?;
+    let preamble_size = preamble_len(image, keyblock_size)?;
+    let header_minor = u32_at(image, keyblock_size + 36)?;
+    let preamble = range(image, keyblock_size, preamble_size)?;
     let kernel_version = u32_at(preamble, 40)?;
     let pre_sig = sig_at(preamble, 8)?;
     let preamble_status = verify_block(&data_key, preamble, &pre_sig)?;
@@ -384,7 +401,7 @@ pub fn verify(path: &Path, root: Option<&RsaPublicKey>) -> Result<Report> {
     let body_offset = keyblock_size
         .checked_add(preamble_size)
         .ok_or_else(|| anyhow!("body offset overflows"))?;
-    let body = range(&image, body_offset, body_sig.data_size)?;
+    let body = range(image, body_offset, body_sig.data_size)?;
     let body_bytes = range(preamble, body_sig.offset, body_sig.size)?;
     let body_status = if verify_with(&data_key.key, data_key.hash, body_bytes, body) {
         Status::Valid
@@ -393,7 +410,7 @@ pub fn verify(path: &Path, root: Option<&RsaPublicKey>) -> Result<Report> {
     };
 
     Ok(Report {
-        file: path.display().to_string(),
+        file: name.to_string(),
         keyblock_size,
         data_key,
         root_status,
@@ -407,4 +424,161 @@ pub fn verify(path: &Path, root: Option<&RsaPublicKey>) -> Result<Report> {
         body_size: body_sig.data_size,
         body_status,
     })
+}
+
+/// PKCS#1 v1.5 signature over `data` with `hash`: the signing side of `verify_with`.
+fn sign_with(key: &RsaPrivateKey, hash: Hash, data: &[u8]) -> Result<Vec<u8>> {
+    let digest = hash.digest(data);
+    let scheme = Pkcs1v15Sign {
+        hash_len: Some(digest.len()),
+        prefix: hash.prefix().into_boxed_slice(),
+    };
+    key.sign(scheme, &digest)
+        .map_err(|e| anyhow!("signing failed: {e}"))
+}
+
+/// The `vb2_public_key` data of `public` (vboot 2rsa.h): length in 32-bit words, n0inv
+/// (-1 / n[0] mod 2^32), n and rr (R^2 mod n with R = 2^bits), n and rr little-endian.
+fn packed_key_data(public: &RsaPublicKey, bits: usize) -> Result<Vec<u8>> {
+    let sig_bytes = bits / 8;
+    let n = public.n();
+    ensure!(
+        n.bits() == bits,
+        "modulus is {} bits, expected {bits}",
+        n.bits()
+    );
+    let le = |v: &BigUint| -> Vec<u8> {
+        let be = v.to_bytes_be();
+        let mut out = vec![0u8; sig_bytes.saturating_sub(be.len())];
+        out.extend(be);
+        out.reverse();
+        out
+    };
+    let n_le = le(n);
+    let n0 = u32::from_le_bytes([n_le[0], n_le[1], n_le[2], n_le[3]]);
+    // Newton iteration for the inverse of the odd n0 mod 2^32, then negate
+    let mut inv = n0;
+    for _ in 0..5 {
+        inv = inv.wrapping_mul(2u32.wrapping_sub(n0.wrapping_mul(inv)));
+    }
+    let n0inv = inv.wrapping_neg();
+    let rr = (BigUint::from(1u8) << (2 * bits)) % n;
+    let mut out = Vec::with_capacity(2 * sig_bytes + 8);
+    out.extend(((sig_bytes / 4) as u32).to_le_bytes());
+    out.extend(n0inv.to_le_bytes());
+    out.extend(n_le);
+    out.extend(le(&rr));
+    Ok(out)
+}
+
+/// Re-sign a kernel partition (the inverse of [`verify`]). `data` replaces the data key recorded
+/// in the keyblock and signs the preamble and the body; `root` signs the keyblock with SHA-256.
+/// The layout and algorithm are kept: the data key must have the modulus size and public exponent
+/// the keyblock already records, and the root key must match the keyblock signature size. The
+/// result is verified with the root public key before it is returned.
+pub fn sign(
+    name: &str,
+    image: &[u8],
+    data: &RsaPrivateKey,
+    root: &RsaPrivateKey,
+) -> Result<Vec<u8>> {
+    check_magic(name, image)?;
+    let mut out = image.to_vec();
+    let keyblock_size = keyblock_len(&out)?;
+    let old = unpack_key(range(&out, 0, keyblock_size)?, 80)?;
+    let (_, exp, _, _) =
+        alg_params(old.alg).ok_or_else(|| anyhow!("unsupported key algorithm {}", old.alg))?;
+    ensure!(
+        data.n().bits() == old.bits && data.e() == &BigUint::from(exp),
+        "the data key must be {} bits with exponent {exp} to match {}",
+        old.bits,
+        alg_name(old.alg)
+    );
+
+    // the new data key, packed where the old one was (same length, so the layout is kept)
+    let kd = packed_key_data(&RsaPublicKey::from(data), old.bits)?;
+    let kd_at = 80 + u32_at(&out, 80)? as usize;
+    range(&out, kd_at, kd.len())?;
+    out[kd_at..kd_at + kd.len()].copy_from_slice(&kd);
+
+    // keyblock signature (root key, over the signed range of the keyblock, which includes the data key)
+    let kb_sig = sig_at(&out[..keyblock_size], 24)?;
+    ensure!(
+        kb_sig.size == root.size(),
+        "the root key is {} bytes, the keyblock signature is {}",
+        root.size(),
+        kb_sig.size
+    );
+    ensure!(
+        kb_sig.data_size <= keyblock_size && kb_sig.offset + kb_sig.size <= keyblock_size,
+        "keyblock signature is outside the keyblock"
+    );
+    let kb_signature = sign_with(root, Hash::Sha256, &out[..kb_sig.data_size])?;
+    out[kb_sig.offset..kb_sig.offset + kb_sig.size].copy_from_slice(&kb_signature);
+
+    // body signature (data key), stored in the preamble; the preamble signature covers it
+    let pre_at = keyblock_size;
+    let preamble_size = preamble_len(&out, pre_at)?;
+    let body_at = pre_at
+        .checked_add(preamble_size)
+        .ok_or_else(|| anyhow!("body offset overflows"))?;
+    let body_sig = sig_at(range(&out, pre_at, preamble_size)?, 72)?;
+    ensure!(
+        body_sig.size == data.size() && body_sig.offset + body_sig.size <= preamble_size,
+        "the body signature does not fit the preamble for a {} byte data key",
+        data.size()
+    );
+    let body_signature = sign_with(data, old.hash, range(&out, body_at, body_sig.data_size)?)?;
+    let at = pre_at + body_sig.offset;
+    out[at..at + body_sig.size].copy_from_slice(&body_signature);
+
+    // preamble signature (data key)
+    let pre_sig = sig_at(range(&out, pre_at, preamble_size)?, 8)?;
+    ensure!(
+        pre_sig.size == data.size()
+            && pre_sig.data_size <= preamble_size
+            && pre_sig.offset + pre_sig.size <= preamble_size,
+        "the preamble signature does not fit the preamble"
+    );
+    let pre_signature = sign_with(data, old.hash, range(&out, pre_at, pre_sig.data_size)?)?;
+    let at = pre_at + pre_sig.offset;
+    out[at..at + pre_sig.size].copy_from_slice(&pre_signature);
+
+    let report = verify_image(name, &out, Some(&RsaPublicKey::from(root)))?;
+    ensure!(
+        report.verdict() == "valid",
+        "the signed image does not verify (verdict {})",
+        report.verdict()
+    );
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn packed_key_constants_satisfy_the_montgomery_identities() {
+        // any odd modulus with its top bit set will do; no key needs generating
+        let n = BigUint::from_bytes_be(&[0xc1u8; 128]);
+        let public = RsaPublicKey::new_unchecked(n.clone(), BigUint::from(65537u32));
+        let kd = packed_key_data(&public, 1024).unwrap();
+        assert_eq!(kd.len(), 2 * 128 + 8);
+        assert_eq!(u32::from_le_bytes([kd[0], kd[1], kd[2], kd[3]]), 32);
+        let n0inv = u32::from_le_bytes([kd[4], kd[5], kd[6], kd[7]]);
+        let n_le = &kd[8..136];
+        assert_eq!(BigUint::from_bytes_le(n_le), n);
+        let n0 = u32::from_le_bytes([n_le[0], n_le[1], n_le[2], n_le[3]]);
+        assert_eq!(
+            n0.wrapping_mul(n0inv),
+            u32::MAX,
+            "n0inv is -1 / n[0] mod 2^32"
+        );
+        let rr = BigUint::from_bytes_le(&kd[136..264]);
+        assert_eq!(
+            rr,
+            (BigUint::from(1u8) << 2048usize) % &n,
+            "rr is R^2 mod n"
+        );
+    }
 }

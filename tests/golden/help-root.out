@@ -35,6 +35,7 @@ Commands:
   avbkey      Write the AVB public key blob of a PEM RSA key (avbtool extract_public_key) and print its SHA-256 digest
   avbkeygen   Generate an RSA private key as a PKCS#1 PEM file (avbtool gen_key); prints only the public key digest
   vbkernel    Verify a ChromeOS kernel partition (vboot 2.x): keyblock, kernel preamble and body signatures
+  vbsign      Re-sign a ChromeOS kernel partition (vboot 2.x): the data key replaces the data key in the keyblock and signs the preamble and body, the root key signs the keyblock; the output is verified before it is written
   avbcert     Build AVB certificate files (avb_cert): avbtool make_certificate, make_cert_permanent_attributes, make_cert_metadata, make_cert_unlock_credential
   vbmeta      Show an AVB vbmeta image (or a partition with an AVB footer): header, key, signature, descriptors, hashes
   ramdisk     List a boot image's ramdisk (or a ramdisk file), report its ADB properties, and with -o extract it
