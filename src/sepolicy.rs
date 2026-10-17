@@ -3,8 +3,8 @@
 //!
 //! From the CIL, every `(typepermissive X)` is a domain that runs in permissive mode even when the
 //! device enforces (CIL reference: secilc/docs/cil_type_statements.md, policy database version 23).
-//! `(neverallow ...)` is a compile-time check; shipped CIL may still carry it, so only a count is
-//! kept. From the label files, an entry is flagged only when its label names a permissive domain.
+//! `(neverallow ...)` is a compile-time check; shipped CIL may still carry it. Its count is kept, and
+//! a neverallow with plain names is matched exactly against plain `allow` rules. From the label files, an entry is flagged only when its label names a permissive domain.
 use crate::tree::{Entry, Kind};
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -23,12 +23,23 @@ pub enum Sexp {
     List(Vec<Sexp>),
 }
 
+/// A plain `(allow|neverallow src tgt (class (perm ...)))`, names qualified by their block.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Rule {
+    pub src: String,
+    pub tgt: String,
+    pub class: String,
+    pub perms: Vec<String>,
+}
+
 /// One CIL file: the domains it makes permissive, its neverallow count, and why it could not be read.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CilFile {
     pub file: String,
     pub permissive: Vec<String>,
     pub neverallow: usize,
+    pub allows: Vec<Rule>,
+    pub neverallows: Vec<Rule>,
     pub error: Option<String>,
 }
 
@@ -49,6 +60,8 @@ pub struct SepolicyAudit {
     pub contexts: Vec<ContextsFile>,
     /// Policy files not read because of the count or size limits.
     pub skipped: usize,
+    /// (file, rule) for each shipped allow that a neverallow forbids.
+    pub violations: Vec<(String, String)>,
 }
 
 /// Parse CIL text. `;` starts a comment to the end of the line and `"..."` is one atom. Iterative,
@@ -139,12 +152,92 @@ fn qualify(block: &[String], name: &str) -> String {
     }
 }
 
+/// The rule when every name is plain. Attributes written with a star, complements (tilde, minus),
+/// sets, nested permission lists and a bare class are not compared, so they give None.
+fn plain_rule(block: &[String], src: &str, tgt: &str, cls: &[Sexp]) -> Option<Rule> {
+    let plain = |s: &str| !s.is_empty() && !["*", "~", "-"].iter().any(|x| s.starts_with(x));
+    let [Sexp::Atom(class), perms] = cls else {
+        return None;
+    };
+    let perms = match perms {
+        Sexp::Atom(p) => vec![p.clone()],
+        Sexp::List(ps) => ps
+            .iter()
+            .map(|p| match p {
+                Sexp::Atom(a) => Some(a.clone()),
+                Sexp::List(_) => None,
+            })
+            .collect::<Option<Vec<_>>>()?,
+    };
+    if !plain(src)
+        || !plain(tgt)
+        || !plain(class.as_str())
+        || perms.iter().any(|p| !plain(p.as_str()))
+    {
+        return None;
+    }
+    Some(Rule {
+        src: qualify(block, src),
+        tgt: qualify(block, tgt),
+        class: class.clone(),
+        perms,
+    })
+}
+
+/// Allow rules that match a neverallow exactly (same source, target and class, and a shared
+/// permission), as (file, rule). Attributes are not expanded, so a violation that holds only
+/// through an attribute is not seen.
+pub fn violations(cils: &[CilFile]) -> Vec<(String, String)> {
+    let forbidden: Vec<&Rule> = cils.iter().flat_map(|c| &c.neverallows).collect();
+    let mut out = Vec::new();
+    for c in cils {
+        for a in &c.allows {
+            let hit = forbidden.iter().any(|n| {
+                n.src == a.src
+                    && n.tgt == a.tgt
+                    && n.class == a.class
+                    && a.perms.iter().any(|p| n.perms.contains(p))
+            });
+            if hit {
+                let rule = format!(
+                    "allow {} {} ({} ({}))",
+                    a.src,
+                    a.tgt,
+                    a.class,
+                    a.perms.join(" ")
+                );
+                out.push((c.file.clone(), rule));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 fn walk(nodes: &[Sexp], block: &mut Vec<String>, out: &mut CilFile) {
     for n in nodes {
         let Sexp::List(items) = n else { continue };
         match items.as_slice() {
             [Sexp::Atom(head), Sexp::Atom(name), ..] if head == "typepermissive" => {
                 out.permissive.push(qualify(block, name));
+            }
+            [
+                Sexp::Atom(head),
+                Sexp::Atom(src),
+                Sexp::Atom(tgt),
+                Sexp::List(cls),
+            ] if head == "allow" => {
+                out.allows.extend(plain_rule(block, src, tgt, cls));
+            }
+            [
+                Sexp::Atom(head),
+                Sexp::Atom(src),
+                Sexp::Atom(tgt),
+                Sexp::List(cls),
+            ] if head == "neverallow" => {
+                out.neverallow += 1;
+                out.neverallows.extend(plain_rule(block, src, tgt, cls));
             }
             [Sexp::Atom(head), ..] if head == "neverallow" => out.neverallow += 1,
             [Sexp::Atom(head), Sexp::Atom(name), rest @ ..] if head == "block" => {
@@ -277,6 +370,7 @@ pub fn scan(entries: &[Entry], read: &mut dyn FnMut(&str) -> Result<Vec<u8>>) ->
         }
     }
     // A label is flagged only when its domain is also typepermissive in the shipped CIL.
+    out.violations = violations(&out.cil);
     let permissive: Vec<&String> = out.cil.iter().flat_map(|c| &c.permissive).collect();
     for c in &mut out.contexts {
         c.unconfined.retain(|(_, ctx)| {
@@ -311,6 +405,25 @@ pub fn to_json(a: &SepolicyAudit) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_allow_that_matches_a_neverallow_is_a_violation() {
+        let cil = "(neverallow untrusted_app app_data_file (file (write)))\n(allow untrusted_app app_data_file (file (write read)))\n(allow untrusted_app app_data_file (file (read)))\n";
+        let v = violations(&[read_cil("x_sepolicy.cil", cil)]);
+        assert_eq!(
+            v,
+            [(
+                "x_sepolicy.cil".to_string(),
+                "allow untrusted_app app_data_file (file (write read))".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn rules_with_attributes_or_complements_are_not_compared() {
+        let cil = "(neverallow domain shell_data_file (file (write)))\n(allow shell shell_data_file (file (write)))\n(neverallow untrusted_app ~app_data_file (file (write)))\n(allow untrusted_app app_data_file (file (write)))\n";
+        assert!(violations(&[read_cil("x.cil", cil)]).is_empty());
+    }
 
     const CIL: &str = include_str!("../tests/fixtures/sepolicy/plat_sepolicy.cil");
     const CONTEXTS: &str = include_str!("../tests/fixtures/sepolicy/plat_file_contexts");

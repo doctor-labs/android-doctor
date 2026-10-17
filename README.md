@@ -823,7 +823,7 @@ Status: **verified** = checked against an independent reference tool on real fir
 | Block OTA, brotli (`*.new.dat.br`) | verified | Two real OTAs, sha256 equal to `brotli -d` + sdat2img |
 | Block OTA, raw (`*.new.dat`) and numbered pieces | verified | Real partitions split into pieces rebuild to the reference hashes |
 | Raw images inside an OTA (boot, recovery, ...) | verified | Byte-identical to the zip entries |
-| SELinux text policy: `*_sepolicy.cil` and `*file_contexts` under `etc/selinux` | synthetic | `typepermissive` domains (High) and labels naming a permissive domain (Medium); `neverallow` counted in `--json` data only. Checked against a synthetic CIL and label file in `tests/fixtures/sepolicy` and a corpus case. Compiled policy binaries are not parsed |
+| SELinux text policy: `*_sepolicy.cil` and `*file_contexts` under `etc/selinux` | synthetic | `typepermissive` domains (High) and labels naming a permissive domain (Medium); `neverallow` rules with plain names matched exactly against `allow` rules (High, `selinux-neverallow-violation`). Checked against a synthetic CIL and label file in `tests/fixtures/sepolicy` and a corpus case. Compiled policy binaries are not parsed |
 | Filesystem detection: ext2/3/4 | verified | Four real images, cross-checked with an independent superblock parse |
 | Deleted-file recovery (`deleted`): list inodes with links=0 but mode≠0 and optionally recover their data | synthetic | Matches the inode set that `debugfs lsdel` reports on hand-built ext4 volumes with deleted files; recovery reads the deleted inode's data blocks through the same path as `cat`. ext2/3/4 only; erofs and f2fs are reported as unsupported |
 | ext3/ext4 journal inspection (`journal`) | synthetic | Reads the jbd2 journal from inode 8 (`s_journal_inum`): parses the journal superblock (magic `0xC03B3998`, block size, length, first/sequence/start, error number, v2 feature flags, UUID, user count), reports clean/dirty (`s_start == 0`), and walks the log from `s_first` to list transactions (descriptor/commit/revoke/other block counts), bounded by `s_maxlen` and stopped at the first bad magic or broken sequence. Read-only: the image is never written. Hand-tested against `debugfs logdump` |
@@ -874,7 +874,7 @@ Roadmap and issue list: see the milestones on GitHub.
 - No APK or SELinux policy analysis beyond package names, signing certificates,
   the manifest rules above, label gaps, and the permissive domains and label
   check of the shipped text CIL. Compiled policy binaries are not parsed, and
-  `neverallow` rules are only counted, not checked. APK code, resources and permission
+  Only `neverallow` rules with plain names are matched, exactly, against `allow` rules; attributes are not expanded. APK code, resources and permission
   protection levels are not analysed.
 - The whole-image hash of a partition with dm-verity/FEC extents is reported as
   "not checked"; the device adds those bytes at install time.
