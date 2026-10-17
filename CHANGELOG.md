@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format follows
 ### Added
 - SELinux text policy: a shipped `allow` that a `neverallow` forbids (same source, target and class, a shared permission) is a High `selinux-neverallow-violation` finding. Exact names only; attributes are not expanded (#191).
 - The MCP server offers `tree`, `find` and `stat` (read-only, doctor/1 JSON for `tree` and `find`) so an agent can search an image without extracting it (#218).
+- APK audit reads the global string pool of resources.arsc (part of #213); its entry count is the apk JSON key resource_strings. Typed values, string rules and the icon are not checked yet.
 - Standalone `apk` command audits one APK file: manifest, package name, version, signers, verification posture, code issues and issues (#200).
 - `apk` lists the permissions the app requests (`uses-permission`, `uses-permission-sdk-23`) with their protection level where the catalogue knows it, lists archive entries with `--files`, and prints one entry's bytes with `--cat <ENTRY>` (#200).
 - `identify` names the vendor image headers that prefix a partition image: MediaTek `mtk_hdr` (`mtk-header`), Samsung DHTB (`samsung-dhtb`) and the signed `blob_hdr` (`signblob`), matched by their magic bytes (#172). The payload behind them is not unwrapped.
