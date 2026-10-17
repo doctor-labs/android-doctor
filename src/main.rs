@@ -598,6 +598,35 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Build a boot image (header versions 0 to 2) from its sections; the inverse of unpacking one
+    Mkbootimg {
+        /// Kernel image
+        #[arg(long)]
+        kernel: PathBuf,
+        /// Ramdisk
+        #[arg(long)]
+        ramdisk: Option<PathBuf>,
+        /// Second-stage image
+        #[arg(long)]
+        second: Option<PathBuf>,
+        /// Device tree blob (header version 2 only)
+        #[arg(long)]
+        dtb: Option<PathBuf>,
+        /// Kernel command line, up to 511 bytes
+        #[arg(long, default_value = "")]
+        cmdline: String,
+        /// Page size: a power of two from 512 to 1 MiB, at least as large as the header
+        #[arg(long, default_value_t = 4096)]
+        page_size: u32,
+        /// Boot image header version, 0 to 2
+        #[arg(long, default_value_t = 2)]
+        header_version: u32,
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Replace an existing output file instead of refusing
+        #[arg(long)]
+        force: bool,
+    },
     /// Turn Android sparse image(s) into a raw image
     Unsparse {
         /// Sparse file(s); several files that describe the same image are applied in the order given
@@ -1422,6 +1451,34 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             block_size,
             force,
         } => sparse::pack_run(&input, &output, block_size, force),
+        Command::Mkbootimg {
+            kernel,
+            ramdisk,
+            second,
+            dtb,
+            cmdline,
+            page_size,
+            header_version,
+            output,
+            force,
+        } => {
+            let opt = |p: &Option<PathBuf>| -> anyhow::Result<Vec<u8>> {
+                Ok(match p {
+                    Some(p) => std::fs::read(p)?,
+                    None => Vec::new(),
+                })
+            };
+            let parts = bootimg::Parts {
+                header_version,
+                page_size,
+                kernel: std::fs::read(&kernel)?,
+                ramdisk: opt(&ramdisk)?,
+                second: opt(&second)?,
+                dtb: opt(&dtb)?,
+                cmdline,
+            };
+            bootimg::pack_run(&parts, &output, force)
+        }
         Command::Unsparse {
             inputs,
             output,

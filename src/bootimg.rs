@@ -8,7 +8,7 @@ use crate::extract::create_part;
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Map, Value, json};
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 const BOOT_MAGIC: &[u8; 8] = b"ANDROID!";
@@ -596,6 +596,107 @@ pub fn to_text(image: &Image) -> String {
         }
     }
     lines.join("\n")
+}
+
+/// What `pack` writes: the sections of a header version 0 to 2 boot image. Empty sections are left out.
+pub struct Parts {
+    pub header_version: u32,
+    pub page_size: u32,
+    pub kernel: Vec<u8>,
+    pub ramdisk: Vec<u8>,
+    pub second: Vec<u8>,
+    pub dtb: Vec<u8>,
+    pub cmdline: String,
+}
+
+fn put32(b: &mut [u8], at: usize, v: u32) {
+    b[at..at + 4].copy_from_slice(&v.to_le_bytes());
+}
+
+/// Write `data` zero padded to a whole number of pages.
+fn write_paged(out: &mut impl Write, data: &[u8], page: u64) -> Result<()> {
+    out.write_all(data)?;
+    let pad = at_page(pages(data.len() as u64, page), page)? - data.len() as u64;
+    out.write_all(&vec![0u8; pad as usize])?;
+    Ok(())
+}
+
+/// Write a header version 0 to 2 boot image: the inverse of `read` for those versions. The header
+/// takes the first page and every section starts on a page boundary. Load addresses, the OS
+/// version, the product name and the id hash stay zero (the id is not computed: no mkbootimg here
+/// to check it against).
+pub fn pack(parts: &Parts, out: &mut impl Write) -> Result<()> {
+    ensure!(
+        parts.header_version <= 2,
+        "pack writes boot image header versions 0 to 2, not {}",
+        parts.header_version
+    );
+    ensure!(
+        parts.dtb.is_empty() || parts.header_version == 2,
+        "a dtb needs header version 2"
+    );
+    let page = check_page_size(parts.page_size)?;
+    let hlen: usize = match parts.header_version {
+        0 => 1632,
+        1 => 1648,
+        _ => 1660,
+    };
+    ensure!(
+        page as usize >= hlen,
+        "page size {page} is smaller than the {hlen}-byte header"
+    );
+    ensure!(
+        parts.cmdline.len() < 512,
+        "cmdline is {} bytes; the header holds 511",
+        parts.cmdline.len()
+    );
+    let size = |s: &[u8]| u32::try_from(s.len()).context("section is larger than 4 GiB");
+    let mut head = vec![0u8; hlen];
+    head[..8].copy_from_slice(BOOT_MAGIC);
+    put32(&mut head, 8, size(&parts.kernel)?);
+    put32(&mut head, 16, size(&parts.ramdisk)?);
+    put32(&mut head, 24, size(&parts.second)?);
+    put32(&mut head, 36, parts.page_size);
+    put32(&mut head, 40, parts.header_version);
+    head[64..64 + parts.cmdline.len()].copy_from_slice(parts.cmdline.as_bytes());
+    if parts.header_version >= 1 {
+        put32(&mut head, 1644, hlen as u32);
+    }
+    if parts.header_version == 2 {
+        put32(&mut head, 1648, size(&parts.dtb)?);
+    }
+    write_paged(out, &head, page)?;
+    for s in [&parts.kernel, &parts.ramdisk, &parts.second, &parts.dtb] {
+        write_paged(out, s, page)?;
+    }
+    Ok(())
+}
+
+/// `pack` into `output`, through a `.part` file that is renamed once complete.
+pub fn pack_run(parts: &Parts, output: &Path, force: bool) -> Result<()> {
+    if !force && output.symlink_metadata().is_ok() {
+        bail!(
+            "{} already exists; pass --force to overwrite",
+            output.display()
+        );
+    }
+    if let Some(dir) = output.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut part = output.as_os_str().to_owned();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    let built = (|| -> Result<()> {
+        let mut out = crate::extract::create_part(&part)?;
+        pack(parts, &mut out)
+    })();
+    if let Err(e) = built {
+        let _ = std::fs::remove_file(&part);
+        return Err(e);
+    }
+    std::fs::rename(&part, output)?;
+    println!("{}", crate::extract::describe(output)?);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1463,5 +1564,93 @@ mod tests {
             t.contains("vendor_ramdisk_table:") && t.contains("vendor_ramdisk00"),
             "{t}"
         );
+    }
+}
+
+#[cfg(test)]
+mod pack_tests {
+    use super::*;
+
+    /// A recognisable pattern per section.
+    fn data(tag: u8, n: usize) -> Vec<u8> {
+        (0..n).map(|i| tag.wrapping_add((i % 251) as u8)).collect()
+    }
+
+    fn parts(version: u32, page: u32, kernel: Vec<u8>, ramdisk: Vec<u8>) -> Parts {
+        Parts {
+            header_version: version,
+            page_size: page,
+            kernel,
+            ramdisk,
+            second: Vec::new(),
+            dtb: Vec::new(),
+            cmdline: String::new(),
+        }
+    }
+
+    /// Pack a v2 image to a file, read it back with the parser, unpack every section again and
+    /// compare each one byte for byte with what went in.
+    #[test]
+    fn pack_then_unpack_gives_back_every_section() {
+        let dir = std::env::temp_dir().join(format!("ad-bootpack-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let p = Parts {
+            header_version: 2,
+            page_size: 4096,
+            kernel: data(1, 5000),
+            ramdisk: data(2, 4096),
+            second: data(3, 17),
+            dtb: data(4, 9000),
+            cmdline: "console=ttyS0 androidboot.hardware=test".to_string(),
+        };
+        let img = dir.join("boot.img");
+        pack_run(&p, &img, false).unwrap();
+        let image = read(&img).unwrap();
+        let names: Vec<&str> = image.sections.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["kernel", "ramdisk", "second", "dtb"]);
+        assert!(
+            image
+                .info
+                .iter()
+                .any(|(k, v)| k == "cmdline" && v.as_str() == Some(p.cmdline.as_str()))
+        );
+        let out = dir.join("unpacked");
+        write_sections(&img, &image, &out, false).unwrap();
+        assert_eq!(std::fs::read(out.join("kernel")).unwrap(), p.kernel);
+        assert_eq!(std::fs::read(out.join("ramdisk")).unwrap(), p.ramdisk);
+        assert_eq!(std::fs::read(out.join("second")).unwrap(), p.second);
+        assert_eq!(std::fs::read(out.join("dtb")).unwrap(), p.dtb);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Header v0 has no dtb, empty sections take no space, and each section starts on a page.
+    #[test]
+    fn v0_layout_is_page_aligned_and_empty_sections_are_left_out() {
+        let kernel = data(6, 10);
+        let ramdisk = data(7, 300);
+        let mut buf = Vec::new();
+        pack(&parts(0, 2048, kernel.clone(), ramdisk.clone()), &mut buf).unwrap();
+        assert_eq!(buf.len(), 3 * 2048);
+        let image = parse(&buf, buf.len() as u64, |_, _| Ok(Vec::new())).unwrap();
+        let spans: Vec<(&str, u64, u64)> = image
+            .sections
+            .iter()
+            .map(|s| (s.name.as_str(), s.offset, s.size))
+            .collect();
+        assert_eq!(spans, [("kernel", 2048, 10), ("ramdisk", 4096, 300)]);
+        assert_eq!(&buf[2048..2058], kernel.as_slice());
+        assert_eq!(&buf[4096..4396], ramdisk.as_slice());
+    }
+
+    #[test]
+    fn refuses_a_dtb_before_v2_a_small_page_and_a_long_cmdline() {
+        let mut p = parts(1, 4096, data(8, 4), Vec::new());
+        p.dtb = data(9, 4);
+        assert!(pack(&p, &mut Vec::new()).is_err());
+        let small = parts(2, 1024, data(8, 4), Vec::new());
+        assert!(pack(&small, &mut Vec::new()).is_err());
+        let mut long = parts(2, 4096, data(8, 4), Vec::new());
+        long.cmdline = "x".repeat(512);
+        assert!(pack(&long, &mut Vec::new()).is_err());
     }
 }

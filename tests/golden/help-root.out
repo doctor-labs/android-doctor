@@ -40,6 +40,7 @@ Commands:
   ramdisk     List a boot image's ramdisk (or a ramdisk file), report its ADB properties, and with -o extract it
   files       List or extract the files of an ext2/3/4, erofs or f2fs image (with SELinux labels), no root needed
   sparse      Turn a raw image into an Android sparse image
+  mkbootimg   Build a boot image (header versions 0 to 2) from its sections; the inverse of unpacking one
   unsparse    Turn Android sparse image(s) into a raw image
   identify    Say what each file is, by its magic bytes (never by name)
   report      Staleness verdict from the OTA's build metadata
