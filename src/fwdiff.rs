@@ -100,6 +100,8 @@ pub struct ImageDiff {
     unchanged: usize,
     props: Vec<Value>,
     services: Vec<Value>,
+    /// Partitions whose AVB descriptor `image_size` differs (data only, never a finding).
+    avb_sizes: Vec<Value>,
 }
 
 fn side(e: &Entry) -> Value {
@@ -306,6 +308,30 @@ fn avb_changes(name: &str, old: &Vbmeta, new: &Vbmeta) -> Vec<AvbChange> {
         }
     }
     out
+}
+
+/// Partitions whose Hash or Hashtree descriptor `image_size` differs between two vbmeta images.
+/// Reported under `data` only: a size change is routine on a rebuild, so it is not a finding.
+fn avb_sizes(old: &Vbmeta, new: &Vbmeta) -> Vec<Value> {
+    let sizes = |m: &Vbmeta| -> BTreeMap<(&str, String), u64> {
+        m.descriptors
+            .iter()
+            .filter_map(|d| match d {
+                Descriptor::Hash(h) => Some((("hash", h.partition.clone()), h.image_size)),
+                Descriptor::Hashtree(h) => Some((("hashtree", h.partition.clone()), h.image_size)),
+                _ => None,
+            })
+            .collect()
+    };
+    let (o, n) = (sizes(old), sizes(new));
+    n.iter()
+        .filter_map(|(k, new_size)| {
+            let old_size = o.get(k)?;
+            (old_size != new_size).then(
+                || json!({"partition": k.1, "descriptor": k.0, "old": old_size, "new": new_size}),
+            )
+        })
+        .collect()
 }
 
 /// Whether a file carries an AVB header (`AVB0` at the start) or footer (`AVBf` in its last 64
@@ -549,6 +575,13 @@ pub fn run(old: &Path, new: &Path) -> Result<Outcome> {
             unchanged,
             props: diff_props(&a, &b),
             services: diff_services(&a, &b),
+            avb_sizes: match (&o, &n) {
+                (Some(p), Some(q)) => match (avb::read_input(p, None), avb::read_input(q, None)) {
+                    (Ok(x), Ok(y)) => avb_sizes(&x, &y),
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
+            },
         };
         let avb_diffs = match (&o, &n) {
             (Some(p), Some(q)) => avb_pair(&name, p, q),
@@ -583,6 +616,7 @@ pub fn to_json(images: &[ImageDiff], only: &[String]) -> Value {
             })).collect::<Vec<_>>(),
             "properties": d.props,
             "services": d.services,
+            "avb_image_sizes": d.avb_sizes,
         })
     }).collect::<Vec<_>>() })
 }
@@ -726,6 +760,31 @@ mod tests {
         assert_eq!(found[0].rule, "diff-avb-unchecked");
         assert_eq!(found[0].severity, Severity::Info);
         assert!(found[0].subject.contains("new"));
+    }
+
+    #[test]
+    fn avb_image_size_change_is_reported_as_data_and_not_as_a_finding() {
+        let sized = |size: u64| {
+            vbmeta(
+                1,
+                0,
+                vec![Descriptor::Hash(crate::avb::HashDescriptor {
+                    partition: "boot".into(),
+                    algorithm: "sha256".into(),
+                    image_size: size,
+                    salt: vec![],
+                    digest: vec![],
+                    flags: 0,
+                })],
+            )
+        };
+        let (old, new) = (sized(10), sized(20));
+        assert!(avb_changes("vbmeta", &old, &new).is_empty());
+        assert_eq!(
+            avb_sizes(&old, &new),
+            vec![json!({"partition": "boot", "descriptor": "hash", "old": 10, "new": 20})]
+        );
+        assert!(avb_sizes(&old, &old).is_empty());
     }
 
     #[test]
