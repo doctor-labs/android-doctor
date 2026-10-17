@@ -815,6 +815,7 @@ pub(crate) mod tests {
             xattrs: vec![],
             sha256: None,
             extracted_as: None,
+            encrypted: false,
         }
     }
 

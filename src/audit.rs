@@ -118,6 +118,8 @@ pub struct ImageAudit {
     pub capabilities: Vec<(String, String)>,
     pub world_writable: Vec<Special>,
     pub su: Vec<String>,
+    /// Regular files whose inode is encrypted: their contents were not read or scanned.
+    pub encrypted: usize,
     pub services: Vec<Service>,
     pub findings: Vec<Finding>,
     /// For each entry of `findings`, the same index: the in-image path or name it is about
@@ -274,6 +276,9 @@ fn analyse_with(
         }
         if e.kind != Kind::File {
             continue;
+        }
+        if e.encrypted {
+            a.encrypted += 1;
         }
         // APKs: read the package name and signing certificates. Bounded like the text
         // scan, and a malformed APK is reported rather than skipped silently.
@@ -517,6 +522,18 @@ fn findings(a: &ImageAudit) -> Vec<(Finding, (String, String))> {
             format!(
                 "{} regular files are world-writable",
                 a.world_writable.len()
+            ),
+            "",
+            "",
+        );
+    }
+    if a.encrypted > 0 {
+        add(
+            Severity::Info,
+            "ext4-encrypted-inode",
+            format!(
+                "{} regular files are encrypted (ext4 encryption): their contents cannot be read and were not scanned",
+                a.encrypted
             ),
             "",
             "",
@@ -1071,6 +1088,7 @@ mod tests {
             xattrs: vec![],
             sha256: None,
             extracted_as: None,
+            encrypted: false,
         }
     }
 
@@ -1096,6 +1114,31 @@ mod tests {
                 .ok_or_else(|| anyhow::anyhow!("no such file {p}"))
         })
         .unwrap()
+    }
+
+    #[test]
+    fn encrypted_files_are_one_info_finding_and_plain_ones_are_not() {
+        let mut enc = file("data/secret", 0o600);
+        enc.encrypted = true;
+        let mut enc2 = file("data/secret2", 0o600);
+        enc2.encrypted = true;
+        let a = run(vec![enc, enc2, file("data/plain", 0o600)], &[]);
+        assert_eq!(a.encrypted, 2);
+        let hits: Vec<_> = a
+            .findings
+            .iter()
+            .filter(|f| f.rule == "ext4-encrypted-inode")
+            .collect();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].severity, Severity::Info);
+        assert!(
+            hits[0].detail.starts_with("2 regular files"),
+            "{}",
+            hits[0].detail
+        );
+        assert!(
+            !rules(&run(vec![file("data/plain", 0o600)], &[])).contains(&"ext4-encrypted-inode")
+        );
     }
 
     fn rules(a: &ImageAudit) -> Vec<&'static str> {
