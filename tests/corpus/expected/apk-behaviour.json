@@ -1,0 +1,66 @@
+{
+  "audit": [
+    {
+      "id": "apk-code-behaviour-location",
+      "severity": "info",
+      "subject": "system"
+    },
+    {
+      "id": "apk-code-behaviour-media",
+      "severity": "info",
+      "subject": "system"
+    },
+    {
+      "id": "apk-code-behaviour-native",
+      "severity": "info",
+      "subject": "system"
+    },
+    {
+      "id": "apk-code-behaviour-pim",
+      "severity": "info",
+      "subject": "system"
+    },
+    {
+      "id": "apk-code-behaviour-settings",
+      "severity": "info",
+      "subject": "system"
+    },
+    {
+      "id": "apk-code-behaviour-sms",
+      "severity": "info",
+      "subject": "system"
+    },
+    {
+      "id": "apk-code-behaviour-sockets",
+      "severity": "info",
+      "subject": "system"
+    },
+    {
+      "id": "apk-code-behaviour-telephony",
+      "severity": "info",
+      "subject": "system"
+    }
+  ],
+  "doctor": [
+    {
+      "id": "avb_signature",
+      "severity": "info",
+      "subject": "vbmeta.img"
+    },
+    {
+      "id": "partition_coverage",
+      "severity": "warn",
+      "subject": "boot.img"
+    },
+    {
+      "id": "partition_coverage",
+      "severity": "warn",
+      "subject": "vendor.img"
+    },
+    {
+      "id": "selinux_label_gaps",
+      "severity": "info",
+      "subject": "system"
+    }
+  ]
+}
