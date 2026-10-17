@@ -65,6 +65,8 @@ pub struct ApkInfo {
     pub network_security_config: Option<NetworkSecurityConfig>,
     /// Findings from the code rules over the DEX (see `rules`).
     pub code_issues: Vec<ManifestIssue>,
+    /// Values of the global string pool in resources.arsc; None when the file is absent or malformed.
+    pub resource_strings: Option<Vec<String>>,
 }
 
 impl ApkInfo {
@@ -1972,6 +1974,8 @@ pub fn audit_apk_bytes(path: &Path, bytes: &[u8]) -> ApkAudit {
         code_issues.extend(native_issues(&mut zip));
         code_issues.extend(packer_issues(&mut zip));
         code_issues.extend(file_provider_issues(&mut zip));
+        let resource_strings =
+            read_entry(&mut zip, "resources.arsc").and_then(|b| parse_resource_strings(&b).ok());
         Ok(ApkInfo {
             path: path.display().to_string(),
             package_name: attrs
@@ -1985,6 +1989,7 @@ pub fn audit_apk_bytes(path: &Path, bytes: &[u8]) -> ApkAudit {
             manifest: attrs.unwrap_or_default(),
             network_security_config: nsc,
             code_issues,
+            resource_strings,
         })
     })();
     match r {
@@ -1997,6 +2002,24 @@ pub fn audit_apk_bytes(path: &Path, bytes: &[u8]) -> ApkAudit {
             error: Some(format!("{e:#}")),
         },
     }
+}
+
+/// The global string pool of a resources.arsc table (AOSP ResourceTypes.h, Apache-2.0): a
+/// RES_TABLE_TYPE header (0x0002, 12 bytes, then the package count) followed directly by the
+/// table string pool. Packages, types and value records are not decoded yet.
+fn parse_resource_strings(data: &[u8]) -> Result<Vec<String>> {
+    let table_type = le16(data, 0)?;
+    ensure!(
+        table_type == 0x0002,
+        "arsc: expected RES_TABLE_TYPE 0x0002, got {table_type:#06x}"
+    );
+    let header_size = le16(data, 2)? as usize;
+    ensure!(
+        (12..=data.len()).contains(&header_size),
+        "arsc: bad table header size"
+    );
+    let (strings, _) = parse_string_pool(&data[header_size..])?;
+    Ok(strings)
 }
 
 /// One archive entry, as `apk --files` lists it.
@@ -2663,6 +2686,7 @@ pub fn to_json(a: &ApkAudit, now: i64) -> serde_json::Value {
             "rule": i.rule,
             "detail": i.detail,
         })).collect::<Vec<_>>(),
+        "resource_strings": info.resource_strings.as_ref().map(|v| v.len()),
         "posture_findings": posture_findings.iter().map(|(r, d)| serde_json::json!({
             "rule": r,
             "detail": d,
@@ -4544,5 +4568,72 @@ mod tests {
             crate::permissions::base_level_name("com.example.custom"),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod resource_table_tests {
+    use super::*;
+
+    const PLAIN: &[u8] = include_bytes!("../tests/fixtures/apk/plain.apk");
+
+    /// A UTF-8 string pool holding the given strings (28-byte header, offset table, entries).
+    fn utf8_pool(strings: &[&str]) -> Vec<u8> {
+        let mut entries = Vec::new();
+        let mut offsets = Vec::new();
+        for s in strings {
+            offsets.push(entries.len() as u32);
+            entries.push(s.chars().count() as u8);
+            entries.push(s.len() as u8);
+            entries.extend_from_slice(s.as_bytes());
+            entries.push(0);
+        }
+        let strings_start = 28 + 4 * strings.len();
+        let total = strings_start + entries.len();
+        let mut p = Vec::new();
+        p.extend_from_slice(&0x0001u16.to_le_bytes());
+        p.extend_from_slice(&28u16.to_le_bytes());
+        p.extend_from_slice(&(total as u32).to_le_bytes());
+        p.extend_from_slice(&(strings.len() as u32).to_le_bytes());
+        p.extend_from_slice(&0u32.to_le_bytes());
+        p.extend_from_slice(&0x100u32.to_le_bytes());
+        p.extend_from_slice(&(strings_start as u32).to_le_bytes());
+        p.extend_from_slice(&0u32.to_le_bytes());
+        for o in offsets {
+            p.extend_from_slice(&o.to_le_bytes());
+        }
+        p.extend_from_slice(&entries);
+        p
+    }
+
+    fn table(pool: &[u8]) -> Vec<u8> {
+        let mut t = Vec::new();
+        t.extend_from_slice(&0x0002u16.to_le_bytes());
+        t.extend_from_slice(&12u16.to_le_bytes());
+        t.extend_from_slice(&((12 + pool.len()) as u32).to_le_bytes());
+        t.extend_from_slice(&0u32.to_le_bytes());
+        t.extend_from_slice(pool);
+        t
+    }
+
+    #[test]
+    fn the_string_pool_of_a_resource_table_is_read() {
+        let arsc = table(&utf8_pool(&["app_name", "hello"]));
+        assert_eq!(
+            parse_resource_strings(&arsc).unwrap(),
+            ["app_name", "hello"]
+        );
+    }
+
+    #[test]
+    fn a_real_apk_resource_table_has_an_empty_pool() {
+        let mut zip = ZipArchive::new(Cursor::new(PLAIN)).unwrap();
+        let arsc = read_entry(&mut zip, "resources.arsc").expect("plain.apk has resources.arsc");
+        assert_eq!(parse_resource_strings(&arsc).unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_bare_string_pool_is_refused_as_a_table() {
+        assert!(parse_resource_strings(&utf8_pool(&["x"])).is_err());
     }
 }
