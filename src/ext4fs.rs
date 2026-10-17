@@ -1518,6 +1518,7 @@ impl Fs {
             xattrs: self.xattrs_of(inode)?,
             sha256: None,
             extracted_as: None,
+            encrypted: inode.flags & INODE_ENCRYPT != 0,
         })
     }
 
@@ -2249,6 +2250,30 @@ mod tests {
             std::fs::read(dir.join("o/files/inl")).unwrap(),
             b"inline hello"
         );
+    }
+
+    #[test]
+    fn encrypted_inodes_are_marked_on_their_entries_and_refused_on_read() {
+        let mut m = Img::new(256, true);
+        m.inode(11, 0o100644, 5, 1, INODE_ENCRYPT, [0u8; 60]);
+        m.file(12, 0o644, b"plain\n", 1);
+        m.dir(2, 2, &[("secret", 11, 1), ("plain", 12, 1)]);
+        let fs = m.fs();
+        let flags: Vec<(String, bool)> = fs
+            .entries()
+            .unwrap()
+            .into_iter()
+            .map(|(e, _)| (e.path, e.encrypted))
+            .collect();
+        assert_eq!(
+            flags,
+            [("plain".to_string(), false), ("secret".to_string(), true)]
+        );
+        let (_, inode) = fs.lookup("secret").unwrap();
+        let mut out = Vec::new();
+        let err = format!("{:#}", fs.cat(&inode, &mut out).unwrap_err());
+        assert!(err.contains("encrypted"), "{err}");
+        assert!(out.is_empty());
     }
 
     #[test]

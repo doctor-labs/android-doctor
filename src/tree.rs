@@ -78,6 +78,8 @@ pub struct Entry {
     pub sha256: Option<String>,
     /// Set when the file had to be extracted under another name (case collision).
     pub extracted_as: Option<String>,
+    /// The inode is encrypted (ext4 `EXT4_ENCRYPT_FL`): its data cannot be read.
+    pub encrypted: bool,
 }
 
 /// A file system that can be walked and whose regular files can be copied out.

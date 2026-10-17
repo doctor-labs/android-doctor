@@ -358,6 +358,11 @@ pub fn help(rule: &str) -> Option<Help> {
             "chmod the file to remove group and other write bits",
             High,
         ),
+        "ext4-encrypted-inode" => (
+            "Encrypted ext4 files could not be read",
+            "Decrypt the data partition (or audit an unencrypted build) to scan its files",
+            Info,
+        ),
         "world-writable" => (
             "Regular files are world-writable",
             "chmod the files to remove the write bit for others",
@@ -994,6 +999,7 @@ const KNOWN_RULES: &[&str] = &[
     "su-binary",
     "writable-setuid",
     "world-writable",
+    "ext4-encrypted-inode",
     "adbd-service",
     "su-service",
     "shell-service",

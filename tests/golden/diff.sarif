@@ -1617,6 +1617,22 @@
                 "level": "note"
               },
               "fullDescription": {
+                "text": "Encrypted ext4 files could not be read"
+              },
+              "help": {
+                "text": "Decrypt the data partition (or audit an unencrypted build) to scan its files"
+              },
+              "id": "ext4-encrypted-inode",
+              "name": "ext4-encrypted-inode",
+              "shortDescription": {
+                "text": "Encrypted ext4 files could not be read"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
                 "text": "Files carry file capabilities"
               },
               "help": {

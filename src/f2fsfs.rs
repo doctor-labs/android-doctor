@@ -1036,6 +1036,7 @@ impl Fs {
             xattrs: self.xattrs_of(ino, blk)?,
             sha256: None,
             extracted_as: None,
+            encrypted: false,
         })
     }
 

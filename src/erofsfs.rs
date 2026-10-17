@@ -133,6 +133,7 @@ impl Fs {
             xattrs,
             sha256: None,
             extracted_as: None,
+            encrypted: false,
         })
     }
 

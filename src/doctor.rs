@@ -606,6 +606,7 @@ mod quality_tests {
             xattrs: Vec::new(),
             sha256: None,
             extracted_as: None,
+            encrypted: false,
         }
     }
 
