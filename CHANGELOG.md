@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `diff` JSON lists `avb_image_sizes` per image: partitions whose AVB Hash or Hashtree descriptor `image_size` changed, old and new. Data only, no new finding (part of #217).
 - `avbkeygen -o KEY.pem [--bits 2048|4096]` generates an RSA key (PKCS#1 PEM, mode 0600) from the OS random source and prints the AVB public key SHA-256, never the private key (#185).
 - `mkbootimg` packs a boot image (header versions 0 to 2: kernel, ramdisk, second, dtb, cmdline) that `unpack` reads back byte for byte; the header id hash is not computed (part of #177). mkbootimg and LP super pack for header versions 3 and 4 and vendor boot, and LP repack, are still open.
 - SELinux text policy: a shipped `allow` that a `neverallow` forbids (same source, target and class, a shared permission) is a High `selinux-neverallow-violation` finding. Exact names only; attributes are not expanded (#191).
