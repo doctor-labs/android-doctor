@@ -196,11 +196,7 @@ fn find_first_old(hunk: &[DiffLine], old_before: usize, old_total: usize) -> usi
         }
     }
     // Pure additions.
-    if old_total == 0 {
-        0
-    } else {
-        old_before
-    }
+    if old_total == 0 { 0 } else { old_before }
 }
 
 /// Find the first new line number in a hunk slice (from Same/Added lines).
@@ -213,11 +209,7 @@ fn find_first_new(hunk: &[DiffLine], new_before: usize, new_total: usize) -> usi
         }
     }
     // Pure removals.
-    if new_total == 0 {
-        0
-    } else {
-        new_before
-    }
+    if new_total == 0 { 0 } else { new_before }
 }
 
 /// Count how many trailing Same lines are in the slice `d` (to use as preceding context).
