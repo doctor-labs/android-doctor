@@ -2240,15 +2240,10 @@ mod tests {
         assert_eq!(list[0].0.size, 12);
         assert_eq!(list[0].0.kind, Kind::File);
         // cat returns the inline bytes
-        assert_eq!(
-            cat_bytes(&fs, "inl"),
-            b"inline hello"
-        );
+        assert_eq!(cat_bytes(&fs, "inl"), b"inline hello");
         // extract produces a file with the right content and sha256
         let dir = scratch("inline");
-        let e = fs
-            .extract(&dir.join("o"), Some(Collisions::Allow))
-            .unwrap();
+        let e = fs.extract(&dir.join("o"), Some(Collisions::Allow)).unwrap();
         assert_eq!(e[0].sha256.as_deref(), Some(sha(b"inline hello").as_str()));
         assert_eq!(
             std::fs::read(dir.join("o/files/inl")).unwrap(),
