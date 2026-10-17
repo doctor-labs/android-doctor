@@ -26,8 +26,8 @@ jobs:
       - name: Assert the gate really ran
         run: |
           if grep -q 'CORPUS GATE SKIPPED' corpus.log; then echo "corpus gate skipped"; exit 1; fi
-          grep -q 'test result: ok. 3 passed; 0 failed; 0 ignored' corpus.log \
-            || { echo "expected exactly 3 passing corpus tests"; exit 1; }
+          grep -q 'test result: ok. 4 passed; 0 failed; 0 ignored' corpus.log \
+            || { echo "expected exactly 4 passing corpus tests"; exit 1; }
   f2fs:
     # f2fs gate (issue #128, docs/precision.md): real volumes made by mkfs.f2fs and sload.f2fs are
     # read back through the binary. The tools are required here (F2FS_REQUIRED makes a missing tool

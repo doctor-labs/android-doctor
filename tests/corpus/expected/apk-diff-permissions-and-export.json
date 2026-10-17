@@ -1,0 +1,12 @@
+[
+  {
+    "id": "apk-diff-exported-component",
+    "severity": "medium",
+    "subject": ".Share"
+  },
+  {
+    "id": "apk-diff-new-permission",
+    "severity": "medium",
+    "subject": "android.permission.CAMERA"
+  }
+]

@@ -35,7 +35,7 @@
             "severity": "high"
           },
           "ruleId": "debuggable-build",
-          "ruleIndex": 69
+          "ruleIndex": 72
         },
         {
           "baselineState": "new",
@@ -61,7 +61,7 @@
             "severity": "high"
           },
           "ruleId": "insecure-adb",
-          "ruleIndex": 96
+          "ruleIndex": 99
         },
         {
           "baselineState": "new",
@@ -87,7 +87,7 @@
             "severity": "high"
           },
           "ruleId": "su-binary",
-          "ruleIndex": 107
+          "ruleIndex": 110
         }
       ],
       "tool": {
@@ -781,6 +781,45 @@
               "name": "apk-dialer-secret-code",
               "shortDescription": {
                 "text": "Dialer secret code"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "apk-diff-exported-component"
+              },
+              "id": "apk-diff-exported-component",
+              "name": "apk-diff-exported-component",
+              "shortDescription": {
+                "text": "apk-diff-exported-component"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "apk-diff-new-permission"
+              },
+              "id": "apk-diff-new-permission",
+              "name": "apk-diff-new-permission",
+              "shortDescription": {
+                "text": "apk-diff-new-permission"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "apk-diff-signer-changed"
+              },
+              "id": "apk-diff-signer-changed",
+              "name": "apk-diff-signer-changed",
+              "shortDescription": {
+                "text": "apk-diff-signer-changed"
               }
             },
             {

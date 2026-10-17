@@ -1099,6 +1099,9 @@ const KNOWN_RULES: &[&str] = &[
     "diff-avb-hash-algorithm",
     "diff-avb-descriptor",
     "diff-avb-unchecked",
+    "apk-diff-new-permission",
+    "apk-diff-exported-component",
+    "apk-diff-signer-changed",
 ];
 
 #[cfg(test)]

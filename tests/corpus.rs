@@ -405,6 +405,72 @@ fn findings_match_the_committed_snapshots() {
     );
 }
 
+/// APK diff cases: each tests/corpus/apk-diff/<case>/ holds an old.apk and a new.apk, and
+/// `apk-diff --json` must report exactly the rows in tests/corpus/expected/apk-diff-<case>.json.
+/// (`UPDATE_CORPUS=1` rewrites them.) Not image based, so it runs without the mkfs tools.
+#[test]
+fn apk_diff_cases_match_the_committed_snapshots() {
+    let update = std::env::var_os("UPDATE_CORPUS").is_some();
+    let dir = root().join("apk-diff");
+    let mut cases: Vec<String> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    cases.sort();
+    let mut report = String::new();
+    for case in cases {
+        let case_dir = dir.join(&case);
+        let out = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+            .arg("apk-diff")
+            .arg(case_dir.join("old.apk"))
+            .arg(case_dir.join("new.apk"))
+            .arg("--json")
+            .output()
+            .unwrap();
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+            panic!(
+                "{case}: no JSON ({e}): {}",
+                String::from_utf8_lossy(&out.stderr)
+            )
+        });
+        let mut got: Vec<String> = v["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| {
+                row(
+                    f["id"].as_str().unwrap(),
+                    f["severity"].as_str().unwrap(),
+                    f["subject"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        got.sort();
+        let snap = root()
+            .join("expected")
+            .join(format!("apk-diff-{case}.json"));
+        if update {
+            fs::write(
+                &snap,
+                serde_json::to_string_pretty(&to_snapshot(&got)).unwrap() + "\n",
+            )
+            .unwrap();
+            continue;
+        }
+        let want = fs::read_to_string(&snap)
+            .map(|t| from_snapshot(&serde_json::from_str(&t).unwrap()))
+            .unwrap_or_default();
+        let d = diff(&case, &want, &got);
+        if !d.is_empty() {
+            report += &format!("{case}:\n{d}");
+        }
+    }
+    assert!(
+        report.is_empty(),
+        "apk-diff corpus drift (UPDATE_CORPUS=1 accepts an intended change):\n{report}"
+    );
+}
+
 #[test]
 fn clean_firmware_raises_nothing_above_info() {
     let Some(t) = tools() else { return };
