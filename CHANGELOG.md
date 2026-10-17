@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `avbkeygen -o KEY.pem [--bits 2048|4096]` generates an RSA key (PKCS#1 PEM, mode 0600) from the OS random source and prints the AVB public key SHA-256, never the private key (#185).
 - SELinux text policy: a shipped `allow` that a `neverallow` forbids (same source, target and class, a shared permission) is a High `selinux-neverallow-violation` finding. Exact names only; attributes are not expanded (#191).
 - The MCP server offers `tree`, `find` and `stat` (read-only, doctor/1 JSON for `tree` and `find`) so an agent can search an image without extracting it (#218).
 - APK audit reads the global string pool of resources.arsc (part of #213); its entry count is the apk JSON key resource_strings. Typed values, string rules and the icon are not checked yet.

@@ -515,6 +515,21 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Generate an RSA private key as a PKCS#1 PEM file (avbtool gen_key); prints only the public key digest
+    Avbkeygen {
+        /// Key size in bits: 2048 or 4096
+        #[arg(long, default_value_t = 4096)]
+        bits: usize,
+        /// Where to write the PEM key; created with mode 0600
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Replace the output if it exists
+        #[arg(long)]
+        force: bool,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
     /// Verify a ChromeOS kernel partition (vboot 2.x): keyblock, kernel preamble and body signatures
     Vbkernel {
         /// A kernel partition image (the CHROMEOS keyblock at offset 0)
@@ -1376,6 +1391,12 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Command::Avbkeygen {
+            bits,
+            output,
+            force,
+            json,
+        } => avbkeygen_command(bits, &output, force, json),
         Command::Avbcert { action } => avbcert_command(action),
         Command::Vbmeta {
             image,
@@ -1962,7 +1983,40 @@ fn avbkey_command(
     Ok(())
 }
 
-/// `avbcert`: write one avb_cert structure (see `avbcert.rs` for the layouts). Issue #185.
+/// `avbkeygen`: generate an RSA key and write it as PEM (mode 0600). Issue #185.
+fn avbkeygen_command(
+    bits: usize,
+    output: &std::path::Path,
+    force: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    use rsa::traits::PublicKeyParts;
+    let key = avbcert::generate_key(bits)?;
+    let pem = avbcert::private_key_pem(&key)?;
+    let sha = avb::hex(&Sha256::digest(avb::public_key_blob(key.n())));
+    write_atomically(output, force, |f| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        f.write_all(pem.as_bytes())?;
+        Ok(())
+    })?;
+    let out_str = output.display().to_string();
+    let text = if json {
+        serde_json::to_string_pretty(&serde_json::json!({
+            "output": out_str,
+            "bits": bits,
+            "sha256": sha,
+        }))?
+    } else {
+        format!("{sha}  {out_str}")
+    };
+    print_out(&text)
+}
+
+/// `avbcert`: write one avb_cert structure (see `avbcert.rs` for the layouts). Issue #185./// `avbcert`: write one avb_cert structure (see `avbcert.rs` for the layouts). Issue #185.
 fn avbcert_command(action: AvbcertAction) -> anyhow::Result<()> {
     use avbcert as ac;
     let (output, bytes) = match action {
