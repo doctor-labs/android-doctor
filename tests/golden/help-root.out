@@ -3,57 +3,58 @@ Extract and audit Android OTA/ROM images
 Usage: android-doctor [OPTIONS] <COMMAND>
 
 Commands:
-  extract     Extract partition images from an OTA zip or directory
-  info        Print build info from an OTA without extracting
-  amlogic     Describe an Amlogic image container (dt.img, dtbo.img, aml_upgrade_package.img)
-  dt          Show a device tree, dtbo table, or an opaque container header
-  fec         dm-verity forward error correction: generate Reed-Solomon parity for a file, verify a file against it, repair a damaged file
-  verify-ota  Verify an OTA's signatures: the zip's whole-file (signapk) signature and the payload's metadata and payload signatures
-  dex         Show the DEX files of an APK (or one .dex): header, tables, classes, methods, fields, strings, references, code
-  apk         Audit one APK file: manifest, package, version, signers, code, issues
-  apkcompare  Compare two builds of one APK: sizes, added, removed and changed entries, uses-feature changes and a patch-size estimate (no download size)
-  partitions  Show a flash manifest (Qualcomm rawprogram*.xml or MediaTek scatter.txt) and check it against the image files actually present
-  unpack      Show a boot or vendor_boot image's header, and with -o write its kernel, ramdisk, dtb, ...
-  journal     Show the jbd2 journal of an ext3/ext4 image: superblock fields, clean/dirty status, and the transactions found by walking from `s_first`. Read-only: the image is never modified
-  fsck        Cross-check an ext2/3/4 image superblock, group descriptors and allocation bitmaps (e2fsck-class), read-only
-  ls          List a directory (or show one file) inside an ext2/3/4, erofs or f2fs image, without extracting it
-  cat         Print one regular file from an ext2/3/4, erofs or f2fs image to standard output
-  tree        Show the whole tree (or a subtree) of an ext2/3/4, erofs or f2fs image, recursively, without extracting it
-  find        Find files in an ext2/3/4, erofs or f2fs image by name glob, SELinux label, setuid or setgid bit, extended attribute or content (read-only)
-  stat        Show one path's metadata (type, inode, mode, owner, size, links, mtime, link target, xattrs and SELinux label) inside an ext2/3/4, erofs or f2fs image, without extracting it; symlinks are not followed
-  prop        Print every value of one property from the image's property files (build.prop, default.prop, ...), with the file that sets it
-  blocks      List the physical block numbers holding the data of one regular file inside an ext2/3/4 or f2fs image (holes are skipped; erofs is refused)
-  icheck      Name the regular file that owns each physical block number inside an ext2/3/4 or f2fs image (blocks no file uses print as none)
-  ncheck      Name the path or paths of each inode number inside an ext2/3/4, erofs or f2fs image (inodes with no path print as none)
-  init        Decode one init service (`service <name>` block) from the image's .rc files: path, args, user, groups, capabilities, sockets
-  deleted     List deleted inodes in an ext2/3/4 image (like debugfs lsdel) and optionally recover their data
-  audit       Security posture of firmware images: ADB properties, setuid files, su binaries, init services
-  diff        Compare two firmware builds file by file: added, removed and modified files (by SHA-256), mode, owner, capability and SELinux-label changes, property and init-service changes; what got worse becomes findings
-  avbmake     Write a new vbmeta image (avbtool make_vbmeta_image without descriptors): header, SHA-256 digest and RSA signature
-  avbfooter   Write a copy of a partition image with an AVB hash footer (avbtool add_hash_footer): the image, a vbmeta with one SHA-256 hash descriptor and the footer, padded to --partition-size. The input is never modified
-  avberase    Write a copy of a partition image without its AVB footer and vbmeta (avbtool erase_footer)
-  apk-diff    Compare two builds of one APK: requested permissions, new or newly exported components and the signing certificate; what got worse becomes findings
-  avbkey      Write the AVB public key blob of a PEM RSA key (avbtool extract_public_key) and print its SHA-256 digest
-  avbkeygen   Generate an RSA private key as a PKCS#1 PEM file (avbtool gen_key); prints only the public key digest
-  vbkernel    Verify a ChromeOS kernel partition (vboot 2.x): keyblock, kernel preamble and body signatures
-  vbsign      Re-sign a ChromeOS kernel partition (vboot 2.x): the data key replaces the data key in the keyblock and signs the preamble and body, the root key signs the keyblock; the output is verified before it is written
-  avbcert     Build AVB certificate files (avb_cert): avbtool make_certificate, make_cert_permanent_attributes, make_cert_metadata, make_cert_unlock_credential
-  vbmeta      Show an AVB vbmeta image (or a partition with an AVB footer): header, key, signature, descriptors, hashes
-  ramdisk     List a boot image's ramdisk (or a ramdisk file), report its ADB properties, and with -o extract it
-  files       List or extract the files of an ext2/3/4, erofs or f2fs image (with SELinux labels), no root needed
-  sparse      Turn a raw image into an Android sparse image
-  mkbootimg   Build a boot image (header versions 0 to 2) from its sections; the inverse of unpacking one
-  unsparse    Turn Android sparse image(s) into a raw image
-  identify    Say what each file is, by its magic bytes (never by name)
-  report      Staleness verdict from the OTA's build metadata
-  hash-tree   Regenerate the dm-verity hash tree for a partition image rebuilt from a payload
-  doctor      Run a deterministic health scan on an unpacked firmware directory
-  fix         Scan, then hand the findings to a coding agent as one fix prompt
-  ci          CI integration: write a GitHub Actions workflow that runs the android-doctor action
-  mcp         Expose android-doctor over the Model Context Protocol (JSON-RPC on stdio)
-  shell       Browse the findings of a firmware directory or image in an interactive shell
-  explore     Browse the findings of a firmware directory or image in a full-screen explorer
-  help        Print this message or the help of the given subcommand(s)
+  extract       Extract partition images from an OTA zip or directory
+  info          Print build info from an OTA without extracting
+  amlogic       Describe an Amlogic image container (dt.img, dtbo.img, aml_upgrade_package.img)
+  dt            Show a device tree, dtbo table, or an opaque container header
+  fec           dm-verity forward error correction: generate Reed-Solomon parity for a file, verify a file against it, repair a damaged file
+  verify-ota    Verify an OTA's signatures: the zip's whole-file (signapk) signature and the payload's metadata and payload signatures
+  dex           Show the DEX files of an APK (or one .dex): header, tables, classes, methods, fields, strings, references, code
+  apk           Audit one APK file: manifest, package, version, signers, code, issues
+  apkcompare    Compare two builds of one APK: sizes, added, removed and changed entries, uses-feature changes and a patch-size estimate (no download size)
+  partitions    Show a flash manifest (Qualcomm rawprogram*.xml or MediaTek scatter.txt) and check it against the image files actually present
+  unpack        Show a boot or vendor_boot image's header, and with -o write its kernel, ramdisk, dtb, ...
+  journal       Show the jbd2 journal of an ext3/ext4 image: superblock fields, clean/dirty status, and the transactions found by walking from `s_first`. Read-only: the image is never modified
+  fsck          Cross-check an ext2/3/4 image superblock, group descriptors and allocation bitmaps (e2fsck-class), read-only
+  ls            List a directory (or show one file) inside an ext2/3/4, erofs or f2fs image, without extracting it
+  cat           Print one regular file from an ext2/3/4, erofs or f2fs image to standard output
+  tree          Show the whole tree (or a subtree) of an ext2/3/4, erofs or f2fs image, recursively, without extracting it
+  find          Find files in an ext2/3/4, erofs or f2fs image by name glob, SELinux label, setuid or setgid bit, extended attribute or content (read-only)
+  stat          Show one path's metadata (type, inode, mode, owner, size, links, mtime, link target, xattrs and SELinux label) inside an ext2/3/4, erofs or f2fs image, without extracting it; symlinks are not followed
+  prop          Print every value of one property from the image's property files (build.prop, default.prop, ...), with the file that sets it
+  blocks        List the physical block numbers holding the data of one regular file inside an ext2/3/4 or f2fs image (holes are skipped; erofs is refused)
+  icheck        Name the regular file that owns each physical block number inside an ext2/3/4 or f2fs image (blocks no file uses print as none)
+  ncheck        Name the path or paths of each inode number inside an ext2/3/4, erofs or f2fs image (inodes with no path print as none)
+  init          Decode one init service (`service <name>` block) from the image's .rc files: path, args, user, groups, capabilities, sockets
+  deleted       List deleted inodes in an ext2/3/4 image (like debugfs lsdel) and optionally recover their data
+  audit         Security posture of firmware images: ADB properties, setuid files, su binaries, init services
+  diff          Compare two firmware builds file by file: added, removed and modified files (by SHA-256), mode, owner, capability and SELinux-label changes, property and init-service changes; what got worse becomes findings
+  avbmake       Write a new vbmeta image (avbtool make_vbmeta_image without descriptors): header, SHA-256 digest and RSA signature
+  avbfooter     Write a copy of a partition image with an AVB hash footer (avbtool add_hash_footer): the image, a vbmeta with one SHA-256 hash descriptor and the footer, padded to --partition-size. The input is never modified
+  avberase      Write a copy of a partition image without its AVB footer and vbmeta (avbtool erase_footer)
+  apk-diff      Compare two builds of one APK: requested permissions, new or newly exported components and the signing certificate; what got worse becomes findings
+  avbkey        Write the AVB public key blob of a PEM RSA key (avbtool extract_public_key) and print its SHA-256 digest
+  avbkeygen     Generate an RSA private key as a PKCS#1 PEM file (avbtool gen_key); prints only the public key digest
+  vbkernel      Verify a ChromeOS kernel partition (vboot 2.x): keyblock, kernel preamble and body signatures
+  vbsign        Re-sign a ChromeOS kernel partition (vboot 2.x): the data key replaces the data key in the keyblock and signs the preamble and body, the root key signs the keyblock; the output is verified before it is written
+  avbcert       Build AVB certificate files (avb_cert): avbtool make_certificate, make_cert_permanent_attributes, make_cert_metadata, make_cert_unlock_credential
+  vbmeta        Show an AVB vbmeta image (or a partition with an AVB footer): header, key, signature, descriptors, hashes
+  ramdisk       List a boot image's ramdisk (or a ramdisk file), report its ADB properties, and with -o extract it
+  files         List or extract the files of an ext2/3/4, erofs or f2fs image (with SELinux labels), no root needed
+  sparse        Turn a raw image into an Android sparse image
+  mkbootimg     Build a boot image (header versions 0 to 2) from its sections; the inverse of unpacking one
+  ramdisk-edit  Put files into, or remove them from, the ramdisk of a boot image; writes a NEW image (dry run without --yes)
+  unsparse      Turn Android sparse image(s) into a raw image
+  identify      Say what each file is, by its magic bytes (never by name)
+  report        Staleness verdict from the OTA's build metadata
+  hash-tree     Regenerate the dm-verity hash tree for a partition image rebuilt from a payload
+  doctor        Run a deterministic health scan on an unpacked firmware directory
+  fix           Scan, then hand the findings to a coding agent as one fix prompt
+  ci            CI integration: write a GitHub Actions workflow that runs the android-doctor action
+  mcp           Expose android-doctor over the Model Context Protocol (JSON-RPC on stdio)
+  shell         Browse the findings of a firmware directory or image in an interactive shell
+  explore       Browse the findings of a firmware directory or image in a full-screen explorer
+  help          Print this message or the help of the given subcommand(s)
 
 Options:
       --no-color  Never emit colour, even on a terminal (also honours the NO_COLOR environment variable)
