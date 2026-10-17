@@ -803,6 +803,11 @@ pub fn help(rule: &str) -> Option<Help> {
             "Remove the typepermissive statement and fix the denials it hides, or confine the domain",
             High,
         ),
+        "selinux-neverallow-violation" => (
+            "A shipped allow rule matches a neverallow rule",
+            "Remove the allow rule: the policy forbids this access",
+            High,
+        ),
         "selinux-file-context-unconfined" => (
             "A file_contexts label names a permissive domain",
             "Label the path with a confined domain",
@@ -1077,6 +1082,7 @@ const KNOWN_RULES: &[&str] = &[
     "debug_leftovers",
     "selinux-permissive-domain",
     "selinux-file-context-unconfined",
+    "selinux-neverallow-violation",
     "diff-new-setuid",
     "diff-new-capability",
     "diff-root-service",

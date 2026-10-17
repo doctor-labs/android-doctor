@@ -1,0 +1,4 @@
+; Synthetic CIL: a shipped allow that a neverallow forbids. Not taken from a real device.
+(neverallow untrusted_app app_data_file (file (write)))
+(allow untrusted_app app_data_file (file (write)))
+(allow untrusted_app app_data_file (file (read)))

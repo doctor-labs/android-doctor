@@ -86,7 +86,7 @@
             "severity": "info"
           },
           "ruleId": "selinux_label_gaps",
-          "ruleIndex": 102
+          "ruleIndex": 103
         },
         {
           "baselineState": "new",
@@ -1747,6 +1747,22 @@
               "name": "selinux-file-context-unconfined",
               "shortDescription": {
                 "text": "A file_contexts label names a permissive domain"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "A shipped allow rule matches a neverallow rule"
+              },
+              "help": {
+                "text": "Remove the allow rule: the policy forbids this access"
+              },
+              "id": "selinux-neverallow-violation",
+              "name": "selinux-neverallow-violation",
+              "shortDescription": {
+                "text": "A shipped allow rule matches a neverallow rule"
               }
             },
             {

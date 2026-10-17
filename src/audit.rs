@@ -692,6 +692,15 @@ fn findings(a: &ImageAudit) -> Vec<(Finding, (String, String))> {
             );
         }
     }
+    for (file, rule) in &a.sepolicy.violations {
+        add(
+            Severity::High,
+            "selinux-neverallow-violation",
+            format!("{rule} is forbidden by a neverallow rule ({file})"),
+            file,
+            rule,
+        );
+    }
     for c in &a.sepolicy.contexts {
         for (re, ctx) in &c.unconfined {
             add(
