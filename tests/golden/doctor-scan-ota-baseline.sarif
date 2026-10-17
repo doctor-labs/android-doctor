@@ -26,7 +26,7 @@
             "severity": "low"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 99
+          "ruleIndex": 102
         },
         {
           "baselineState": "new",
@@ -52,7 +52,7 @@
             "severity": "info"
           },
           "ruleId": "avb_signature",
-          "ruleIndex": 64
+          "ruleIndex": 67
         },
         {
           "baselineState": "new",
@@ -69,7 +69,7 @@
             "severity": "info"
           },
           "ruleId": "duplicate_properties",
-          "ruleIndex": 80
+          "ruleIndex": 83
         },
         {
           "baselineState": "new",
@@ -86,7 +86,7 @@
             "severity": "info"
           },
           "ruleId": "selinux_label_gaps",
-          "ruleIndex": 104
+          "ruleIndex": 107
         },
         {
           "baselineState": "new",
@@ -112,7 +112,7 @@
             "severity": "info"
           },
           "ruleId": "mode_anomalies",
-          "ruleIndex": 98
+          "ruleIndex": 101
         },
         {
           "baselineState": "new",
@@ -129,7 +129,7 @@
             "severity": "info"
           },
           "ruleId": "init_service_hygiene",
-          "ruleIndex": 95
+          "ruleIndex": 98
         },
         {
           "baselineState": "new",
@@ -155,7 +155,7 @@
             "severity": "info"
           },
           "ruleId": "debug_leftovers",
-          "ruleIndex": 68
+          "ruleIndex": 71
         }
       ],
       "tool": {
@@ -849,6 +849,45 @@
               "name": "apk-dialer-secret-code",
               "shortDescription": {
                 "text": "Dialer secret code"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "apk-diff-exported-component"
+              },
+              "id": "apk-diff-exported-component",
+              "name": "apk-diff-exported-component",
+              "shortDescription": {
+                "text": "apk-diff-exported-component"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "apk-diff-new-permission"
+              },
+              "id": "apk-diff-new-permission",
+              "name": "apk-diff-new-permission",
+              "shortDescription": {
+                "text": "apk-diff-new-permission"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "apk-diff-signer-changed"
+              },
+              "id": "apk-diff-signer-changed",
+              "name": "apk-diff-signer-changed",
+              "shortDescription": {
+                "text": "apk-diff-signer-changed"
               }
             },
             {
