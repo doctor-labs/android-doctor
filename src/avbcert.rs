@@ -179,6 +179,27 @@ pub fn load_public_key(path: &Path) -> Result<RsaPublicKey> {
     load_rsa_public_key(&pem).with_context(|| format!("{} is not an RSA key", path.display()))
 }
 
+/// RSA key sizes `avbkeygen` makes. 8192 is not offered here.
+pub const KEYGEN_BITS: [usize; 2] = [2048, 4096];
+
+/// Generate an RSA private key from the OS random source (avbtool gen_key runs `openssl genrsa`).
+pub fn generate_key(bits: usize) -> Result<RsaPrivateKey> {
+    ensure!(
+        KEYGEN_BITS.contains(&bits),
+        "the key size must be one of {KEYGEN_BITS:?} bits, got {bits}"
+    );
+    RsaPrivateKey::new(&mut rsa::rand_core::OsRng, bits).context("generating the RSA key")
+}
+
+/// The private key as a PKCS#1 PEM block, the format `openssl genrsa` writes.
+pub fn private_key_pem(key: &RsaPrivateKey) -> Result<String> {
+    use rsa::pkcs1::EncodeRsaPrivateKey;
+    let pem = key
+        .to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
+        .context("encoding the RSA key")?;
+    Ok(pem.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,6 +223,22 @@ mod tests {
             prefix: pkcs1v15_sha512_prefix().into_boxed_slice(),
         };
         pubkey.verify(scheme, &Sha512::digest(data), sig).is_ok()
+    }
+
+    #[test]
+    fn a_generated_key_round_trips_as_pkcs1_pem_with_the_same_modulus() {
+        use rsa::pkcs1::DecodeRsaPrivateKey;
+        let key = generate_key(2048).unwrap();
+        assert_eq!(key.n().bits(), 2048);
+        let pem = private_key_pem(&key).unwrap();
+        assert!(pem.starts_with("-----BEGIN RSA PRIVATE KEY-----"));
+        let back = RsaPrivateKey::from_pkcs1_pem(&pem).unwrap();
+        assert_eq!(back.n(), key.n());
+    }
+
+    #[test]
+    fn keygen_refuses_a_size_outside_the_offered_list() {
+        assert!(generate_key(1024).is_err());
     }
 
     #[test]

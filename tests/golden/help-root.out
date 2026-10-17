@@ -33,6 +33,7 @@ Commands:
   avbfooter   Write a copy of a partition image with an AVB hash footer (avbtool add_hash_footer): the image, a vbmeta with one SHA-256 hash descriptor and the footer, padded to --partition-size. The input is never modified
   avberase    Write a copy of a partition image without its AVB footer and vbmeta (avbtool erase_footer)
   avbkey      Write the AVB public key blob of a PEM RSA key (avbtool extract_public_key) and print its SHA-256 digest
+  avbkeygen   Generate an RSA private key as a PKCS#1 PEM file (avbtool gen_key); prints only the public key digest
   vbkernel    Verify a ChromeOS kernel partition (vboot 2.x): keyblock, kernel preamble and body signatures
   avbcert     Build AVB certificate files (avb_cert): avbtool make_certificate, make_cert_permanent_attributes, make_cert_metadata, make_cert_unlock_credential
   vbmeta      Show an AVB vbmeta image (or a partition with an AVB footer): header, key, signature, descriptors, hashes
