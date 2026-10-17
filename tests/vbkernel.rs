@@ -6,7 +6,7 @@
 //! of the signed range (2rsa.c), key data as little-endian words.
 
 use rsa::pkcs1v15::Pkcs1v15Sign;
-use rsa::pkcs8::{EncodePublicKey, LineEnding};
+use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
 use rsa::traits::PublicKeyParts;
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use sha2::{Digest, Sha256};
@@ -19,6 +19,8 @@ struct Keys {
     root: RsaPrivateKey,
     other_root: RsaPrivateKey,
     data: RsaPrivateKey,
+    fresh_root: RsaPrivateKey,
+    fresh_data: RsaPrivateKey,
 }
 
 fn keys() -> &'static Keys {
@@ -29,6 +31,8 @@ fn keys() -> &'static Keys {
             root: RsaPrivateKey::new(&mut rng, 2048).unwrap(),
             other_root: RsaPrivateKey::new(&mut rng, 2048).unwrap(),
             data: RsaPrivateKey::new(&mut rng, 2048).unwrap(),
+            fresh_root: RsaPrivateKey::new(&mut rng, 2048).unwrap(),
+            fresh_data: RsaPrivateKey::new(&mut rng, 2048).unwrap(),
         }
     })
 }
@@ -269,4 +273,100 @@ fn absolute_signature_offsets_do_not_verify() {
         key.to_str().unwrap(),
     ]);
     assert!(!out.status.success(), "{out:?}");
+}
+
+fn write_private_pem(dir: &Path, name: &str, key: &RsaPrivateKey) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, key.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes()).unwrap();
+    path
+}
+
+fn sign_run(image: &Path, data: &Path, root: &Path, output: &Path) -> Output {
+    run(&[
+        "vbsign",
+        image.to_str().unwrap(),
+        "--data-key",
+        data.to_str().unwrap(),
+        "--root-key",
+        root.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+    ])
+}
+
+#[test]
+fn a_re_signed_kernel_verifies_under_the_new_root_and_data_keys() {
+    let k = keys();
+    let dir = tmp_dir("sign-valid");
+    let img = dir.join("old.img");
+    std::fs::write(&img, kernel_image(&k.root, &k.data)).unwrap();
+    let data_pem = write_private_pem(&dir, "data.pem", &k.fresh_data);
+    let root_pem = write_private_pem(&dir, "root.pem", &k.fresh_root);
+    let out = dir.join("new.img");
+
+    let s = sign_run(&img, &data_pem, &root_pem, &out);
+    assert!(s.status.success(), "{s:?}");
+    let pub_pem = write_root_pem(&dir, &k.fresh_root);
+    let (code, json) = run_json(&out, Some(&pub_pem));
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(json["verdict"], "valid", "{json}");
+    assert_eq!(json["keyblock"]["signature"], "valid", "{json}");
+    assert_eq!(json["preamble"]["signature"], "valid", "{json}");
+    assert_eq!(json["body"]["signature"], "valid", "{json}");
+}
+
+#[test]
+fn a_re_signed_kernel_no_longer_verifies_under_the_old_root_key() {
+    let k = keys();
+    let dir = tmp_dir("sign-oldroot");
+    let img = dir.join("old.img");
+    std::fs::write(&img, kernel_image(&k.root, &k.data)).unwrap();
+    let data_pem = write_private_pem(&dir, "data.pem", &k.fresh_data);
+    let root_pem = write_private_pem(&dir, "root.pem", &k.fresh_root);
+    let out = dir.join("new.img");
+    assert!(sign_run(&img, &data_pem, &root_pem, &out).status.success());
+
+    let old_pub = write_root_pem(&dir, &k.root);
+    let (code, json) = run_json(&out, Some(&old_pub));
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(json["keyblock"]["signature"], "invalid", "{json}");
+}
+
+#[test]
+fn a_flipped_byte_in_a_re_signed_kernel_is_invalid() {
+    let k = keys();
+    let dir = tmp_dir("sign-flip");
+    let img = dir.join("old.img");
+    std::fs::write(&img, kernel_image(&k.root, &k.data)).unwrap();
+    let data_pem = write_private_pem(&dir, "data.pem", &k.fresh_data);
+    let root_pem = write_private_pem(&dir, "root.pem", &k.fresh_root);
+    let out = dir.join("new.img");
+    assert!(sign_run(&img, &data_pem, &root_pem, &out).status.success());
+
+    let mut bytes = std::fs::read(&out).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0x01;
+    let flipped = dir.join("flipped.img");
+    std::fs::write(&flipped, &bytes).unwrap();
+    let pub_pem = write_root_pem(&dir, &k.fresh_root);
+    let (code, json) = run_json(&flipped, Some(&pub_pem));
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(json["body"]["signature"], "invalid", "{json}");
+    assert_eq!(json["verdict"], "invalid", "{json}");
+}
+
+#[test]
+fn a_data_key_of_the_wrong_size_is_refused_and_no_output_is_written() {
+    let k = keys();
+    let dir = tmp_dir("sign-size");
+    let img = dir.join("old.img");
+    std::fs::write(&img, kernel_image(&k.root, &k.data)).unwrap();
+    let small = RsaPrivateKey::new(&mut rand::thread_rng(), 1024).unwrap();
+    let data_pem = write_private_pem(&dir, "small.pem", &small);
+    let root_pem = write_private_pem(&dir, "root.pem", &k.fresh_root);
+    let out = dir.join("new.img");
+
+    let s = sign_run(&img, &data_pem, &root_pem, &out);
+    assert!(!s.status.success(), "{s:?}");
+    assert!(!out.exists());
 }
