@@ -47,17 +47,63 @@ pub fn tool_list() -> Value {
               &schema(image, r#""image""#, false)),
         tool("unpack", "unpack --json: the header of a boot or vendor_boot image (sections listed, never written)",
               &schema(one, r#""path""#, false)),
+        tool("tree", "tree --json: the whole tree (or a subtree, at most depth levels) of an ext2/3/4, erofs or f2fs image, without extracting it; the doctor/1 envelope, no findings",
+              &schema(&format!(r#"{image},"path":{{"type":"string","description":"Path inside the image to start from (default /)"}},"depth":{{"type":"integer","minimum":0,"description":"Show at most N levels below the start path"}}"#), r#""image""#, false)),
+        tool("find", "find --json: search an ext2/3/4, erofs or f2fs image by name glob, SELinux label, setuid or setgid bit, extended attribute or content (read-only); files grep could not read are listed as not checked",
+              &schema(&format!(r#"{image},"path":{{"type":"string","description":"Directory to search under (default /)"}},"name":{{"type":"string","description":"Glob (* ?) for the file name"}},"selinux":{{"type":"string","description":"Glob for the SELinux label"}},"xattr":{{"type":"string","description":"NAME (present) or NAME=GLOB (value matches)"}},"grep":{{"type":"string","description":"Text a regular file must contain (files up to 1 MiB)"}},"setuid":{{"type":"boolean"}},"setgid":{{"type":"boolean"}}"#), r#""image""#, false)),
+        tool("stat", "stat --json: the metadata of one path (type, mode, owner, size, links, mtime, link target, xattrs, SELinux label) inside an image; symlinks are not followed",
+              &schema(&format!(r#"{image},"path":{{"type":"string","description":"Path inside the image"}}"#), r#""image","path""#, false)),
     ] })
 }
 
 /// Browsing tools: read-only (no output option is offered, so the CLI never writes) and bounded.
-const BROWSE: [&str; 7] = ["ls", "cat", "info", "vbmeta", "ramdisk", "files", "unpack"];
+const BROWSE: [&str; 10] = [
+    "ls", "cat", "info", "vbmeta", "ramdisk", "files", "unpack", "tree", "find", "stat",
+];
 
 /// The largest stdout a browsing tool returns; more is an error, never a truncated answer.
 const BROWSE_MAX_BYTES: usize = 1 << 20;
 
+/// The CLI arguments for the search tools `tree`, `find` and `stat`: the flags each accepts, then
+/// `--`, the image and the path. Read-only, like the browsing tools.
+fn search_args(name: &str, args: &Value) -> Result<Vec<String>> {
+    let text = |k: &str| {
+        args.get(k)
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+    };
+    let image =
+        text("image").ok_or_else(|| anyhow::anyhow!("missing required argument \"image\""))?;
+    let path = match (text("path"), name) {
+        (Some(p), _) => p,
+        (None, "stat") => anyhow::bail!("missing required argument \"path\""),
+        (None, _) => "/",
+    };
+    let flags: &[&str] = match name {
+        "tree" => &["depth"],
+        "find" => &["name", "selinux", "xattr", "grep", "setuid", "setgid"],
+        _ => &[],
+    };
+    let mut argv: Vec<String> = vec![name.into(), "--json".into()];
+    for key in flags {
+        match args.get(*key) {
+            Some(Value::String(v)) if !v.is_empty() => argv.push(format!("--{key}={v}")),
+            Some(Value::Number(n)) => argv.push(format!("--{key}={n}")),
+            Some(Value::Bool(true)) => argv.push(format!("--{key}")),
+            _ => {}
+        }
+    }
+    argv.push("--".into());
+    argv.push(image.to_string());
+    argv.push(path.to_string());
+    Ok(argv)
+}
+
 /// The CLI arguments for a browsing tool call. `cat` prints raw bytes (it has no `--json`).
 fn browse_args(name: &str, args: &Value) -> Result<Vec<String>> {
+    if matches!(name, "tree" | "find" | "stat") {
+        return search_args(name, args);
+    }
     let text = |k: &str| {
         args.get(k)
             .and_then(Value::as_str)
@@ -284,6 +330,45 @@ mod tests {
             ["unpack", "--json", "--", "boot.img"]
         );
         assert!(cli_args("cat", &json!({ "image": "sys.img" })).is_err());
+    }
+
+    #[test]
+    fn tree_find_and_stat_map_to_the_cli() {
+        let a = json!({ "image": "sys.img", "path": "/etc", "depth": 2 });
+        assert_eq!(
+            cli_args("tree", &a).unwrap(),
+            ["tree", "--json", "--depth=2", "--", "sys.img", "/etc"]
+        );
+        let a = json!({ "image": "sys.img", "name": "*.so", "xattr": "security.selinux=*su*", "setuid": true });
+        assert_eq!(
+            cli_args("find", &a).unwrap(),
+            [
+                "find",
+                "--json",
+                "--name=*.so",
+                "--xattr=security.selinux=*su*",
+                "--setuid",
+                "--",
+                "sys.img",
+                "/"
+            ]
+        );
+        let a = json!({ "image": "sys.img", "path": "/system/bin/su" });
+        assert_eq!(
+            cli_args("stat", &a).unwrap(),
+            ["stat", "--json", "--", "sys.img", "/system/bin/su"]
+        );
+        assert!(cli_args("stat", &json!({ "image": "sys.img" })).is_err());
+        for name in ["tree", "find", "stat"] {
+            assert!(
+                tool_list()["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|t| t["name"] == name),
+                "tool {name} missing"
+            );
+        }
     }
 
     #[test]
