@@ -6,6 +6,11 @@
       "subject": "system"
     },
     {
+      "id": "apk-code-behaviour-telephony",
+      "severity": "info",
+      "subject": "system"
+    },
+    {
       "id": "apk-code-cleartext-url",
       "severity": "warn",
       "subject": "system"
