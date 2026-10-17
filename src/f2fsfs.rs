@@ -83,7 +83,7 @@ const INLINE_XATTR: u8 = 0x01;
 const INLINE_DATA: u8 = 0x02;
 const INLINE_DENTRY: u8 = 0x04;
 const EXTRA_ATTR: u8 = 0x20;
-/// `i_advise`: the inode is encrypted.
+/// `i_advise`: the inode is encrypted (`FADVISE_ENCRYPT_BIT`).
 const ADVISE_ENCRYPT: u8 = 0x04;
 /// `i_flags`: the file is compressed (or has compression enabled).
 const COMPR_FL: u32 = 0x4;
@@ -759,7 +759,7 @@ impl Fs {
     ) -> Result<()> {
         match addr {
             0 | NEW_ADDR => {}
-            COMPRESS_ADDR => bail!("compressed f2fs files are not supported"),
+            COMPRESS_ADDR => bail!("compressed f2fs data is not checked"),
             a => {
                 ensure!(
                     a >= self.sb.main_blkaddr && (a as u64) < self.sb.block_count,
@@ -837,7 +837,9 @@ impl Fs {
         Ok(&blk[at..at + len])
     }
 
-    /// Refuse the data of files this reader cannot decode.
+    /// Refuse the data of files this reader cannot decode: an encrypted inode (the
+    /// `FADVISE_ENCRYPT_BIT` in `i_advise`) is reported encrypted with no decryption; a
+    /// compressed inode is reported as not checked, its data never guessed.
     fn check_readable(&self, ino: &Inode) -> Result<()> {
         ensure!(
             ino.advise & ADVISE_ENCRYPT == 0,
@@ -846,7 +848,7 @@ impl Fs {
         );
         ensure!(
             !(ino.flags & COMPR_FL != 0 && self.sb.feature & F_COMPRESSION != 0),
-            "inode {} is a compressed file; compressed f2fs files are not supported",
+            "inode {} is a compressed file; its data is compressed: not checked",
             ino.nid
         );
         Ok(())
@@ -2189,6 +2191,59 @@ pub(crate) mod tests {
         assert!(err_of(fs.cat_path("f", &mut Vec::new())).contains("encrypted"));
         assert!(err_of(fs.list_dir("d")).contains("encrypted"));
         assert!(err_of(fs.walk()).contains("encrypted"));
+    }
+
+    #[test]
+    fn the_i_advise_encrypt_bit_reports_the_file_encrypted_and_i_flags_0x800_is_inert() {
+        // case 1: the FADVISE_ENCRYPT_BIT (0x04) in the on-disk i_advise byte refuses the data
+        let mut m = Img::new();
+        let mut f = I::new(REG | 0o644, 1);
+        f.advise = ADVISE_ENCRYPT | 0x01; // encrypt bit or'd with another advise bit
+        f.flags = 0x800; // ext4's F_ENCRYPT must stay inert in an f2fs reader
+        f.inline = INLINE_DATA;
+        f.inline_data = vec![1];
+        m.inode(4, &f);
+        m.root(&[("f", 4)]);
+        assert!(err_of(m.fs().cat_path("f", &mut Vec::new())).contains("encrypted"));
+        // case 2: the same inode without the advise encrypt bit is a plain readable file,
+        // the 0x800 i_flags included
+        let mut plain = Img::new();
+        let mut p = I::new(REG | 0o644, 1);
+        p.flags = 0x800;
+        p.advise = 0x01;
+        p.inline = INLINE_DATA;
+        p.inline_data = vec![7];
+        plain.inode(4, &p);
+        plain.root(&[("p", 4)]);
+        assert_eq!(cat(&plain.fs(), "p"), [7]);
+    }
+
+    #[test]
+    fn compressed_files_report_not_checked_and_cluster_markers_are_not_misread() {
+        let mut m = Img::with_feature(F_COMPRESSION);
+        let mut f = I::new(REG | 0o644, 4096);
+        f.flags = COMPR_FL;
+        f.addrs = vec![MAIN];
+        m.inode(4, &f);
+        let mut g = I::new(REG | 0o644, 8192);
+        g.addrs = vec![COMPRESS_ADDR, MAIN];
+        m.inode(5, &g);
+        m.root(&[("c", 4), ("g", 5)]);
+        let fs = m.fs();
+        for p in ["c", "g"] {
+            let e = err_of(fs.cat_path(p, &mut Vec::new()));
+            assert!(e.contains("compressed"), "{p}: {e}");
+            assert!(e.contains("not checked"), "{p}: {e}");
+        }
+        // the flag on a volume without the feature is just a file
+        let mut plain = Img::new();
+        let d = plain.data(&pattern(4096, 4));
+        let mut h = I::new(REG | 0o644, 4096);
+        h.flags = COMPR_FL;
+        h.addrs = vec![d];
+        plain.inode(4, &h);
+        plain.root(&[("h", 4)]);
+        assert_eq!(cat(&plain.fs(), "h"), pattern(4096, 4));
     }
 
     #[test]
