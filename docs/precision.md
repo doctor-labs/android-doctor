@@ -53,6 +53,7 @@ machine, not necessarily across machines. Findings do not depend on it.
 | `apk-tracker` (erofs) | `apk-tracker-sdk` over the DEX of one APK (`Tracker.apk`, a zip of a dex built from `tests/fixtures/dex/AppsFlyerLib.java`: a stub class in the `com.appsflyer` package, not the real SDK). Binary, like `apk-code` |
 | `apk-ipc` (erofs) | the intent and receiver rules over one APK (`Ipc.apk`, a zip of `tests/fixtures/dex/ipc.dex`, built from `Ipc.java` next to it): `apk-code-receiver-unprotected` (medium), `apk-code-pending-implicit-intent` (medium and low), `apk-code-broadcast-no-permission` (low). Like `apk-code`, the one binary is a DEX that cannot be written as text |
 | `apk-fileprovider` (erofs) | `apk-fileprovider-broad-path` (medium) over the `res/xml/file_paths.xml` of one APK (`FileProvider.apk`, built with `aapt2 compile` and `aapt2 link` from a `<root-path name="r" path=""/>` document; a real binary XML, the second binary in the corpus). No other finding is expected from the unsigned, manifest-only APK besides the generic `doctor` infos |
+| `apk-behaviour` (erofs) | the `apk-code-behaviour-*` rules over `Categories.apk` (a zip of `tests/fixtures/dex/categories.dex`, built from `Categories.java` next to it): one site per category (telephony, SMS, location, settings, media, sockets, native, PIM) |
 | `ota-blocks` | the "cannot evaluate" infos for every quality rule (OTA with no images) |
 | `corrupt-image` | the same infos, from an unreadable image |
 

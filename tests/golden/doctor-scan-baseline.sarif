@@ -26,7 +26,7 @@
             "severity": "critical"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 90
+          "ruleIndex": 98
         },
         {
           "baselineState": "new",
@@ -52,7 +52,7 @@
             "severity": "info"
           },
           "ruleId": "avb_signature",
-          "ruleIndex": 56
+          "ruleIndex": 64
         }
       ],
       "tool": {
@@ -234,6 +234,134 @@
               "name": "apk-code-anti-analysis",
               "shortDescription": {
                 "text": "An APK's code looks for root, an emulator, frida or a debugger"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An APK's code uses APIs for location (location updates, last known location, cell location)"
+              },
+              "help": {
+                "text": "Informational: check each listed call site against the app's stated purpose; this is not a finding by itself"
+              },
+              "id": "apk-code-behaviour-location",
+              "name": "apk-code-behaviour-location",
+              "shortDescription": {
+                "text": "An APK's code uses APIs for location (location updates, last known location, cell location)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An APK's code uses APIs for audio or video capture (AudioRecord, MediaRecorder, Camera)"
+              },
+              "help": {
+                "text": "Informational: check each listed call site against the app's stated purpose; this is not a finding by itself"
+              },
+              "id": "apk-code-behaviour-media",
+              "name": "apk-code-behaviour-media",
+              "shortDescription": {
+                "text": "An APK's code uses APIs for audio or video capture (AudioRecord, MediaRecorder, Camera)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An APK's code uses APIs for native code loading (System.load, Runtime.load)"
+              },
+              "help": {
+                "text": "Informational: check each listed call site against the app's stated purpose; this is not a finding by itself"
+              },
+              "id": "apk-code-behaviour-native",
+              "name": "apk-code-behaviour-native",
+              "shortDescription": {
+                "text": "An APK's code uses APIs for native code loading (System.load, Runtime.load)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An APK's code uses APIs for personal data (contacts, SMS, call log or calendar content providers)"
+              },
+              "help": {
+                "text": "Informational: check each listed call site against the app's stated purpose; this is not a finding by itself"
+              },
+              "id": "apk-code-behaviour-pim",
+              "name": "apk-code-behaviour-pim",
+              "shortDescription": {
+                "text": "An APK's code uses APIs for personal data (contacts, SMS, call log or calendar content providers)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An APK's code uses APIs for device settings (writes to Settings.Secure, Settings.Global or Settings.System)"
+              },
+              "help": {
+                "text": "Informational: check each listed call site against the app's stated purpose; this is not a finding by itself"
+              },
+              "id": "apk-code-behaviour-settings",
+              "name": "apk-code-behaviour-settings",
+              "shortDescription": {
+                "text": "An APK's code uses APIs for device settings (writes to Settings.Secure, Settings.Global or Settings.System)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An APK's code uses APIs for SMS reads or interception (message body, PDU parsing, abortBroadcast)"
+              },
+              "help": {
+                "text": "Informational: check each listed call site against the app's stated purpose; this is not a finding by itself"
+              },
+              "id": "apk-code-behaviour-sms",
+              "name": "apk-code-behaviour-sms",
+              "shortDescription": {
+                "text": "An APK's code uses APIs for SMS reads or interception (message body, PDU parsing, abortBroadcast)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An APK's code uses APIs for raw sockets (Socket, ServerSocket, DatagramSocket)"
+              },
+              "help": {
+                "text": "Informational: check each listed call site against the app's stated purpose; this is not a finding by itself"
+              },
+              "id": "apk-code-behaviour-sockets",
+              "name": "apk-code-behaviour-sockets",
+              "shortDescription": {
+                "text": "An APK's code uses APIs for raw sockets (Socket, ServerSocket, DatagramSocket)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An APK's code uses APIs for telephony identifiers (IMEI, IMSI, phone number, SIM serial)"
+              },
+              "help": {
+                "text": "Informational: check each listed call site against the app's stated purpose; this is not a finding by itself"
+              },
+              "id": "apk-code-behaviour-telephony",
+              "name": "apk-code-behaviour-telephony",
+              "shortDescription": {
+                "text": "An APK's code uses APIs for telephony identifiers (IMEI, IMSI, phone number, SIM serial)"
               }
             },
             {

@@ -1,8 +1,10 @@
 //! Code rules over an APK's DEX: risky API use found from the call graph the parser extracts
 //! (WebView, crypto, random, logging, world-accessible files, external storage, SSL trust,
 //! dynamic loading, raw SQL, command execution, tapjacking, screenshots, root/emulator/frida
-//! checks). Modelled on MobSF `android_apis.yaml` / `android_rules.yaml` and qark's
-//! `webview`, `crypto`, `cert`, `file` plugins, written from their descriptions.
+//! checks) and behaviour categories (telephony identifiers, SMS, location, device settings,
+//! audio/video capture, sockets, native loading, PIM content URIs; `apk-code-behaviour-*`, info
+//! only). Modelled on MobSF `android_apis.yaml` / `android_rules.yaml`, qark's `webview`, `crypto`,
+//! `cert`, `file` plugins and androwarn's behaviour modules, written from their descriptions.
 //!
 //! Method calls are matched by name and prototype, whatever class they are called on (so a call
 //! on a `MyActivity` subclass still counts as a `Context` call). Arguments are judged only when
@@ -486,6 +488,12 @@ fn judge(s: &Site, c: &mut Collector) {
                 at,
             );
         }
+        // Behaviour categories (androwarn-style): the call is listed, not judged
+        for (rule, what, sigs) in BEHAVIOURS {
+            if sigs.iter().any(|p| f.contains(p)) {
+                c.add(rule, Severity::Info, what, at);
+            }
+        }
         // Debugger checks
         if f.starts_with("Landroid/os/Debug;->isDebuggerConnected(")
             || f.starts_with("Landroid/os/Debug;->waitingForDebugger(")
@@ -544,6 +552,97 @@ fn judge(s: &Site, c: &mut Collector) {
         );
     }
 }
+
+/// Behaviour categories: Android APIs whose use the app's purpose should explain. Matched as
+/// substrings of a call's callee (class, name and prototype), so a call on an app subclass such
+/// as `abortBroadcast()` still counts. Method names checked against android.jar (API 34).
+/// `exec` is not here: `apk-code-command-exec` already reports Runtime.exec and ProcessBuilder.
+const BEHAVIOURS: [(&str, &str, &[&str]); 7] = [
+    (
+        "apk-code-behaviour-telephony",
+        "telephony identifiers",
+        &[
+            "Landroid/telephony/TelephonyManager;->getDeviceId(",
+            "Landroid/telephony/TelephonyManager;->getImei(",
+            "Landroid/telephony/TelephonyManager;->getMeid(",
+            "Landroid/telephony/TelephonyManager;->getSubscriberId(",
+            "Landroid/telephony/TelephonyManager;->getSimSerialNumber(",
+            "Landroid/telephony/TelephonyManager;->getLine1Number(",
+        ],
+    ),
+    (
+        "apk-code-behaviour-sms",
+        "SMS interception",
+        &[
+            "Landroid/telephony/SmsMessage;->getMessageBody(",
+            "Landroid/telephony/SmsMessage;->getOriginatingAddress(",
+            "Landroid/telephony/SmsMessage;->createFromPdu(",
+            "->abortBroadcast()V",
+        ],
+    ),
+    (
+        "apk-code-behaviour-location",
+        "location",
+        &[
+            "Landroid/location/LocationManager;->requestLocationUpdates(",
+            "Landroid/location/LocationManager;->getLastKnownLocation(",
+            "Landroid/location/Location;->getLatitude()D",
+            "Landroid/location/Location;->getLongitude()D",
+            "Landroid/telephony/TelephonyManager;->getCellLocation()",
+        ],
+    ),
+    (
+        "apk-code-behaviour-settings",
+        "device settings",
+        &[
+            "Landroid/provider/Settings$Secure;->putString(",
+            "Landroid/provider/Settings$Secure;->putInt(",
+            "Landroid/provider/Settings$Global;->putString(",
+            "Landroid/provider/Settings$Global;->putInt(",
+            "Landroid/provider/Settings$System;->putString(",
+            "Landroid/provider/Settings$System;->putInt(",
+        ],
+    ),
+    (
+        "apk-code-behaviour-media",
+        "audio and video capture",
+        &[
+            "Landroid/media/AudioRecord;->startRecording(",
+            "Landroid/media/MediaRecorder;->start()V",
+            "Landroid/hardware/Camera;->open(",
+            "Landroid/hardware/Camera;->takePicture(",
+            "Landroid/hardware/camera2/CameraManager;->openCamera(",
+        ],
+    ),
+    (
+        "apk-code-behaviour-sockets",
+        "sockets",
+        &[
+            "Ljava/net/Socket;-><init>(",
+            "Ljava/net/ServerSocket;-><init>(",
+            "Ljava/net/DatagramSocket;-><init>(",
+        ],
+    ),
+    (
+        "apk-code-behaviour-native",
+        "native code loading",
+        &[
+            "Ljava/lang/System;->loadLibrary(",
+            "Ljava/lang/System;->load(",
+            "Ljava/lang/Runtime;->loadLibrary(",
+            "Ljava/lang/Runtime;->load(",
+        ],
+    ),
+];
+
+/// Content URIs of personal data (contacts, SMS, MMS, call log, calendar), found in the string pool.
+const PIM_URIS: [&str; 5] = [
+    "content://com.android.contacts",
+    "content://sms",
+    "content://mms",
+    "content://call_log",
+    "content://com.android.calendar",
+];
 
 /// Root, emulator and frida markers, found in the string pool.
 const MARKERS: [(&str, &[&str]); 3] = [
@@ -627,6 +726,17 @@ pub fn scan(dexes: &[(Dex, Vec<u8>)], activities: usize) -> Vec<ManifestIssue> {
                     &dex.name,
                 );
             }
+        }
+        if let Some(uri) = PIM_URIS
+            .iter()
+            .find(|u| dex.strings.iter().any(|s| s.contains(**u)))
+        {
+            c.add(
+                "apk-code-behaviour-pim",
+                Severity::Info,
+                &format!("PIM access (contacts, SMS, call log or calendar, \"{uri}\")"),
+                &dex.name,
+            );
         }
     }
     if activities > 0 && !filter_touches {
@@ -817,6 +927,33 @@ mod tests {
     const CLEAN: &[u8] = include_bytes!("../../tests/fixtures/dex/demo.dex");
     const ENDPOINTS: &[u8] = include_bytes!("../../tests/fixtures/dex/endpoints.dex");
     const BEHAVIOUR: &[u8] = include_bytes!("../../tests/fixtures/dex/behaviour.dex");
+    /// javac + d8 over tests/fixtures/dex/Categories.java (source included).
+    const CATEGORIES: &[u8] = include_bytes!("../../tests/fixtures/dex/categories.dex");
+
+    #[test]
+    fn behaviour_categories_are_listed_by_api_use() {
+        // one rule id per category, so the 5-site detail cap never hides a category
+        let v = run(CATEGORIES, 0);
+        for (rule, cat) in [
+            ("apk-code-behaviour-telephony", "telephony identifiers"),
+            ("apk-code-behaviour-sms", "SMS interception"),
+            ("apk-code-behaviour-location", "location"),
+            ("apk-code-behaviour-settings", "device settings"),
+            ("apk-code-behaviour-media", "audio and video capture"),
+            ("apk-code-behaviour-sockets", "sockets"),
+            ("apk-code-behaviour-native", "native code loading"),
+            ("apk-code-behaviour-pim", "PIM access"),
+        ] {
+            let d = detail(&v, rule, Severity::Info);
+            assert!(d.contains(cat), "{rule}: {d}");
+        }
+        assert!(
+            run(CLEAN, 0)
+                .iter()
+                .all(|i| !i.rule.starts_with("apk-code-behaviour")),
+            "demo.dex uses none of the behaviour APIs"
+        );
+    }
 
     fn run(bytes: &[u8], activities: usize) -> Vec<ManifestIssue> {
         let d = dex::parse("classes.dex", bytes).unwrap();

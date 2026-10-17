@@ -353,6 +353,14 @@ MobSF `android_apis` / `android_rules` and qark, not a copy of either rule set.
 | `apk-code-tapjacking` | info | the APK has activities and never calls `setFilterTouchesWhenObscured(true)` |
 | `apk-code-screenshot` | info | the APK has activities and never sets `FLAG_SECURE` |
 | `apk-code-anti-analysis` | info | root, emulator or frida marker strings, `Debug.isDebuggerConnected` |
+| `apk-code-behaviour-telephony` | info | `TelephonyManager` device, subscriber, line number, SIM serial, IMEI and MEID getters |
+| `apk-code-behaviour-sms` | info | `SmsMessage` body, originator and `createFromPdu`; `abortBroadcast` (SMS interception) |
+| `apk-code-behaviour-location` | info | `LocationManager.requestLocationUpdates` and `getLastKnownLocation`, `Location` latitude and longitude, `getCellLocation` |
+| `apk-code-behaviour-settings` | info | `putString`/`putInt` on `Settings.Secure`, `Settings.Global` and `Settings.System` |
+| `apk-code-behaviour-media` | info | `AudioRecord.startRecording`, `MediaRecorder.start`, `Camera.open`/`takePicture`, `CameraManager.openCamera` |
+| `apk-code-behaviour-sockets` | info | `Socket`, `ServerSocket` and `DatagramSocket` constructors |
+| `apk-code-behaviour-native` | info | `System` and `Runtime` `load`/`loadLibrary` (native code loading; `exec` is `apk-code-command-exec`) |
+| `apk-code-behaviour-pim` | info | a content URI of contacts, SMS, MMS, call log or calendar in the dex strings |
 | `apk-code-unscanned` | info | a dex was too large, unreadable or unsupported (not a pass) |
 
 Limits: no data flow beyond constants set in the same straight-line stretch (registers are
