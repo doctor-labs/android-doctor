@@ -187,7 +187,7 @@ fn hunk_header(old_start: usize, old_count: usize, new_start: usize, new_count: 
 
 /// Find the first old line number in a hunk slice (from Same/Removed lines).
 /// If the hunk has no old lines (only Added), return the insertion point:
-/// `old_before` (or 1 if old is non-empty and old_before is 0, or 0 if old is empty).
+/// `old_before`, the line before the insertion (0 at the start of the file), as diff -u prints it.
 fn find_first_old(hunk: &[DiffLine], old_before: usize, old_total: usize) -> usize {
     for dl in hunk {
         match dl {
@@ -198,8 +198,6 @@ fn find_first_old(hunk: &[DiffLine], old_before: usize, old_total: usize) -> usi
     // Pure additions.
     if old_total == 0 {
         0
-    } else if old_before == 0 {
-        1
     } else {
         old_before
     }
@@ -217,8 +215,6 @@ fn find_first_new(hunk: &[DiffLine], new_before: usize, new_total: usize) -> usi
     // Pure removals.
     if new_total == 0 {
         0
-    } else if new_before == 0 {
-        1
     } else {
         new_before
     }
