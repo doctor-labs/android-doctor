@@ -803,6 +803,42 @@ mod tests {
         assert!(ok > 100 && err > 100, "ok={ok} err={err}");
     }
 
+    /// Same generator am-fs-erofs used to fill its fixture.
+    fn zstd_noise(len: usize) -> Vec<u8> {
+        let mut x: u32 = 0x1234_5678;
+        (0..len)
+            .map(|_| {
+                x = x.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                (x >> 16) as u8
+            })
+            .collect()
+    }
+
+    /// tests/fixtures/erofs/erofs-zstd-4k.img is a real `mkfs.erofs -b4096 -zzstd` image (36 KiB,
+    /// copied from am-fs-erofs test-disks, MIT, see THIRD_PARTY.md). This tree cannot build ZSTD
+    /// images itself, so the committed image is the only ZSTD input here.
+    #[test]
+    fn zstd_fixture_reads_back_exactly() {
+        let mut mixed = zstd_noise(9000);
+        mixed.extend(std::iter::repeat_n(0x7a_u8, 8000));
+        mixed.extend(zstd_noise(3000));
+        let want: Vec<(&str, Vec<u8>)> = vec![
+            ("hello.txt", b"hello zstd\n".to_vec()),
+            (
+                "compressible.txt",
+                b"the same line over and over\n".repeat(2000),
+            ),
+            ("incompressible.bin", zstd_noise(16384)),
+            ("sub/mixed.bin", mixed),
+            ("sub/tiny.txt", b"t".to_vec()),
+        ];
+        let fs = from_bytes(include_bytes!("../tests/fixtures/erofs/erofs-zstd-4k.img").to_vec())
+            .unwrap();
+        for (path, data) in want {
+            assert!(cat_bytes(&fs, path) == data, "{path}: contents differ");
+        }
+    }
+
     #[test]
     fn unsupported_features_are_refused_by_name() {
         // The am-fs-erofs crate refuses images with unsupported feature_incompat bits.

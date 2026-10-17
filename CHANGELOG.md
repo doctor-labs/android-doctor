@@ -41,8 +41,8 @@ All notable changes to this project are documented here. The format follows
 - `shell` gains a `stat [sel]` verb: the entry's inode, owner, mode, size, link count, mtime and SELinux label, read from the opened image's own directory listing (#223).
 
 - A test now covers the refusal of EROFS images that use 48-bit addressing or the
-  metabox. ZSTD-compressed images stay unverified: no zstd-capable `mkfs.erofs` was
-  available to build one. (#228)
+  metabox. ZSTD-compressed images are read back exactly from a committed
+  `mkfs.erofs -zzstd` fixture (#228).
 - `deleted` command lists deleted (unlinked but not freed) inodes in an ext2/3/4 image — the same set `debugfs lsdel` scans (inodes with `i_links_count == 0` and `i_mode != 0`) — and optionally recovers their data blocks into a new directory (`-o <dir>`, with `--max-bytes` capping per-file output). Read-only: the image is never written to. erofs and f2fs are reported as unsupported (#225).
 - f2fs encrypted files (the `FADVISE_ENCRYPT_BIT` in the on-disk `i_advise` byte) are reported as encrypted with no decryption, and compressed files (`F2FS_COMPR_FL 0x4` with the compression feature, or a compressed cluster marker) are reported as "compressed: not checked" instead of being misread (#229).
 - ext4 files stored as inline data (`EXT4_INLINE_DATA_FL`) are read from the inode body: the first 60 bytes from `i_block`, the rest from the `system.data` xattr, for `cat`, `files` and extraction (#227).
