@@ -2284,10 +2284,10 @@ fn vbmeta_command(
         })?;
         meta.coverage = Some(avb::check_coverage(&top_meta, &meta, image)?);
     }
-    let checks = match images {
-        Some(dir) => avb::verify_images(&meta, dir)?,
-        None => Vec::new(),
-    };
+    let mut checks = avb::verify_footer_partition(&meta, image)?;
+    if let Some(dir) = images {
+        checks.extend(avb::verify_images(&meta, dir)?);
+    }
     let chained_findings: Vec<_> = images
         .map(|d| meta.cross_check_chained(d))
         .unwrap_or_default();
@@ -2321,7 +2321,7 @@ fn vbmeta_command(
     if meta.any_failure(&checks) {
         return Err(reporting::Gate {
             code: doctor_core::ExitCode::Findings,
-            message: "the digest, signature, or a partition hash does not match".into(),
+            message: meta.failure_reasons(&checks).join("; "),
         }
         .into());
     }

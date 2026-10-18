@@ -91,6 +91,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- `vbmeta` (AD-01): a partition image with a valid unsigned (algorithm NONE) AVB hash footer exited 1 with a "does not match" message although nothing mismatched; it now exits 0. The footer's own hash descriptor is recomputed over the image (no `--images` needed), so a changed byte exits 1 and shows as `MISMATCH` in text and `--json`. The failure message names the check that failed.
 - The manifest `path` attribute is read from its real id (0x0101002a); 0x0101002c is `pathPattern`.
 - `hash-tree` computed the wrong root digest (it hashed the last tree level a second time) and stored the levels leaf-first; both now match `avbtool` byte for byte. The old unit test expected the wrong roots. sha1 and sha512 descriptors were refused and are now supported.
 - The v3 signing block id was wrong (`0x7109871b`; it is `0xf05368c0`), so v3-only signers were never listed.
