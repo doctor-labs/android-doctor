@@ -55,6 +55,7 @@ mod mcp;
 mod nokianb0;
 mod oem;
 mod otameta;
+mod otasign;
 mod otaverify;
 mod ozip;
 mod pac;
@@ -664,6 +665,11 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Patch an OTA or vbmeta image (unverified on a device): strip or re-sign an OTA zip, clear vbmeta verification flags
+    Patch {
+        #[command(subcommand)]
+        action: PatchAction,
+    },
     /// Put files into, or remove them from, the ramdisk of a boot image; writes a NEW image (dry run without --yes)
     RamdiskEdit {
         /// Boot image (header versions 0 to 2, uncompressed cpio ramdisk)
@@ -754,6 +760,67 @@ enum Command {
 }
 
 /// What `fec` should do.
+#[derive(Subcommand)]
+enum PatchAction {
+    /// Write a copy of an OTA zip without its whole-file signature and without META-INF/com/android/otacert (unverified on a device)
+    OtaStrip {
+        /// OTA package (zip)
+        input: PathBuf,
+        /// New package to write; the input is never changed
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Replace an existing output file instead of refusing
+        #[arg(long)]
+        force: bool,
+        /// Print JSON (doctor/1 envelope) instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write a copy of an unsigned OTA zip with a whole-file signature by --key, read back with verify-ota --cert (unverified on a device)
+    OtaSign {
+        /// OTA package (zip) without a signature comment (run patch ota-strip first if it has one)
+        input: PathBuf,
+        /// RSA private key, PEM (PKCS#8 or PKCS#1)
+        #[arg(long)]
+        key: PathBuf,
+        /// X.509 certificate for the key, PEM or DER; embedded in the signature and checked on read-back
+        #[arg(long)]
+        cert: PathBuf,
+        /// New package to write; the input is never changed
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Replace an existing output file instead of refusing
+        #[arg(long)]
+        force: bool,
+        /// Print JSON (doctor/1 envelope) instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Clear verity or verification flags in a vbmeta image and write a NEW image; without --key the result is unsigned (algorithm NONE) (unverified on a device)
+    VbmetaFlags {
+        /// vbmeta image
+        input: PathBuf,
+        /// Clear HASHTREE_DISABLED (bit 0)
+        #[arg(long)]
+        clear_hashtree_disabled: bool,
+        /// Clear VERIFICATION_DISABLED (bit 1)
+        #[arg(long)]
+        clear_verification_disabled: bool,
+        /// Re-sign with this RSA private key (PEM) using the image's own algorithm
+        #[arg(long)]
+        key: Option<PathBuf>,
+        /// New image to write; the input is never changed
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Replace an existing output file instead of refusing
+        #[arg(long)]
+        force: bool,
+        /// Print JSON (doctor/1 envelope) instead of text
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 #[derive(Subcommand)]
 enum FecAction {
     /// Write the FEC file (parity + AOSP header) for a file whose size is a multiple of 4096
@@ -1571,6 +1638,41 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
         } => partitions_command(&input, sector_size, json),
         Command::Dt { input, json } => dt_command(&input, json),
         Command::Fec { action } => fec_command(action),
+        Command::Patch { action } => match action {
+            PatchAction::OtaStrip {
+                input,
+                output,
+                force,
+                json,
+            } => print_out(&otasign::strip_command(&input, &output, force, json)?),
+            PatchAction::OtaSign {
+                input,
+                key,
+                cert,
+                output,
+                force,
+                json,
+            } => print_out(&otasign::sign_command(
+                &input, &key, &cert, &output, force, json,
+            )?),
+            PatchAction::VbmetaFlags {
+                input,
+                clear_hashtree_disabled,
+                clear_verification_disabled,
+                key,
+                output,
+                force,
+                json,
+            } => print_out(&otasign::clear_flags_command(
+                &input,
+                clear_hashtree_disabled,
+                clear_verification_disabled,
+                key.as_deref(),
+                &output,
+                force,
+                json,
+            )?),
+        },
         Command::VerifyOta {
             input,
             cert,
