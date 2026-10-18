@@ -154,6 +154,51 @@ fn stat_command(
     ))
 }
 
+/// `decode` of an init `.rc`: the counts, then one line per import, action and service.
+fn initrc_view(text: &str) -> String {
+    let rc = crate::initrc::parse(text);
+    let mut lines = vec![format!(
+        "{} imports, {} actions, {} services",
+        rc.imports.len(),
+        rc.actions.len(),
+        rc.services.len()
+    )];
+    lines.extend(rc.imports.iter().map(|i| format!("import {}", sanitize(i))));
+    lines.extend(
+        rc.actions
+            .iter()
+            .map(|a| format!("on {}", sanitize(&a.triggers.join(" && ")))),
+    );
+    for s in &rc.services {
+        let mut flags: Vec<String> = s.classes.iter().map(|c| format!("class {c}")).collect();
+        if let Some(u) = &s.user {
+            flags.push(format!("user {u}"));
+        }
+        let tail = if flags.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", sanitize(&flags.join(", ")))
+        };
+        lines.push(format!(
+            "service {} {}{tail}",
+            sanitize(&s.name),
+            sanitize(&s.path)
+        ));
+    }
+    lines.join("\n")
+}
+
+/// `decode` of a property file: `key = value` per property; comments and blank lines dropped.
+fn props_view(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| format!("{} = {}", sanitize(k.trim()), sanitize(v.trim())))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 impl AndroidDoctor {
     /// The scan context of the interactive commands: nothing is walked, the root is the subject.
     #[cfg(any(feature = "shell", feature = "explore"))]
@@ -368,7 +413,10 @@ impl Doctor for AndroidDoctor {
         let mut buf = Capped(Vec::new());
         let read = Tree::open(Path::new(image)).and_then(|t| t.cat_path(path, &mut buf));
         let truncated = buf.0.len() >= MAX_FILE_BYTES;
+        let base = path.rsplit('/').next().unwrap_or(path);
         let body = match std::str::from_utf8(&buf.0) {
+            Ok(t) if base.ends_with(".rc") => initrc_view(t),
+            Ok(t) if base.ends_with(".prop") => props_view(t),
             Ok(t) => t.lines().map(sanitize).collect::<Vec<_>>().join("\n"),
             Err(_) => doctor_kit::node::hexdump(&buf.0),
         };
