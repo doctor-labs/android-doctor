@@ -977,6 +977,31 @@ pub fn verify_images(meta: &Vbmeta, dir: &Path) -> Result<Vec<(String, Check)>> 
     Ok(out)
 }
 
+/// Hash-check the partition an AVB footer belongs to: the image file itself is the hashed
+/// partition, so each hash descriptor that covers no more than the footer's original image
+/// size is recomputed over the first `image_size` bytes of `image`. No `--images` needed.
+/// Empty when the image has no footer (a bare vbmeta.img).
+pub fn verify_footer_partition(meta: &Vbmeta, image: &Path) -> Result<Vec<(String, Check)>> {
+    let Some(footer) = &meta.footer else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for d in &meta.descriptors {
+        if let Descriptor::Hash(h) = d {
+            if h.image_size > footer.original_image_size {
+                continue;
+            }
+            let result = match h.algorithm.as_str() {
+                "sha256" => hash_file::<Sha256>(image, h)?,
+                "sha512" => hash_file::<Sha512>(image, h)?,
+                other => Check::Unsupported(format!("hash algorithm {other:?}")),
+            };
+            out.push((h.partition.clone(), result));
+        }
+    }
+    Ok(out)
+}
+
 /// Recompute a hashtree descriptor against the image file at `path`.
 fn hashtree_file(path: &Path, h: &HashtreeDescriptor) -> Result<Check> {
     use crate::hashtree::{TreeCheck, verify_file};
@@ -1303,12 +1328,34 @@ impl Vbmeta {
     }
 
     pub fn any_failure(&self, checks: &[(String, Check)]) -> bool {
-        self.digest_ok == Some(false)
-            || self.signature_verified == SignatureStatus::Invalid
-            || self.signature_verified == SignatureStatus::Absent
-            || checks
-                .iter()
-                .any(|(_, c)| matches!(c, Check::Mismatch | Check::TreeMismatch))
+        !self.failure_reasons(checks).is_empty()
+    }
+
+    /// Why the exit status is a failure, one entry per real verdict that failed. An unsigned
+    /// partition footer (algorithm NONE) is not a failure: its signature is checked by the
+    /// top-level vbmeta, which is not in scope here. A bare unsigned vbmeta still is.
+    pub fn failure_reasons(&self, checks: &[(String, Check)]) -> Vec<String> {
+        let mut r = Vec::new();
+        if self.digest_ok == Some(false) {
+            r.push("the vbmeta digest does not match".to_string());
+        }
+        match self.signature_verified {
+            SignatureStatus::Invalid => r.push("the vbmeta signature does not verify".into()),
+            SignatureStatus::Absent if self.footer.is_none() => {
+                r.push("the vbmeta is unsigned (algorithm NONE)".into())
+            }
+            _ => {}
+        }
+        for (name, c) in checks {
+            match c {
+                Check::Mismatch => {
+                    r.push(format!("the hash of {name} does not match its descriptor"))
+                }
+                Check::TreeMismatch => r.push(format!("the hashtree of {name} does not match")),
+                _ => {}
+            }
+        }
+        r
     }
 
     /// Cross-check the top-level vbmeta against chained vbmeta partitions.
