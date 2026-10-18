@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `decode` in `shell` reads an init `.rc` as its imports, actions and services, and a `*.prop` file as `key = value` lines, instead of raw bytes (part of #223).
 - `ramdisk-edit <boot.img> [--put SRC=DEST] [--rm PATH] -o OUT [--force] [--yes]` puts files into, or removes them from, the uncompressed cpio ramdisk of a header version 0 to 2 boot image and writes a NEW image (the input is never changed, an existing OUT needs `--force`). Without `--yes` it only checks and prints the plan. The output is read back with the repo readers before it is renamed into place; the header, kernel, second and dtb bytes are kept (part of #226).
 - `vbsign <image> --data-key DATA.pem --root-key ROOT.pem -o OUT [--force] [--json]` re-signs a ChromeOS kernel partition in its recorded layout: the data key (same modulus size and exponent as the keyblock records) replaces the data key in the keyblock and signs the preamble and body, the root key signs the keyblock with SHA-256. The output is verified with the root public key before it is written; the input is never modified (#176).
 - `diff` JSON lists `avb_image_sizes` per image: partitions whose AVB Hash or Hashtree descriptor `image_size` changed, old and new. Data only, no new finding (part of #217).

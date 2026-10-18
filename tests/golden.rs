@@ -622,6 +622,53 @@ fn shell_stat_reports_the_entry_of_an_opened_image() {
     assert!(text.contains("size: 10"), "{text}");
 }
 
+/// `decode` in the shell reads an init `.rc` and a property file on demand: the imports, actions
+/// and services of the `.rc`, and each `key = value` of the properties (comments dropped), not
+/// the raw bytes.
+#[test]
+fn shell_decodes_init_rc_and_props_on_demand() {
+    let t = Scratch::new("shell-decode");
+    let rc = b"import /vendor/etc/init/hw.rc\n\non boot\n    write /proc/x 1\n\nservice adbd /system/bin/adbd --root\n    class core\n    user root\n";
+    let system = dir(vec![
+        (
+            "build.prop",
+            file(
+                0o644,
+                b"# a comment\nro.secure=0\n\nro.build.tags=release-keys\n",
+            ),
+        ),
+        ("init.rc", file(0o644, rc)),
+    ]);
+    std::fs::write(t.p("fw/system.img"), img(system)).unwrap();
+    let out = Command::new(bin())
+        .args([
+            "shell",
+            t.p("fw").to_str().unwrap(),
+            "-c",
+            "cd images; cd system; decode init.rc; decode build.prop",
+        ])
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(text.contains("1 imports, 1 actions, 1 services"), "{text}");
+    assert!(text.contains("import /vendor/etc/init/hw.rc"), "{text}");
+    assert!(text.contains("on boot"), "{text}");
+    assert!(
+        text.contains("service adbd /system/bin/adbd  [class core, user root]"),
+        "{text}"
+    );
+    assert!(text.contains("ro.secure = 0"), "{text}");
+    assert!(text.contains("ro.build.tags = release-keys"), "{text}");
+    assert!(!text.contains("# a comment"), "{text}");
+}
+
 /// `android-doctor audit ... | head -c0`: a closed stdout is exit 2 with one line on stderr, never
 /// a panic (101) and never a silent success (doctor-kit 0.2.2).
 #[test]
