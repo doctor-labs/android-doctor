@@ -43,6 +43,7 @@ Commands:
   files         List or extract the files of an ext2/3/4, erofs or f2fs image (with SELinux labels), no root needed
   sparse        Turn a raw image into an Android sparse image
   mkbootimg     Build a boot image (header versions 0 to 2) from its sections; the inverse of unpacking one
+  patch         Patch an OTA or vbmeta image (unverified on a device): strip or re-sign an OTA zip, clear vbmeta verification flags
   ramdisk-edit  Put files into, or remove them from, the ramdisk of a boot image; writes a NEW image (dry run without --yes)
   unsparse      Turn Android sparse image(s) into a raw image
   identify      Say what each file is, by its magic bytes (never by name)

@@ -55,7 +55,7 @@ pub struct FooterOptions<'a> {
 
 /// PKCS#1 v1.5 scheme for a SHA-256 digest that is already computed (the DigestInfo prefix is
 /// written out here, so it does not depend on the digest crate's trait versions).
-fn sha256_scheme() -> Pkcs1v15Sign {
+pub(crate) fn sha256_scheme() -> Pkcs1v15Sign {
     Pkcs1v15Sign {
         hash_len: Some(32),
         prefix: vec![
