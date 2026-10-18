@@ -169,6 +169,9 @@ enum Command {
         /// Print JSON instead of text
         #[arg(long)]
         json: bool,
+        /// Exit 0 when a signature is absent or not checked (the report still says NOT VERIFIED and ok stays false)
+        #[arg(long)]
+        allow_unsigned: bool,
     },
     /// Show the DEX files of an APK (or one .dex): header, tables, classes, methods, fields, strings, references, code
     Dex {
@@ -1568,17 +1571,26 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
         } => partitions_command(&input, sector_size, json),
         Command::Dt { input, json } => dt_command(&input, json),
         Command::Fec { action } => fec_command(action),
-        Command::VerifyOta { input, cert, json } => {
+        Command::VerifyOta {
+            input,
+            cert,
+            json,
+            allow_unsigned,
+        } => {
             let r = otaverify::verify(&input, cert.as_deref())?;
             print_out(&if json {
                 serde_json::to_string_pretty(&r.to_json())?
             } else {
                 r.to_text()
             })?;
-            if r.any_invalid() {
+            if r.any_invalid() || (r.any_unverified() && !allow_unsigned) {
                 return Err(reporting::Gate {
                     code: doctor_core::ExitCode::Findings,
-                    message: "an OTA signature does not verify".into(),
+                    message: if r.any_invalid() {
+                        "an OTA signature does not verify".into()
+                    } else {
+                        "an OTA signature is absent or not checked (NOT VERIFIED; --allow-unsigned to accept)".into()
+                    },
                 }
                 .into());
             }

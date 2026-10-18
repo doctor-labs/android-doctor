@@ -90,6 +90,7 @@ All notable changes to this project are documented here. The format follows
 - `avbkey`: write a PEM RSA key's AVB public key blob and print its SHA-256 digest, like avbtool extract_public_key(_digest) (#183).
 
 ### Fixed
+- `verify-ota` (AD-02): `ok` is true only when every check verified a signature. An unsigned or unverifiable package now exits 1 and prints `NOT VERIFIED` with the reason; a truncated or unreadable zip is an error (exit 2). New `--allow-unsigned` exits 0 for absent or not-checked signatures while `ok` stays false.
 
 - `vbmeta` (AD-01): a partition image with a valid unsigned (algorithm NONE) AVB hash footer exited 1 with a "does not match" message although nothing mismatched; it now exits 0. The footer's own hash descriptor is recomputed over the image (no `--images` needed), so a changed byte exits 1 and shows as `MISMATCH` in text and `--json`. The failure message names the check that failed.
 - The manifest `path` attribute is read from its real id (0x0101002a); 0x0101002c is `pathPattern`.

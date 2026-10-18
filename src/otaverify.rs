@@ -78,9 +78,21 @@ impl Report {
         self.checks.iter().any(|c| c.verdict == Verdict::Invalid)
     }
 
+    /// A signature is absent or could not be judged (no key, unsupported algorithm).
+    pub fn any_unverified(&self) -> bool {
+        self.checks
+            .iter()
+            .any(|c| matches!(c.verdict, Verdict::Absent | Verdict::NotChecked))
+    }
+
+    /// True only when every check verified a signature. Absent or not-checked is not verified.
+    pub fn verified(&self) -> bool {
+        !self.checks.is_empty() && self.checks.iter().all(|c| c.verdict == Verdict::Verified)
+    }
+
     pub fn to_json(&self) -> Value {
         json!({
-            "ok": !self.any_invalid(),
+            "ok": self.verified(),
             "checks": self.checks.iter().map(|c| json!({
                 "check": c.what, "verdict": c.verdict.name(), "detail": c.detail,
             })).collect::<Vec<_>>(),
@@ -88,11 +100,21 @@ impl Report {
     }
 
     pub fn to_text(&self) -> String {
-        self.checks
+        let mut lines: Vec<String> = self
+            .checks
             .iter()
             .map(|c| format!("{:<26} {:<12} {}", c.what, c.verdict.name(), c.detail))
-            .collect::<Vec<_>>()
-            .join("\n")
+            .collect();
+        if !self.verified() {
+            let why: Vec<String> = self
+                .checks
+                .iter()
+                .filter(|c| c.verdict != Verdict::Verified)
+                .map(|c| format!("{} is {}: {}", c.what, c.verdict.name(), c.detail))
+                .collect();
+            lines.push(format!("NOT VERIFIED: {}", why.join("; ")));
+        }
+        lines.join("\n")
     }
 }
 
@@ -361,6 +383,13 @@ pub fn verify(input: &Path, cert: Option<&Path>) -> Result<Report> {
         File::open(input)?.read_exact(&mut m).is_ok() && &m == b"PK"
     };
     if is_zip {
+        // A zip that does not parse (truncated, corrupt) is an error, not an unsigned package.
+        zip::ZipArchive::new(File::open(input)?).with_context(|| {
+            format!(
+                "{} is not a readable zip (truncated or corrupt)",
+                input.display()
+            )
+        })?;
         checks.push(zip_signature(input, cert)?);
     }
     match crate::payload::locate(input, None)? {
@@ -453,6 +482,23 @@ mod tests {
         let mut plain = OTA[..eocd + 20].to_vec();
         plain.extend([0, 0]);
         assert_eq!(run(&plain, None)[0], ("zip-signature", Absent));
+    }
+
+    #[test]
+    fn ok_only_when_every_check_verified() {
+        let one = |v| Report {
+            checks: vec![check("x", v, "")],
+        };
+        assert!(one(Verified).to_json()["ok"].as_bool().unwrap());
+        assert!(!one(Absent).to_json()["ok"].as_bool().unwrap());
+        assert!(!one(NotChecked).to_json()["ok"].as_bool().unwrap());
+        assert!(!one(Invalid).to_json()["ok"].as_bool().unwrap());
+        assert!(
+            one(NotChecked)
+                .to_text()
+                .contains("NOT VERIFIED: x is not-checked")
+        );
+        assert!(!one(Verified).to_text().contains("NOT VERIFIED"));
     }
 
     #[test]
