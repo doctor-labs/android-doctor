@@ -21,7 +21,7 @@ and take `path` (`diff`: `old`, `new`, `only`), `baseline`, `fail_on`, `sarif`; 
 | What is this file | `android-doctor identify <path> --json` |
 | OTA to images | `android-doctor extract <ota> -o out/` (`--list` writes nothing). Also unwraps OEM firmware containers: Huawei `UPDATE.APP`, LG `.kdz`/`.dz`, Sony `.sin`, Rockchip RKFW/RKAF/SSFW `update.img` (synthetic-fixture-validated only); `.cpb` and `.nb0` are named but unsupported |
 | Security posture of an image | `android-doctor audit <image> --json` |
-| Is an OTA's signature intact | `android-doctor verify-ota <ota.zip> [--cert cert.pem] --json` (zip footer + payload metadata/payload signatures; exit 1 if invalid) |
+| Is an OTA's signature intact | `android-doctor verify-ota <ota.zip> [--cert cert.pem] --json` (zip footer + payload metadata/payload signatures; ok only when every check verified; exit 1 if invalid, absent or not checked, `--allow-unsigned` exits 0 for absent/not-checked; a truncated zip exits 2) |
 | What changed between two builds | `android-doctor diff <old.img\|dir> <new.img\|dir> --json` (file changes by SHA-256 under `data`; regressions such as a new setuid file, su binary, root service, SELinux policy change or weakened ADB property are `diff-*` findings; fails on `high` by default; `--baseline` gates on new regressions) |
 | Health of an unpacked directory | `android-doctor doctor scan <dir> --json` |
 | Health score only | `android-doctor doctor scan <dir> --score` (0-100; prints just the number) |

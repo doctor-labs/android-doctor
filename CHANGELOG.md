@@ -90,6 +90,7 @@ All notable changes to this project are documented here. The format follows
 - `avbkey`: write a PEM RSA key's AVB public key blob and print its SHA-256 digest, like avbtool extract_public_key(_digest) (#183).
 
 ### Fixed
+- `verify-ota` (AD-02): `ok` is true only when every check verified a signature. An unsigned or unverifiable package now exits 1 and prints `NOT VERIFIED` with the reason; a truncated or unreadable zip is an error (exit 2). New `--allow-unsigned` exits 0 for absent or not-checked signatures while `ok` stays false.
 
 - The manifest `path` attribute is read from its real id (0x0101002a); 0x0101002c is `pathPattern`.
 - `hash-tree` computed the wrong root digest (it hashed the last tree level a second time) and stored the levels leaf-first; both now match `avbtool` byte for byte. The old unit test expected the wrong roots. sha1 and sha512 descriptors were refused and are now supported.
