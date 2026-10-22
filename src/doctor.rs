@@ -5,6 +5,7 @@
 //! extractor logged "Ignoring file ... since no handler matches" for two partitions, returned
 //! half the firmware, and exited 0.
 
+use crate::findings::from_name;
 use crate::tree::Kind;
 use anyhow::Result;
 use std::collections::BTreeMap;
@@ -130,82 +131,145 @@ const AVB_VERIFIED: &str = "AVB signature verified";
 /// file stem, as `audit` names it) when it came from inside an image, `None` for directory-level
 /// rules. The reporting layer needs this to keep same-named paths in two images apart.
 pub fn scan_scoped(dir: &Path) -> Result<Vec<(Finding, Option<String>)>> {
+    scan_scoped_with_progress(dir, &crate::kit::NoopProgress)
+}
+
+/// Like [`scan_scoped`], but emits progress events to `progress`.
+pub fn scan_scoped_with_progress(
+    dir: &Path,
+    progress: &dyn doctor_kit::Progress,
+) -> Result<Vec<(Finding, Option<String>)>> {
     let mut scoped: Vec<(Finding, Option<String>)> = Vec::new();
-    let mut findings = Vec::new();
-    findings.extend(partition_coverage(dir)?);
-    findings.extend(unhandled_input(dir)?);
-    findings.extend(avb_signature(dir)?);
-    scoped.extend(findings.drain(..).map(|f| (f, None)));
+    let mut dir_findings = Vec::new();
 
     // Collect .img files at the top level of the directory.
     let mut img_paths: Vec<std::path::PathBuf> = Vec::new();
     let mut ota_present = false;
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let name_owned = entry.file_name().to_string_lossy().into_owned();
-        if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-            let lower = name_owned.to_ascii_lowercase();
-            if lower.ends_with(".img") {
-                img_paths.push(entry.path());
-            } else if lower.ends_with(".transfer.list") {
-                ota_present = true;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name_owned = entry.file_name().to_string_lossy().into_owned();
+            if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                let lower = name_owned.to_ascii_lowercase();
+                if lower.ends_with(".img") {
+                    img_paths.push(entry.path());
+                } else if lower.ends_with(".transfer.list") {
+                    ota_present = true;
+                }
             }
         }
     }
     img_paths.sort();
 
+    let total_steps = 1 + img_paths.len();
+
+    progress.event(&doctor_kit::ProgressEvent::CheckStarted {
+        id: "directory".into(),
+        index: 1,
+        total: total_steps,
+    });
+
+    dir_findings.extend(partition_coverage(dir)?);
+    dir_findings.extend(unhandled_input(dir)?);
+    dir_findings.extend(avb_signature(dir)?);
+
+    for f in &dir_findings {
+        progress.event(&doctor_kit::ProgressEvent::Finding {
+            id: f.id.clone(),
+            severity: crate::findings::from_name(&f.severity),
+            message: f.message.clone(),
+        });
+    }
+
+    progress.event(&doctor_kit::ProgressEvent::CheckFinished {
+        id: "directory".into(),
+        findings: dir_findings.len(),
+    });
+
+    scoped.extend(dir_findings.drain(..).map(|f| (f, None)));
+
     if img_paths.is_empty() {
-        // No .img files. If there are transfer lists (unpacked OTA), tell the user each
-        // quality rule could not be evaluated.
         if ota_present {
             for &id in QUALITY_RULE_IDS {
-                findings.push(Finding {
+                let f = Finding {
                     id: id.into(),
                     category: "quality".into(),
                     severity: "info".into(),
                     subject: "images".into(),
                     message: format!("cannot evaluate {id}: partition images are not present"),
                     remedy: Some("run `android-doctor extract <ota> <dir>` first".into()),
+                };
+                progress.event(&doctor_kit::ProgressEvent::Finding {
+                    id: f.id.clone(),
+                    severity: crate::findings::from_name(&f.severity),
+                    message: f.message.clone(),
                 });
+                dir_findings.push(f);
             }
         }
-        scoped.extend(findings.drain(..).map(|f| (f, None)));
+        scoped.extend(dir_findings.drain(..).map(|f| (f, None)));
         return Ok(scoped);
     }
 
-    // Audit each .img and run quality rules on the result.
-    for img_path in &img_paths {
+    for (idx, img_path) in img_paths.iter().enumerate() {
+        let name = img_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+
+        progress.event(&doctor_kit::ProgressEvent::CheckStarted {
+            id: name.clone(),
+            index: idx + 2,
+            total: total_steps,
+        });
+
+        let mut img_findings = Vec::new();
         let audit = match crate::audit::audit_image(img_path) {
             Ok(a) => a,
             Err(e) => {
                 for &id in QUALITY_RULE_IDS {
-                    scoped.push((
-                        Finding {
-                            id: id.into(),
-                            category: "quality".into(),
-                            severity: "info".into(),
-                            subject: img_path
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .into_owned(),
-                            message: format!("cannot evaluate {id}: failed to read image ({e:#})"),
-                            remedy: Some(
-                                "ensure the image is a valid ext2/3/4 or erofs filesystem".into(),
-                            ),
-                        },
-                        None,
-                    ));
+                    let f = Finding {
+                        id: id.into(),
+                        category: "quality".into(),
+                        severity: "info".into(),
+                        subject: name.clone(),
+                        message: format!("cannot evaluate {id}: failed to read image ({e:#})"),
+                        remedy: Some(
+                            "ensure the image is a valid ext2/3/4 or erofs filesystem".into(),
+                        ),
+                    };
+                    progress.event(&doctor_kit::ProgressEvent::Finding {
+                        id: f.id.clone(),
+                        severity: from_name(&f.severity),
+                        message: f.message.clone(),
+                    });
+                    scoped.push((f, None));
                 }
+                progress.event(&doctor_kit::ProgressEvent::CheckFinished {
+                    id: name,
+                    findings: QUALITY_RULE_IDS.len(),
+                });
                 continue;
             }
         };
-        scoped.extend(
-            quality_rules(&audit)
-                .into_iter()
-                .map(|f| (f, Some(audit.name.clone()))),
-        );
+
+        for f in quality_rules(&audit) {
+            progress.event(&doctor_kit::ProgressEvent::Finding {
+                id: f.id.clone(),
+                severity: from_name(&f.severity),
+                message: f.message.clone(),
+            });
+            img_findings.push((f, Some(audit.name.clone())));
+        }
+
+        progress.event(&doctor_kit::ProgressEvent::CheckFinished {
+            id: name,
+            findings: img_findings.len(),
+        });
+
+        scoped.extend(img_findings);
     }
+
     Ok(scoped)
 }
 
@@ -444,6 +508,56 @@ mod tests {
                 .any(|f| f.id == "avb_signature" && f.severity == "info"),
             "scan must emit an 'unknown' finding when a rule cannot evaluate: {:?}",
             findings
+        );
+    }
+
+    #[test]
+    fn progress_events_emitted_and_scan_results_identical() {
+        use doctor_kit::{Progress, ProgressEvent};
+        use std::sync::{Arc, Mutex};
+
+        struct EventRecorder {
+            events: Mutex<Vec<ProgressEvent>>,
+        }
+
+        impl Progress for EventRecorder {
+            fn event(&self, e: &ProgressEvent) {
+                self.events.lock().unwrap().push(e.clone());
+            }
+        }
+
+        let dir = fresh_dir("progress-test");
+        write_files(
+            &dir,
+            &[
+                ("system.img", b"system"),
+                ("vendor.img", b"vendor"),
+                ("boot.img", b"boot"),
+            ],
+        );
+
+        let recorder = Arc::new(EventRecorder {
+            events: Mutex::new(Vec::new()),
+        });
+
+        let no_prog = scan_scoped(&dir).unwrap();
+        let with_prog = scan_scoped_with_progress(&dir, recorder.as_ref()).unwrap();
+
+        assert_eq!(no_prog, with_prog);
+
+        let events = recorder.events.lock().unwrap();
+        assert!(!events.is_empty(), "progress events should be emitted");
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ProgressEvent::CheckStarted { .. })),
+            "should emit CheckStarted"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ProgressEvent::CheckFinished { .. })),
+            "should emit CheckFinished"
         );
     }
 }

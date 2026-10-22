@@ -41,7 +41,7 @@ pub fn parse_fail_on(s: &str) -> Result<Severity, String> {
 }
 
 /// Doctor and content-hit severities are strings. Unknown text is the lowest severity.
-fn from_name(s: &str) -> Severity {
+pub fn from_name(s: &str) -> Severity {
     Severity::parse_legacy(s).unwrap_or(Severity::Info)
 }
 

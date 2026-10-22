@@ -5,7 +5,7 @@ use kit::AndroidDoctor;
 use reporting::{Emit, ReportArgs, emit};
 use rsa::traits::PublicKeyParts;
 use sha2::{Digest, Sha256};
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
 use crate::detect::refuse_blocking_file;
@@ -1128,7 +1128,19 @@ fn doctor_scan(
     report: &ReportArgs,
     no_color: bool,
 ) -> anyhow::Result<()> {
-    let all = findings::from_doctor(doctor::scan_scoped(input)?);
+    let progress: std::sync::Arc<dyn doctor_kit::Progress> =
+        if std::io::stderr().is_terminal() && !json && report.sarif.is_none() {
+            std::sync::Arc::new(doctor_kit::StderrProgress::new())
+        } else {
+            std::sync::Arc::new(kit::NoopProgress)
+        };
+
+    let scoped = doctor::scan_scoped_with_progress(input, progress.as_ref())?;
+    let all = findings::from_doctor(scoped);
+    progress.event(&doctor_kit::ProgressEvent::Done {
+        findings: all.len(),
+    });
+
     emit(
         Emit {
             json,
@@ -3168,11 +3180,49 @@ fn audit_command(
     report: &ReportArgs,
     no_color: bool,
 ) -> anyhow::Result<()> {
-    let audits = audit::image_list(images)?
-        .iter()
-        .map(|p| audit::audit_image(p))
-        .collect::<anyhow::Result<Vec<_>>>()?;
+    let progress: std::sync::Arc<dyn doctor_kit::Progress> =
+        if std::io::stderr().is_terminal() && !json && report.sarif.is_none() {
+            std::sync::Arc::new(doctor_kit::StderrProgress::new())
+        } else {
+            std::sync::Arc::new(kit::NoopProgress)
+        };
+
+    let image_list = audit::image_list(images)?;
+    let total = image_list.len();
+    let mut audits = Vec::with_capacity(total);
+
+    for (i, p) in image_list.iter().enumerate() {
+        let name = p
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("image")
+            .to_string();
+        progress.event(&doctor_kit::ProgressEvent::CheckStarted {
+            id: name.clone(),
+            index: i + 1,
+            total,
+        });
+        let a = audit::audit_image(p)?;
+        let img_findings = findings::from_audit(std::slice::from_ref(&a));
+        for f in &img_findings {
+            progress.event(&doctor_kit::ProgressEvent::Finding {
+                id: f.rule.clone(),
+                severity: f.severity,
+                message: f.message.clone(),
+            });
+        }
+        progress.event(&doctor_kit::ProgressEvent::CheckFinished {
+            id: name,
+            findings: img_findings.len(),
+        });
+        audits.push(a);
+    }
+
     let all = findings::from_audit(&audits);
+    progress.event(&doctor_kit::ProgressEvent::Done {
+        findings: all.len(),
+    });
+
     let baselined = report.baseline.is_some();
     emit(
         Emit {
