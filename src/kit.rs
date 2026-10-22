@@ -16,6 +16,14 @@ use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
+/// A no-op progress sink.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoopProgress;
+
+impl doctor_kit::Progress for NoopProgress {
+    fn event(&self, _e: &doctor_kit::ProgressEvent) {}
+}
+
 /// What one `audit` / `doctor scan` / `diff` run needs to present its result.
 pub struct Report {
     /// The findings in scan order (SARIF lists them in this order).
