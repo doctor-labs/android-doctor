@@ -447,3 +447,96 @@ fn a_lower_avb_rollback_index_is_a_high_diff_finding_and_an_equal_one_is_not() {
     let (_, v) = diff_json(&old, &same, &[]);
     assert!(hits(&v).is_empty(), "{v}");
 }
+
+/// The AVB descriptor diff on a real pair (tests/corpus/avb-diff/key-chain-cmdline). The expected
+/// values are AOSP avbtool 1.3.0 (android-15.0.0_r1) `info_image` on the same files:
+///   old: Algorithm SHA256_RSA2048, Rollback Index 5 (location 0), Chain Partition descriptor
+///        vendor_boot (location 1, key sha1 d83b43c4...), Kernel Cmdline 'androidboot.selinux=enforcing',
+///        Prop ro.build.date.utc -> '1700000000', Hashtree descriptor system (Hash Algorithm sha256).
+///   new: Algorithm SHA256_RSA4096 (key sha1 e0c66fca...), chain vendor_boot with that key,
+///        Kernel Cmdline 'androidboot.selinux=permissive', Hashtree system (Hash Algorithm sha1),
+///        Prop ro.build.date.utc -> '1700000100'.
+/// The sha256 of each public key blob (`sha256sum` of `avbtool extract_public_key`) is 10fe8d79...
+/// for testkey-2048 and b05df697... for testkey-4096, the values the parser reports.
+#[test]
+fn avb_descriptor_diff_matches_avbtool_info_image_on_a_real_pair() {
+    use serde_json::json;
+    let case =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/avb-diff/key-chain-cmdline");
+    let (k2048, k4096) = (
+        "10fe8d79d6130801cb4b372df38f518356b79ae4a4d9298288ac650eb595a509",
+        "b05df6979a92679ba6323324d06c5be95f1259413b290c6fc6699f85691014bc",
+    );
+    let (code, v) = diff_json(&case.join("old.img"), &case.join("new.img"), &[]);
+    let img = &v["data"]["images"][0];
+    assert_eq!(
+        img["avb_header"],
+        json!([
+            {"field": "algorithm", "old": "SHA256_RSA2048", "new": "SHA256_RSA4096"},
+            {"field": "public_key_sha256", "old": k2048, "new": k4096},
+        ]),
+        "{img}"
+    );
+    assert_eq!(
+        img["avb_descriptors"],
+        json!([
+            {"type": "chain_partition", "name": "vendor_boot", "status": "changed",
+             "fields": [{"field": "public_key_sha256", "old": k2048, "new": k4096}]},
+            {"type": "hashtree", "name": "system", "status": "changed",
+             "fields": [{"field": "algorithm", "old": "sha256", "new": "sha1"}]},
+            {"type": "kernel_cmdline", "name": "", "status": "changed",
+             "fields": [{"field": "text", "old": "androidboot.selinux=enforcing",
+                         "new": "androidboot.selinux=permissive"}]},
+            {"type": "property", "name": "ro.build.date.utc", "status": "changed",
+             "fields": [{"field": "value", "old": "1700000000", "new": "1700000100"}]},
+        ]),
+        "{img}"
+    );
+    let mut ids: Vec<&str> = v["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["id"].as_str().unwrap())
+        .collect();
+    ids.sort();
+    assert_eq!(
+        ids,
+        [
+            "diff-avb-algorithm",
+            "diff-avb-chain-key",
+            "diff-avb-cmdline",
+            "diff-avb-hash-algorithm",
+            "diff-avb-signing-key",
+        ],
+        "{v}"
+    );
+    assert_eq!(code, 0, "medium findings do not fail the default gate: {v}");
+
+    let text = run(&[
+        std::ffi::OsStr::new("diff"),
+        case.join("old.img").as_os_str(),
+        case.join("new.img").as_os_str(),
+    ]);
+    assert!(
+        text.stdout
+            .contains("  avb header algorithm: SHA256_RSA2048 -> SHA256_RSA4096"),
+        "{}",
+        text.stdout
+    );
+    assert!(
+        text.stdout
+            .contains("  avb hashtree system: algorithm sha256 -> sha1"),
+        "{}",
+        text.stdout
+    );
+
+    let d = Scratch::new("avb-sarif");
+    let sarif = d.0.join("out.sarif");
+    diff_json(
+        &case.join("old.img"),
+        &case.join("new.img"),
+        &["--sarif", sarif.to_str().unwrap()],
+    );
+    let sarif = std::fs::read_to_string(&sarif).unwrap();
+    assert!(sarif.contains("diff-avb-cmdline"), "{sarif}");
+}

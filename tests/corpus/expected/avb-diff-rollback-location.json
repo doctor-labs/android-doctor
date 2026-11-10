@@ -1,0 +1,17 @@
+[
+  {
+    "id": "diff-avb-rollback-index",
+    "severity": "high",
+    "subject": "new"
+  },
+  {
+    "id": "diff-avb-rollback-location",
+    "severity": "medium",
+    "subject": "new"
+  },
+  {
+    "id": "diff-avb-rollback-location",
+    "severity": "medium",
+    "subject": "vendor_boot"
+  }
+]

@@ -319,7 +319,7 @@ fn text(b: &[u8]) -> String {
     String::from_utf8_lossy(b).into_owned()
 }
 
-fn algorithm_name(a: u32) -> String {
+pub(crate) fn algorithm_name(a: u32) -> String {
     match a {
         0 => "NONE".into(),
         1 => "SHA256_RSA2048".into(),
