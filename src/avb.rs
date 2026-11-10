@@ -8,6 +8,7 @@
 //! All integers are big-endian.
 use crate::detect::refuse_blocking_file;
 use anyhow::{Context, Result, bail, ensure};
+use ml_dsa::{EncodedVerifyingKey, MlDsa65, MlDsa87, MlDsaParams, Signature, VerifyingKey};
 use rsa::RsaPublicKey;
 use rsa::pkcs1v15::Pkcs1v15Sign;
 use serde_json::{Value, json};
@@ -462,6 +463,60 @@ fn verify_rsa_signature(
     }
 }
 
+/// ML-DSA.Verify (FIPS 204 Algorithm 3, pure: the message is signed as-is) of `signature` over
+/// `msg` and `ctx` with the raw public key `key` of parameter set `P`. A key or signature of the
+/// wrong length, or a bad signature, is simply `false`.
+fn mldsa_verify<P: MlDsaParams>(key: &[u8], signature: &[u8], msg: &[u8], ctx: &[u8]) -> bool {
+    let (Ok(key), Ok(sig)) = (
+        <&EncodedVerifyingKey<P>>::try_from(key),
+        Signature::<P>::try_from(signature),
+    ) else {
+        return false;
+    };
+    VerifyingKey::<P>::decode(key).verify_with_context(msg, ctx, &sig)
+}
+
+/// Verify an ML-DSA-65 (algorithm 7) or ML-DSA-87 (algorithm 8) signature of a vbmeta block.
+///
+/// The key blob is `AvbMLDSAPublicKeyHeader` (see `mldsa_public_key_len`). The signed message is
+/// not written down in the AVB sources available to this tool, so both readings are accepted:
+/// the header and auxiliary block themselves (the message RSA signs through its digest), or the
+/// authentication hash when it is the SHA-256 or SHA-512 of that block. Either way the signature
+/// comes from the key holder over this block's content, and an unrelated hash field cannot pass.
+fn verify_mldsa_signature(
+    algorithm: u32,
+    key: &[u8],
+    signature: &[u8],
+    signed: &[u8],
+    hash: &[u8],
+) -> SignatureStatus {
+    let Some(n) = mldsa_public_key_len(algorithm, key) else {
+        return SignatureStatus::Invalid;
+    };
+    let raw = &key[4..4 + n];
+    let hash_is_digest = match hash.len() {
+        32 => Sha256::digest(signed).as_slice() == hash,
+        64 => Sha512::digest(signed).as_slice() == hash,
+        _ => false,
+    };
+    let ok = match algorithm {
+        7 => {
+            mldsa_verify::<MlDsa65>(raw, signature, signed, &[])
+                || (hash_is_digest && mldsa_verify::<MlDsa65>(raw, signature, hash, &[]))
+        }
+        8 => {
+            mldsa_verify::<MlDsa87>(raw, signature, signed, &[])
+                || (hash_is_digest && mldsa_verify::<MlDsa87>(raw, signature, hash, &[]))
+        }
+        _ => return SignatureStatus::Unsupported(algorithm),
+    };
+    if ok {
+        SignatureStatus::Valid
+    } else {
+        SignatureStatus::Invalid
+    }
+}
+
 /// Read a PEM-encoded RSA public key from a file, returning the key for
 /// external verification. Supports both PKCS#1 (`BEGIN RSA PUBLIC KEY`) and
 /// PKCS#8 / SubjectPublicKeyInfo (`BEGIN PUBLIC KEY`) formats.
@@ -756,6 +811,8 @@ pub fn parse(data: &[u8], external_key: Option<&RsaPublicKey>) -> Result<Vbmeta>
         SignatureStatus::Absent
     } else if let Some(ext_key) = external_key {
         verify_with_external_key(algorithm, ext_key, signature, &signed)
+    } else if mldsa_key_len(algorithm).is_some() {
+        verify_mldsa_signature(algorithm, key, signature, &signed, hash)
     } else {
         verify_rsa_signature(algorithm, key, signature, &signed)
     };
@@ -2625,11 +2682,107 @@ mod tests {
         let m = parse(&vbmeta(7, 0, &[], &blob(1952, 1952)), None).unwrap();
         assert_eq!(m.public_key_bits, None);
         assert_eq!(m.public_key_bytes, Some(1952));
-        assert_eq!(m.signature_verified, SignatureStatus::Unsupported(7));
+        // a fake key and signature of the wrong length do not verify
+        assert_eq!(m.signature_verified, SignatureStatus::Invalid);
         let m = parse(&vbmeta(8, 0, &[], &blob(2592, 2592)), None).unwrap();
         assert_eq!(m.public_key_bytes, Some(2592));
         // a length field that disagrees with the algorithm is not a key of that size
         let m = parse(&vbmeta(8, 0, &[], &blob(1952, 1952)), None).unwrap();
         assert_eq!(m.public_key_bytes, None);
+    }
+
+    /// Hex to bytes for the fixture files.
+    fn unhex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// NIST ACVP-Server ML-DSA sigVer (FIPS 204), external interface, pure signatures, ML-DSA-65
+    /// and ML-DSA-87: `tests/fixtures/mldsa/acvp-sigver-pure.txt` (its header says where the
+    /// JSON came from). Every vector's expected result must match, including the altered
+    /// signatures NIST marks as failing.
+    #[test]
+    fn mldsa_matches_the_nist_acvp_sigver_vectors() {
+        let text = include_str!("../tests/fixtures/mldsa/acvp-sigver-pure.txt");
+        let (mut n65, mut n87) = (0, 0);
+        for line in text.lines().filter(|l| !l.starts_with('#')) {
+            let f: Vec<&str> = line.split(' ').collect();
+            assert_eq!(f.len(), 8, "{line}");
+            let ctx = if f[5] == "-" { Vec::new() } else { unhex(f[5]) };
+            let (pk, msg, sig) = (unhex(f[4]), unhex(f[6]), unhex(f[7]));
+            let got = match f[0] {
+                "ML-DSA-65" => {
+                    n65 += 1;
+                    mldsa_verify::<MlDsa65>(&pk, &sig, &msg, &ctx)
+                }
+                "ML-DSA-87" => {
+                    n87 += 1;
+                    mldsa_verify::<MlDsa87>(&pk, &sig, &msg, &ctx)
+                }
+                other => panic!("unexpected parameter set {other}"),
+            };
+            assert_eq!(got, f[3] == "1", "tcId {} ({})", f[2], f[0]);
+        }
+        assert_eq!((n65, n87), (15, 15));
+    }
+
+    /// vbmeta blocks signed by OpenSSL 3.5 (not this crate), made by
+    /// `tests/fixtures/mldsa/make_vbmeta.py`: `aux` signs the header and auxiliary block, `hash`
+    /// signs the SHA-256 authentication hash. Both verify; a changed header byte, a changed
+    /// signature byte or a changed key byte does not.
+    #[test]
+    fn mldsa_vbmeta_signed_by_openssl_verifies_and_tampering_is_caught() {
+        let cases: [(&[u8], u32); 4] = [
+            (
+                include_bytes!("../tests/fixtures/mldsa/mldsa65-aux.vbmeta"),
+                7,
+            ),
+            (
+                include_bytes!("../tests/fixtures/mldsa/mldsa65-hash.vbmeta"),
+                7,
+            ),
+            (
+                include_bytes!("../tests/fixtures/mldsa/mldsa87-aux.vbmeta"),
+                8,
+            ),
+            (
+                include_bytes!("../tests/fixtures/mldsa/mldsa87-hash.vbmeta"),
+                8,
+            ),
+        ];
+        for (data, alg) in cases {
+            let m = parse(data, None).unwrap();
+            assert_eq!(m.algorithm, alg);
+            assert_eq!(
+                m.signature_verified,
+                SignatureStatus::Valid,
+                "algorithm {alg}"
+            );
+            // rollback index (header offset 112..120): inside the signed header
+            let mut t = data.to_vec();
+            t[119] ^= 1;
+            assert_eq!(
+                parse(&t, None).unwrap().signature_verified,
+                SignatureStatus::Invalid
+            );
+            // first signature byte (auth block: 32-byte hash, then the signature)
+            let mut t = data.to_vec();
+            t[HEADER_LEN + 32] ^= 1;
+            assert_eq!(
+                parse(&t, None).unwrap().signature_verified,
+                SignatureStatus::Invalid
+            );
+            // a byte inside the public key (auxiliary block, after its 4-byte length)
+            let key_at = be64(data, 64) as usize;
+            let aux_at = HEADER_LEN + be64(data, 12) as usize;
+            let mut t = data.to_vec();
+            t[aux_at + key_at + 4 + 100] ^= 1;
+            assert_eq!(
+                parse(&t, None).unwrap().signature_verified,
+                SignatureStatus::Invalid
+            );
+        }
     }
 }

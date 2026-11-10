@@ -48,6 +48,8 @@ tar = "0.4"
 md-5 = "0.11"
 rsa = { version = "0.9.10", default-features = false, features = ["std", "u64_digit", "getrandom", "pem"] }
 p256 = { version = "0.14", default-features = false, features = ["ecdsa"] }
+# ML-DSA-65/87 signature verification (FIPS 204), pinned to a release that builds on rustc 1.85
+ml-dsa = { version = "=0.1.1", default-features = false, features = ["alloc"] }
 sha1 = "0.11"
 
 [dev-dependencies]
