@@ -544,6 +544,14 @@ fn avb_descriptor_diff_matches_avbtool_info_image_on_a_real_pair() {
 /// Each committed AVB corpus pair (tests/corpus/avb-diff/<case>/) must report exactly the rows of
 /// tests/corpus/expected/avb-diff-<case>.json; `UPDATE_CORPUS=1` rewrites them. Kept here rather
 /// than in tests/corpus.rs, whose pass count the CI corpus gate asserts.
+///
+/// How the pairs were made, with AOSP avbtool 1.3.0 (android-15.0.0_r1) and the keys in
+/// tests/fixtures/avbcert: `add_hash_footer` for boot and dtbo (4 KiB images, `--partition_size
+/// 73728`), `add_hashtree_footer` for system (`--partition_size 131072 --block_size 4096
+/// --do_not_generate_fec`, sha256 or sha1), `make_vbmeta_image` with `--include_descriptors_from_image`,
+/// `--chain_partition vendor_boot:<slot>:<key>`, `--kernel_cmdline`, `--prop` and `--padding_size
+/// 4096`, then `append_vbmeta_image --partition_size 49152` onto a copy of
+/// tests/fixtures/erofs/erofs-zstd-4k.img.
 #[test]
 fn avb_diff_corpus_pairs_match_their_snapshots() {
     use serde_json::json;
