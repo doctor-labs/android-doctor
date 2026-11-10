@@ -540,3 +540,43 @@ fn avb_descriptor_diff_matches_avbtool_info_image_on_a_real_pair() {
     let sarif = std::fs::read_to_string(&sarif).unwrap();
     assert!(sarif.contains("diff-avb-cmdline"), "{sarif}");
 }
+
+/// Each committed AVB corpus pair (tests/corpus/avb-diff/<case>/) must report exactly the rows of
+/// tests/corpus/expected/avb-diff-<case>.json; `UPDATE_CORPUS=1` rewrites them. Kept here rather
+/// than in tests/corpus.rs, whose pass count the CI corpus gate asserts.
+#[test]
+fn avb_diff_corpus_pairs_match_their_snapshots() {
+    use serde_json::json;
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus");
+    let mut cases: Vec<String> = std::fs::read_dir(root.join("avb-diff"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    cases.sort();
+    assert!(
+        !cases.is_empty(),
+        "no avb-diff cases under {}",
+        root.display()
+    );
+    let update = std::env::var_os("UPDATE_CORPUS").is_some();
+    for case in cases {
+        let dir = root.join("avb-diff").join(&case);
+        let (_, v) = diff_json(&dir.join("old.img"), &dir.join("new.img"), &[]);
+        let mut got: Vec<serde_json::Value> = v["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| json!({"id": f["id"], "severity": f["severity"], "subject": f["subject"]}))
+            .collect();
+        got.sort_by_key(|f| f.to_string());
+        let snap = root.join("expected").join(format!("avb-diff-{case}.json"));
+        if update {
+            std::fs::write(&snap, serde_json::to_string_pretty(&got).unwrap() + "\n").unwrap();
+            continue;
+        }
+        let mut want: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&snap).unwrap()).unwrap();
+        want.sort_by_key(|f| f.to_string());
+        assert_eq!(got, want, "{case}: findings differ from {}", snap.display());
+    }
+}

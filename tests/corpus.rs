@@ -405,13 +405,13 @@ fn findings_match_the_committed_snapshots() {
     );
 }
 
-/// Diff cases: each tests/corpus/<dir>/<case>/ holds an old and a new file, and `<subcommand>
-/// --json` must report exactly the finding rows in tests/corpus/expected/<prefix>-<case>.json.
-/// (`UPDATE_CORPUS=1` rewrites them.) The cases are committed as built, so they run without the
-/// mkfs tools.
-fn diff_cases(dir: &str, subcommand: &str, files: [&str; 2], prefix: &str) {
+/// APK diff cases: each tests/corpus/apk-diff/<case>/ holds an old.apk and a new.apk, and
+/// `apk-diff --json` must report exactly the rows in tests/corpus/expected/apk-diff-<case>.json.
+/// (`UPDATE_CORPUS=1` rewrites them.) Not image based, so it runs without the mkfs tools.
+#[test]
+fn apk_diff_cases_match_the_committed_snapshots() {
     let update = std::env::var_os("UPDATE_CORPUS").is_some();
-    let dir = root().join(dir);
+    let dir = root().join("apk-diff");
     let mut cases: Vec<String> = fs::read_dir(&dir)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -421,9 +421,9 @@ fn diff_cases(dir: &str, subcommand: &str, files: [&str; 2], prefix: &str) {
     for case in cases {
         let case_dir = dir.join(&case);
         let out = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
-            .arg(subcommand)
-            .arg(case_dir.join(files[0]))
-            .arg(case_dir.join(files[1]))
+            .arg("apk-diff")
+            .arg(case_dir.join("old.apk"))
+            .arg(case_dir.join("new.apk"))
             .arg("--json")
             .output()
             .unwrap();
@@ -448,7 +448,7 @@ fn diff_cases(dir: &str, subcommand: &str, files: [&str; 2], prefix: &str) {
         got.sort();
         let snap = root()
             .join("expected")
-            .join(format!("{prefix}-{case}.json"));
+            .join(format!("apk-diff-{case}.json"));
         if update {
             fs::write(
                 &snap,
@@ -467,26 +467,8 @@ fn diff_cases(dir: &str, subcommand: &str, files: [&str; 2], prefix: &str) {
     }
     assert!(
         report.is_empty(),
-        "{prefix} corpus drift (UPDATE_CORPUS=1 accepts an intended change):\n{report}"
+        "apk-diff corpus drift (UPDATE_CORPUS=1 accepts an intended change):\n{report}"
     );
-}
-
-/// APK diff cases (see `diff_cases`).
-#[test]
-fn apk_diff_cases_match_the_committed_snapshots() {
-    diff_cases("apk-diff", "apk-diff", ["old.apk", "new.apk"], "apk-diff");
-}
-
-/// AVB diff cases (see `diff_cases`): vbmeta composites made by AOSP avbtool 1.3.0
-/// (android-15.0.0_r1). Each vbmeta came from `make_vbmeta_image` with the keys in
-/// tests/fixtures/avbcert, `--include_descriptors_from_image` for boot, dtbo and system (hash and
-/// hashtree footers from `add_hash_footer` and `add_hashtree_footer`, `--do_not_generate_fec`),
-/// `--chain_partition vendor_boot:<slot>:<key>`, `--kernel_cmdline`, `--prop` and `--padding_size
-/// 4096`; `append_vbmeta_image --partition_size 49152` put it on a copy of
-/// tests/fixtures/erofs/erofs-zstd-4k.img.
-#[test]
-fn avb_diff_cases_match_the_committed_snapshots() {
-    diff_cases("avb-diff", "diff", ["old.img", "new.img"], "avb-diff");
 }
 
 #[test]
