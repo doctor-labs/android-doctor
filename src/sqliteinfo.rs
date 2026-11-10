@@ -3,12 +3,17 @@
 //! A small, bounds-checked reader for the SQLite file format header and the
 //! `sqlite_master` table of a plain (non-WAL) database. It only reads: nothing
 //! is executed and nothing inside the database is trusted. The header layout
-//! follows the SQLite file format document (https://www.sqlite.org/fileformat.html):
-//! the first 100 bytes are the database header, and page 1 begins with an 8-byte
-//! b-tree page header followed by the cell pointer array.
-#![allow(dead_code)] // consumers land in a follow-up
+//! follows the SQLite file format document (https://www.sqlite.org/fileformat2.html,
+//! section 1.3): the first 100 bytes are the database header, and page 1 begins with an
+//! 8-byte b-tree page header (section 1.6) followed by the cell pointer array.
+//!
+//! `scan` feeds the audit: a plaintext database is one with the `SQLite format 3` magic, so an
+//! encrypted database (no readable magic) is never listed. `sqlite` prints one database.
 
-use anyhow::{bail, ensure};
+use crate::term::sanitize;
+use crate::tree::{Entry, Kind};
+use anyhow::{Result, bail, ensure};
+use serde_json::{Value, json};
 
 /// The 16-byte magic string stored at the start of every SQLite database file.
 pub const MAGIC: &[u8; 16] = b"SQLite format 3\0";
@@ -46,8 +51,6 @@ pub struct TableInfo {
 /// Parsed SQLite database header plus the schema table.
 #[derive(Debug, Clone)]
 pub struct DbInfo {
-    /// The header's magic (always `b"SQLite format 3\0"` for a real database).
-    pub magic: [u8; 16],
     /// Page size in bytes (offset 16). A header value of 1 means 65536.
     pub page_size: u32,
     /// File format write version (offset 18): 1=legacy, 2=wal.
@@ -128,7 +131,12 @@ fn serial_type_len(serial_type: u64) -> Option<usize> {
 }
 
 /// Decode a text column of the given serial type starting at `start`.
-fn text_from_serial(buf: &[u8], serial_type: u64, start: usize) -> Option<String> {
+fn text_from_serial(
+    buf: &[u8],
+    serial_type: u64,
+    start: usize,
+    encoding: Option<TextEncoding>,
+) -> Option<String> {
     // Odd serial types >=13 are text; even >=12 are BLOB. (text is odd because the
     // "type" byte encodes odd for text, even for blob.)
     if serial_type < 13 || (serial_type - 13) % 2 == 1 {
@@ -139,12 +147,35 @@ fn text_from_serial(buf: &[u8], serial_type: u64, start: usize) -> Option<String
     if end > buf.len() {
         return None;
     }
-    str::from_utf8(&buf[start..end]).ok().map(|s| s.to_string())
+    let bytes = &buf[start..end];
+    match encoding {
+        Some(TextEncoding::Utf16le) => decode_utf16(bytes, false),
+        Some(TextEncoding::Utf16be) => decode_utf16(bytes, true),
+        _ => str::from_utf8(bytes).ok().map(|s| s.to_string()),
+    }
+}
+
+/// UTF-16 text of a database whose header says so (little or big endian units).
+fn decode_utf16(bytes: &[u8], big_endian: bool) -> Option<String> {
+    if !bytes.len().is_multiple_of(2) {
+        return None;
+    }
+    let units = bytes.as_chunks::<2>().0.iter().map(|pair| {
+        let pair = *pair;
+        if big_endian {
+            u16::from_be_bytes(pair)
+        } else {
+            u16::from_le_bytes(pair)
+        }
+    });
+    char::decode_utf16(units)
+        .collect::<Result<String, _>>()
+        .ok()
 }
 
 /// Decode a record into its column values. Text columns are decoded as UTF-8
 /// strings; integer columns (the sqlite_master `rootpage`) are decoded as `u64`.
-fn decode_record(buf: &[u8], start: usize) -> Option<Record> {
+fn decode_record(buf: &[u8], start: usize, encoding: Option<TextEncoding>) -> Option<Record> {
     let (hlen, mut i) = read_varint(buf, start)?;
     let header_end = start.checked_add(hlen as usize)?;
     if header_end > buf.len() {
@@ -160,7 +191,7 @@ fn decode_record(buf: &[u8], start: usize) -> Option<Record> {
     let mut cols: Vec<Col> = Vec::with_capacity(serials.len());
     for st in &serials {
         let len = serial_type_len(*st)?;
-        cols.push(col_from_serial(buf, *st, body)?);
+        cols.push(col_from_serial(buf, *st, body, encoding)?);
         body = body.checked_add(len)?;
     }
     Some(Record { cols })
@@ -173,7 +204,12 @@ enum Col {
     Null,
 }
 
-fn col_from_serial(buf: &[u8], serial_type: u64, start: usize) -> Option<Col> {
+fn col_from_serial(
+    buf: &[u8],
+    serial_type: u64,
+    start: usize,
+    encoding: Option<TextEncoding>,
+) -> Option<Col> {
     // Integer serial types 1..=6 are big-endian signed integers of 1,2,3,4,6,8 bytes.
     if (1..=6).contains(&serial_type) {
         let len = serial_type_len(serial_type)?;
@@ -193,7 +229,7 @@ fn col_from_serial(buf: &[u8], serial_type: u64, start: usize) -> Option<Col> {
         }
         return Some(Col::Int(v as u64));
     }
-    if let Some(s) = text_from_serial(buf, serial_type, start) {
+    if let Some(s) = text_from_serial(buf, serial_type, start, encoding) {
         Some(Col::Text(s))
     } else {
         Some(Col::Null)
@@ -229,7 +265,7 @@ fn parse_btree_header(buf: &[u8], page_start: usize) -> Option<BtreeHeader> {
 /// Read the cell pointer array of page 1 and, for each leaf cell, decode the
 /// `sqlite_master` row's record. Page 1 lives at offset 0; its b-tree header
 /// sits at offset 100, followed by the 2-byte cell pointer array.
-fn read_page1_tables(buf: &[u8]) -> Option<Vec<Record>> {
+fn read_page1_tables(buf: &[u8], encoding: Option<TextEncoding>) -> Option<Vec<Record>> {
     let hdr_off = 100usize;
     let h = parse_btree_header(buf, hdr_off)?;
     if h.page_type != 0x0d {
@@ -253,7 +289,7 @@ fn read_page1_tables(buf: &[u8]) -> Option<Vec<Record>> {
         // Leaf cell payload: varint(payload_length), varint(rowid), payload bytes.
         let (_plen, i) = read_varint(buf, cell_off)?;
         let (_rowid, i) = read_varint(buf, i)?;
-        if let Some(rec) = decode_record(buf, i) {
+        if let Some(rec) = decode_record(buf, i, encoding) {
             records.push(rec);
         }
     }
@@ -296,7 +332,7 @@ pub fn inspect(buf: &[u8]) -> anyhow::Result<Option<DbInfo>> {
     // WAL journals (write_version/read_version == 2) store the live schema on a wal
     // page, not on page 1; we only inspect plain (rollback-mode) databases here.
     let tables = if write_version == 1 && read_version == 1 {
-        read_page1_tables(buf)
+        read_page1_tables(buf, text_encoding)
             .unwrap_or_default()
             .into_iter()
             .filter_map(|rec| {
@@ -336,7 +372,6 @@ pub fn inspect(buf: &[u8]) -> anyhow::Result<Option<DbInfo>> {
     };
 
     Ok(Some(DbInfo {
-        magic: buf[..16].try_into().unwrap_or([0u8; 16]),
         page_size,
         write_version,
         read_version,
@@ -350,9 +385,162 @@ pub fn inspect(buf: &[u8]) -> anyhow::Result<Option<DbInfo>> {
     }))
 }
 
+/// Bytes read from the start of a file for `sqlite`: the header and page 1 of any page size up to
+/// the 65536 maximum. The schema lives on page 1 here (overflow pages are not followed).
+pub const HEAD_BYTES: u64 = 65536;
+/// Largest database the audit reads whole.
+const MAX_DB_BYTES: u64 = 64 * 1024 * 1024;
+/// Most databases the audit reads per image.
+const MAX_DBS: usize = 64;
+
+/// A plaintext database found by the audit: its in-image path, its mode and its header/schema.
+#[derive(Debug, Clone)]
+pub struct DbFile {
+    pub path: String,
+    pub mode: u32,
+    pub info: DbInfo,
+}
+
+/// The plaintext databases of one image. An encrypted database has no readable magic and is
+/// not listed.
+#[derive(Debug, Clone, Default)]
+pub struct SqliteAudit {
+    pub dbs: Vec<DbFile>,
+}
+
+/// Under an app's `databases/` directory, Android's place for app data.
+pub fn is_app_db(path: &str) -> bool {
+    path.split('/').any(|c| c == "databases")
+}
+
+/// Named like a database, or an app database. Only these are read, so an image is not scanned
+/// byte for byte.
+fn is_candidate(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    [".db", ".sqlite", ".sqlite3"]
+        .iter()
+        .any(|ext| lower.ends_with(ext))
+        || is_app_db(path)
+}
+
+/// Every plaintext database among the candidates of an image. `read` gets an in-image path.
+pub fn scan(entries: &[Entry], read: &mut dyn FnMut(&str) -> Result<Vec<u8>>) -> SqliteAudit {
+    let mut out = SqliteAudit::default();
+    for e in entries {
+        if out.dbs.len() >= MAX_DBS {
+            break;
+        }
+        if e.kind != Kind::File || e.size > MAX_DB_BYTES || !is_candidate(&e.path) {
+            continue;
+        }
+        let Ok(bytes) = read(&e.path) else { continue };
+        if let Ok(Some(info)) = inspect(&bytes) {
+            out.dbs.push(DbFile {
+                path: e.path.clone(),
+                mode: e.mode,
+                info,
+            });
+        }
+    }
+    out
+}
+
+/// The text encoding's name as the header stores it.
+pub fn encoding_name(e: Option<TextEncoding>) -> &'static str {
+    match e {
+        Some(TextEncoding::Utf8) => "UTF-8",
+        Some(TextEncoding::Utf16le) => "UTF-16le",
+        Some(TextEncoding::Utf16be) => "UTF-16be",
+        Some(TextEncoding::Utf16) => "UTF-16",
+        None => "unknown",
+    }
+}
+
+/// JSON of one database: header fields and the schema rows (`audit` and `sqlite --json`).
+pub fn info_json(info: &DbInfo) -> Value {
+    json!({
+        "page_size": info.page_size,
+        "page_count": info.page_count,
+        "freelist_count": info.freelist_count,
+        "freelist_trunk_page": info.freelist_trunk,
+        "schema_cookie": info.schema_cookie,
+        "reserved_bytes": info.reserved,
+        "text_encoding": encoding_name(info.text_encoding),
+        "wal": info.write_version == 2 || info.read_version == 2,
+        "schema": info.tables.iter().map(|t| json!({
+            "type": t.kind, "name": t.name, "rootpage": t.rootpage, "sql": t.sql,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+/// Text report of one database for `sqlite`. Names and SQL come from the file, so they are
+/// sanitized before printing.
+pub fn describe(path: &str, info: &DbInfo) -> String {
+    let mut out = vec![
+        format!("{}: SQLite database", sanitize(path)),
+        format!(
+            "  page size {}, {} pages, {} freelist pages, text encoding {}",
+            info.page_size,
+            info.page_count,
+            info.freelist_count,
+            encoding_name(info.text_encoding)
+        ),
+        format!(
+            "  schema cookie {}, reserved bytes per page {}",
+            info.schema_cookie, info.reserved
+        ),
+    ];
+    if info.write_version == 2 || info.read_version == 2 {
+        out.push("  WAL journal: the schema is not read (plain databases only)".to_string());
+    }
+    out.push(format!("  schema ({} objects):", info.tables.len()));
+    for t in &info.tables {
+        let sql = t.sql.as_deref().map_or("-".to_string(), sanitize);
+        out.push(format!(
+            "    {} {} (rootpage {}): {}",
+            t.kind,
+            sanitize(&t.name),
+            t.rootpage,
+            sql
+        ));
+    }
+    out.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Oracle: python3's `sqlite3` module (its own SQLite build, not this parser) reads the same
+    /// bytes read-only and prints the header fields and schema rows as JSON.
+    fn python_oracle(bytes: &[u8], tag: &str) -> Value {
+        let dir =
+            std::env::temp_dir().join(format!("ad-sqlite-oracle-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("db");
+        std::fs::write(&p, bytes).unwrap();
+        let script = "import json, sqlite3, sys\n\
+            c = sqlite3.connect('file:' + sys.argv[1] + '?mode=ro', uri=True)\n\
+            q = lambda s: c.execute(s).fetchone()[0]\n\
+            print(json.dumps({'page_size': q('PRAGMA page_size'), 'page_count': q('PRAGMA page_count'),\n\
+            'freelist_count': q('PRAGMA freelist_count'), 'encoding': q('PRAGMA encoding'),\n\
+            'schema': [list(r) for r in c.execute('SELECT type, name, rootpage, sql FROM sqlite_master ORDER BY rowid')]}))\n";
+        let out = std::process::Command::new("python3")
+            .arg("-I")
+            .arg("-c")
+            .arg(script)
+            .arg(&p)
+            .output()
+            .expect("python3 is required for the sqlite3 oracle");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).unwrap()
+    }
 
     /// Ground-truth fixture built with the system `sqlite3`:
     ///   sqlite3 sample.db "create table users(id integer primary key, name text);
@@ -374,7 +562,6 @@ mod tests {
     #[test]
     fn reads_the_database_header_fields() {
         let info = inspect(SAMPLE).unwrap().unwrap();
-        assert_eq!(&info.magic, MAGIC.as_slice());
         assert_eq!(info.page_size, 4096);
         assert_eq!(info.write_version, 1);
         assert_eq!(info.read_version, 1);
@@ -436,6 +623,26 @@ mod tests {
         // prefix returns None.
         for cut in (0..SAMPLE.len()).step_by(13) {
             let _ = inspect(&SAMPLE[..cut]);
+        }
+    }
+
+    #[test]
+    fn header_and_schema_agree_with_python_sqlite3() {
+        // Header fields: https://www.sqlite.org/fileformat2.html section 1.3; page 1 b-tree
+        // layout: section 1.6. The oracle reads the same bytes independently.
+        for (bytes, tag) in [(SAMPLE.to_vec(), "sample"), (make_utf16_db(), "utf16")] {
+            let want = python_oracle(&bytes, tag);
+            let info = inspect(&bytes).unwrap().unwrap();
+            assert_eq!(info.page_size as u64, want["page_size"], "{tag}");
+            assert_eq!(info.page_count as u64, want["page_count"], "{tag}");
+            assert_eq!(info.freelist_count as u64, want["freelist_count"], "{tag}");
+            assert_eq!(encoding_name(info.text_encoding), want["encoding"], "{tag}");
+            let got: Vec<Value> = info
+                .tables
+                .iter()
+                .map(|t| json!([t.kind, t.name, t.rootpage, t.sql]))
+                .collect();
+            assert_eq!(Value::Array(got), want["schema"], "{tag}");
         }
     }
 

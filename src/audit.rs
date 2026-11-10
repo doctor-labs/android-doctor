@@ -134,6 +134,8 @@ pub struct ImageAudit {
     pub elf: crate::elf::ElfAudit,
     /// Permissive domains and file_contexts labels from the shipped text SELinux policy.
     pub sepolicy: crate::sepolicy::SepolicyAudit,
+    /// Plaintext SQLite databases (their header and schema) found in the image.
+    pub sqlite: crate::sqliteinfo::SqliteAudit,
 }
 
 pub(crate) fn label_of(e: &Entry) -> String {
@@ -334,6 +336,7 @@ fn analyse_with(
     a.content_bytes_scanned = scanned;
     a.elf = crate::elf::scan_tree(entries, read);
     a.sepolicy = crate::sepolicy::scan(entries, read);
+    a.sqlite = crate::sqliteinfo::scan(entries, read);
     let (f, keys) = findings(&a).into_iter().unzip();
     a.findings = f;
     a.finding_keys = keys;
@@ -695,6 +698,33 @@ fn findings(a: &ImageAudit) -> Vec<(Finding, (String, String))> {
             );
         }
     }
+    for d in &a.sqlite.dbs {
+        if d.mode & 0o004 != 0 {
+            add(
+                Severity::Medium,
+                "sqlite-world-readable",
+                format!(
+                    "/{} is a plaintext SQLite database readable by every user ({:04o})",
+                    d.path,
+                    d.mode & 0o7777
+                ),
+                &d.path,
+                "",
+            );
+        }
+        if crate::sqliteinfo::is_app_db(&d.path) {
+            add(
+                Severity::Warn,
+                "sqlite-unencrypted",
+                format!(
+                    "/{} is an unencrypted SQLite database in an app's databases directory",
+                    d.path
+                ),
+                &d.path,
+                "",
+            );
+        }
+    }
     for c in &a.sepolicy.cil {
         for d in &c.permissive {
             add(
@@ -919,6 +949,21 @@ fn image_json(a: &ImageAudit) -> Value {
     let sp = &a.sepolicy;
     if !sp.cil.is_empty() || !sp.contexts.is_empty() || sp.skipped > 0 {
         v["sepolicy"] = crate::sepolicy::to_json(sp);
+    }
+    // Likewise: only images with a plaintext database carry the key.
+    if !a.sqlite.dbs.is_empty() {
+        v["sqlite_databases"] = json!(
+            a.sqlite
+                .dbs
+                .iter()
+                .map(|d| {
+                    let mut j = crate::sqliteinfo::info_json(&d.info);
+                    j["path"] = json!(d.path);
+                    j["mode"] = json!(format!("{:04o}", d.mode & 0o7777));
+                    j
+                })
+                .collect::<Vec<_>>()
+        );
     }
     v
 }

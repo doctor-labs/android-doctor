@@ -155,6 +155,14 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Read a plaintext SQLite database's header and schema (read only, nothing is executed)
+    Sqlite {
+        /// The database file
+        input: PathBuf,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
     /// dm-verity forward error correction: generate Reed-Solomon parity for a file, verify a file against it, repair a damaged file
     Fec {
         #[command(subcommand)]
@@ -1649,6 +1657,7 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             json,
         } => partitions_command(&input, sector_size, json),
         Command::Dt { input, json } => dt_command(&input, json),
+        Command::Sqlite { input, json } => sqlite_command(&input, json),
         Command::Fec { action } => fec_command(action),
         Command::Patch { action } => match action {
             PatchAction::OtaStrip {
@@ -2010,6 +2019,25 @@ fn dt_command(input: &std::path::Path, json: bool) -> anyhow::Result<()> {
         serde_json::to_string_pretty(&dt::to_json(input)?)?
     } else {
         dt::describe_file(input)?
+    };
+    print_out(&text)
+}
+
+/// `sqlite`: header and schema of one plaintext database. Only the first page is read.
+fn sqlite_command(input: &std::path::Path, json: bool) -> anyhow::Result<()> {
+    use std::io::Read;
+    let mut head = Vec::new();
+    std::fs::File::open(input)
+        .with_context(|| format!("reading {}", input.display()))?
+        .take(sqliteinfo::HEAD_BYTES)
+        .read_to_end(&mut head)?;
+    let Some(info) = sqliteinfo::inspect(&head)? else {
+        anyhow::bail!("{} is not a plaintext SQLite database", input.display());
+    };
+    let text = if json {
+        serde_json::to_string_pretty(&sqliteinfo::info_json(&info))?
+    } else {
+        sqliteinfo::describe(&display_name(input), &info)
     };
     print_out(&text)
 }

@@ -1846,6 +1846,38 @@
             },
             {
               "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An app's SQLite database is stored unencrypted"
+              },
+              "help": {
+                "text": "Keep secrets in an encrypted store (SQLCipher or the Android Keystore), not a plain database"
+              },
+              "id": "sqlite-unencrypted",
+              "name": "sqlite-unencrypted",
+              "shortDescription": {
+                "text": "An app's SQLite database is stored unencrypted"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "A plaintext SQLite database is readable by every user"
+              },
+              "help": {
+                "text": "chmod the database to remove the read bit for others, or keep it in the app's private data"
+              },
+              "id": "sqlite-world-readable",
+              "name": "sqlite-world-readable",
+              "shortDescription": {
+                "text": "A plaintext SQLite database is readable by every user"
+              }
+            },
+            {
+              "defaultConfiguration": {
                 "level": "error"
               },
               "fullDescription": {
