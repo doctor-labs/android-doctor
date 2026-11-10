@@ -5,7 +5,6 @@
 //! The diff is computed with a Myers-style LCS over the line vectors so it never allocates from
 //! untrusted sizes: the product of the two line counts is capped, and an overflow falls back to a
 //! whole-file replace hunk.
-#![allow(dead_code)] // consumers (firmware diff of init.rc/fstab) land in a follow-up
 
 /// One line of a diff. The `bool` is whether the line's source file lacked a trailing newline
 /// (i.e. this is the last line and the file ended without `\n`).

@@ -7,6 +7,7 @@ use crate::audit::{self, ImageAudit, Service};
 use crate::avb::{self, Descriptor, Vbmeta, algorithm_name};
 use crate::findings::{self, Finding, Severity};
 use crate::term::sanitize;
+use crate::textdiff;
 use crate::tree::{Entry, Kind, Tree};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
@@ -18,6 +19,20 @@ use std::path::{Path, PathBuf};
 pub const STATUSES: [&str; 4] = ["added", "removed", "modified", "metadata"];
 /// How many changes per image the text report lists before pointing at `--json`.
 const TEXT_CAP: usize = 25;
+/// Lines of unified diff the text report shows per changed file before pointing at `--json`.
+const TEXT_DIFF_LINES: usize = 40;
+/// Largest text file (per side) whose line diff is computed.
+const TEXT_DIFF_MAX: u64 = 256 * 1024;
+
+/// Text files whose line diff is shown: init scripts (`.rc`), properties (`.prop`), fstab
+/// (`fstab.*`) and SELinux/property `*_contexts` files.
+fn is_text_target(path: &str) -> bool {
+    let base = path.rsplit('/').next().unwrap_or(path);
+    base.ends_with(".rc")
+        || base.ends_with(".prop")
+        || base.starts_with("fstab")
+        || base.ends_with("_contexts")
+}
 
 struct HashW(Sha256);
 
@@ -31,8 +46,9 @@ impl std::io::Write for HashW {
     }
 }
 
-/// Audit one image and fill in the SHA-256 of every regular file.
-fn load(name: &str, path: &Path) -> Result<ImageAudit> {
+/// Audit one image, fill in the SHA-256 of every regular file, and return the text of the small
+/// UTF-8 text targets (see `is_text_target`) keyed by path.
+fn load(name: &str, path: &Path) -> Result<(ImageAudit, BTreeMap<String, String>)> {
     let tree = Tree::open(path)?;
     let entries = tree.entries()?;
     let mut a = audit::analyse(name, &entries, &mut |p| {
@@ -40,13 +56,21 @@ fn load(name: &str, path: &Path) -> Result<ImageAudit> {
         tree.cat_path(p, &mut buf)?;
         Ok(buf)
     })?;
+    let mut texts = BTreeMap::new();
     for e in a.entries.iter_mut().filter(|e| e.kind == Kind::File) {
         let mut h = HashW(Sha256::new());
         tree.cat_path(&e.path, &mut h)
             .with_context(|| format!("hashing {}", e.path))?;
         e.sha256 = Some(h.0.finalize().iter().map(|b| format!("{b:02x}")).collect());
+        if is_text_target(&e.path) && e.size <= TEXT_DIFF_MAX {
+            let mut buf = Vec::new();
+            tree.cat_path(&e.path, &mut buf)?;
+            if let Ok(s) = String::from_utf8(buf) {
+                texts.insert(e.path.clone(), s);
+            }
+        }
     }
-    Ok(a)
+    Ok((a, texts))
 }
 
 fn stem(p: &Path) -> String {
@@ -90,6 +114,8 @@ pub struct Change {
     status: &'static str,
     old: Option<Value>,
     new: Option<Value>,
+    /// Unified line diff (hunks only) of a modified text target.
+    text_diff: Option<String>,
 }
 
 pub struct ImageDiff {
@@ -164,9 +190,23 @@ fn diff_files(old: &ImageAudit, new: &ImageAudit) -> (Vec<Change>, usize) {
             status,
             old: a.map(side),
             new: b.map(side),
+            text_diff: None,
         });
     }
     (out, unchanged)
+}
+
+/// Attach a unified line diff to each modified text target that was read on both sides.
+fn text_diffs(
+    changes: &mut [Change],
+    old: &BTreeMap<String, String>,
+    new: &BTreeMap<String, String>,
+) {
+    for c in changes.iter_mut().filter(|c| c.status == "modified") {
+        if let (Some(a), Some(b)) = (old.get(&c.path), new.get(&c.path)) {
+            c.text_diff = Some(textdiff::unified(a, b, 3));
+        }
+    }
 }
 
 fn is_root(s: &Service) -> bool {
@@ -819,15 +859,16 @@ pub fn run(old: &Path, new: &Path) -> Result<Outcome> {
             name: name.clone(),
             ..Default::default()
         };
-        let a = match &o {
+        let (a, at) = match &o {
             Some(p) => load(&name, p).with_context(|| format!("reading {}", p.display()))?,
-            None => empty(),
+            None => (empty(), BTreeMap::new()),
         };
-        let b = match &n {
+        let (b, bt) = match &n {
             Some(p) => load(&name, p).with_context(|| format!("reading {}", p.display()))?,
-            None => empty(),
+            None => (empty(), BTreeMap::new()),
         };
-        let (changes, unchanged) = diff_files(&a, &b);
+        let (mut changes, unchanged) = diff_files(&a, &b);
+        text_diffs(&mut changes, &at, &bt);
         let avb = match (&o, &n) {
             (Some(p), Some(q)) => avb_pair(&name, p, q),
             _ => AvbPair::default(),
@@ -871,9 +912,15 @@ pub fn to_json(images: &[ImageDiff], only: &[String]) -> Value {
             "counts": {"added": count("added"), "removed": count("removed"),
                 "modified": count("modified"), "metadata": count("metadata"),
                 "unchanged": d.unchanged},
-            "files": keep(d, only).map(|c| json!({
-                "path": c.path, "status": c.status, "old": c.old, "new": c.new,
-            })).collect::<Vec<_>>(),
+            "files": keep(d, only).map(|c| {
+                let mut f = json!({
+                    "path": c.path, "status": c.status, "old": c.old, "new": c.new,
+                });
+                if let Some(t) = &c.text_diff {
+                    f["unified_diff"] = json!(t);
+                }
+                f
+            }).collect::<Vec<_>>(),
             "properties": d.props,
             "services": d.services,
             "avb_image_sizes": d.avb_sizes,
@@ -900,6 +947,18 @@ pub fn to_text(images: &[ImageDiff], only: &[String]) -> String {
         let shown: Vec<_> = keep(d, only).collect();
         for c in shown.iter().take(TEXT_CAP) {
             lines.push(format!("  {:<8} /{}", c.status, sanitize(&c.path)));
+            if let Some(t) = &c.text_diff {
+                let dl: Vec<&str> = t.lines().collect();
+                for l in dl.iter().take(TEXT_DIFF_LINES) {
+                    lines.push(format!("      {}", sanitize(l)));
+                }
+                if dl.len() > TEXT_DIFF_LINES {
+                    lines.push(format!(
+                        "      ... {} more diff lines (see --json)",
+                        dl.len() - TEXT_DIFF_LINES
+                    ));
+                }
+            }
         }
         if shown.len() > TEXT_CAP {
             lines.push(format!(

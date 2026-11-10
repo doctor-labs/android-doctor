@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `diff` shows a unified line diff of each modified text file (`.rc`, `.prop`, `fstab*`, `*_contexts`, up to 256 KiB per side): a `unified_diff` string per file in the JSON, and indented hunks under the change in the text report. Checked against GNU `diff -U3` (#215).
 - `patch ota-strip <ota.zip> -o OUT [--force] [--json]` writes a copy without the whole-file signature comment and without `META-INF/com/android/otacert`; other entries are copied byte for byte. `patch ota-sign <ota.zip> --key KEY.pem --cert CERT.pem -o OUT [--force] [--json]` writes a new signapk-style whole-file signature and reads the output back with `verify-ota --cert` before it is renamed into place. Both are unverified on a device: no recovery or update_engine run, and the Magisk patch step is not included (part of #178).
 - `patch vbmeta-flags <vbmeta.img> [--clear-hashtree-disabled] [--clear-verification-disabled] [--key KEY.pem] -o OUT [--force] [--json]` clears AVB header flag bits and writes a NEW image with its descriptors and rollback index kept. With `--key` it is signed again with the image's algorithm; without it the output is algorithm NONE (unsigned), which only an unlocked device accepts. Unverified on a device (part of #178).
 - `decode` in `shell` reads an init `.rc` as its imports, actions and services, and a `*.prop` file as `key = value` lines, instead of raw bytes (part of #223).
