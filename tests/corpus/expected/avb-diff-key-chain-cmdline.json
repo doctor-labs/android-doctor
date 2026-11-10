@@ -1,0 +1,27 @@
+[
+  {
+    "id": "diff-avb-algorithm",
+    "severity": "medium",
+    "subject": "new"
+  },
+  {
+    "id": "diff-avb-chain-key",
+    "severity": "medium",
+    "subject": "vendor_boot"
+  },
+  {
+    "id": "diff-avb-cmdline",
+    "severity": "medium",
+    "subject": "new"
+  },
+  {
+    "id": "diff-avb-hash-algorithm",
+    "severity": "medium",
+    "subject": "system"
+  },
+  {
+    "id": "diff-avb-signing-key",
+    "severity": "medium",
+    "subject": "new"
+  }
+]

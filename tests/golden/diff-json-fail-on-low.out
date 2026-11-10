@@ -2,6 +2,8 @@
   "data": {
     "images": [
       {
+        "avb_descriptors": [],
+        "avb_header": [],
         "avb_image_sizes": [],
         "counts": {
           "added": 3,

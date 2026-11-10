@@ -25,7 +25,7 @@
             "severity": "critical"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 102
+          "ruleIndex": 107
         },
         {
           "level": "note",
@@ -1222,6 +1222,45 @@
                 "level": "note"
               },
               "fullDescription": {
+                "text": "diff-avb-algorithm"
+              },
+              "id": "diff-avb-algorithm",
+              "name": "diff-avb-algorithm",
+              "shortDescription": {
+                "text": "diff-avb-algorithm"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "diff-avb-chain-key"
+              },
+              "id": "diff-avb-chain-key",
+              "name": "diff-avb-chain-key",
+              "shortDescription": {
+                "text": "diff-avb-chain-key"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "diff-avb-cmdline"
+              },
+              "id": "diff-avb-cmdline",
+              "name": "diff-avb-cmdline",
+              "shortDescription": {
+                "text": "diff-avb-cmdline"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
                 "text": "diff-avb-descriptor"
               },
               "id": "diff-avb-descriptor",
@@ -1261,12 +1300,38 @@
                 "level": "note"
               },
               "fullDescription": {
+                "text": "diff-avb-rollback-location"
+              },
+              "id": "diff-avb-rollback-location",
+              "name": "diff-avb-rollback-location",
+              "shortDescription": {
+                "text": "diff-avb-rollback-location"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
                 "text": "diff-avb-security-state"
               },
               "id": "diff-avb-security-state",
               "name": "diff-avb-security-state",
               "shortDescription": {
                 "text": "diff-avb-security-state"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "diff-avb-signing-key"
+              },
+              "id": "diff-avb-signing-key",
+              "name": "diff-avb-signing-key",
+              "shortDescription": {
+                "text": "diff-avb-signing-key"
               }
             },
             {
