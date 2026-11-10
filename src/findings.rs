@@ -368,6 +368,16 @@ pub fn help(rule: &str) -> Option<Help> {
             "chmod the files to remove the write bit for others",
             Medium,
         ),
+        "sqlite-world-readable" => (
+            "A plaintext SQLite database is readable by every user",
+            "chmod the database to remove the read bit for others, or keep it in the app's private data",
+            Medium,
+        ),
+        "sqlite-unencrypted" => (
+            "An app's SQLite database is stored unencrypted",
+            "Keep secrets in an encrypted store (SQLCipher or the Android Keystore), not a plain database",
+            Low,
+        ),
         "adbd-service" => (
             "adbd is declared as an init service",
             "Confirm adbd is only started by an authorised trigger",
@@ -999,6 +1009,8 @@ const KNOWN_RULES: &[&str] = &[
     "su-binary",
     "writable-setuid",
     "world-writable",
+    "sqlite-world-readable",
+    "sqlite-unencrypted",
     "ext4-encrypted-inode",
     "adbd-service",
     "su-service",

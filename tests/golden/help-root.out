@@ -7,6 +7,7 @@ Commands:
   info          Print build info from an OTA without extracting
   amlogic       Describe an Amlogic image container (dt.img, dtbo.img, aml_upgrade_package.img)
   dt            Show a device tree, dtbo table, or an opaque container header
+  sqlite        Read a plaintext SQLite database's header and schema (read only, nothing is executed)
   fec           dm-verity forward error correction: generate Reed-Solomon parity for a file, verify a file against it, repair a damaged file
   verify-ota    Verify an OTA's signatures: the zip's whole-file (signapk) signature and the payload's metadata and payload signatures
   dex           Show the DEX files of an APK (or one .dex): header, tables, classes, methods, fields, strings, references, code
