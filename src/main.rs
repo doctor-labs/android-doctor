@@ -225,7 +225,7 @@ enum Command {
         #[arg(long, value_name = "ENTRY", conflicts_with_all = ["json", "files"])]
         cat: Option<String>,
     },
-    /// Compare two builds of one APK: sizes, added, removed and changed entries, uses-feature changes and a patch-size estimate (no download size)
+    /// Compare two builds of one APK: sizes, added, removed and changed entries, uses-feature changes and patch-size and download-size estimates
     #[command(name = "apkcompare")]
     ApkCompare {
         /// The older APK

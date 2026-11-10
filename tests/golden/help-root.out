@@ -12,7 +12,7 @@ Commands:
   verify-ota    Verify an OTA's signatures: the zip's whole-file (signapk) signature and the payload's metadata and payload signatures
   dex           Show the DEX files of an APK (or one .dex): header, tables, classes, methods, fields, strings, references, code
   apk           Audit one APK file: manifest, package, version, signers, code, issues
-  apkcompare    Compare two builds of one APK: sizes, added, removed and changed entries, uses-feature changes and a patch-size estimate (no download size)
+  apkcompare    Compare two builds of one APK: sizes, added, removed and changed entries, uses-feature changes and patch-size and download-size estimates
   partitions    Show a flash manifest (Qualcomm rawprogram*.xml or MediaTek scatter.txt) and check it against the image files actually present
   unpack        Show a boot or vendor_boot image's header, and with -o write its kernel, ramdisk, dtb, ...
   journal       Show the jbd2 journal of an ext3/ext4 image: superblock fields, clean/dirty status, and the transactions found by walking from `s_first`. Read-only: the image is never modified

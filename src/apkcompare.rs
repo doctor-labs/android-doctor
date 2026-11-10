@@ -1,7 +1,8 @@
 //! `apk-compare`: two builds of one APK side by side. File sizes, an entry-level file diff
-//! (added, removed, changed by CRC-32 and size), the `uses-feature` names from the manifest, and
-//! a patch-size estimate. Reads the zip directory and AndroidManifest.xml only; no other entry is
-//! decompressed, and nothing touches the network (so no download size).
+//! (added, removed, changed by CRC-32 and size), the `uses-feature` names from the manifest, a
+//! patch-size estimate and a download-size estimate. Reads the zip directory and
+//! AndroidManifest.xml only; no other entry is decompressed and nothing touches the network, so
+//! both sizes are estimates from the compressed sizes in the directory.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read};
@@ -138,6 +139,13 @@ fn diff_builds(old: &Build, new: &Build) -> Diff {
     d
 }
 
+/// Bytes a full download of one build carries, estimated as the compressed size of every entry.
+/// The zip headers and the APK signing block are not counted, so the file itself is larger
+/// (`file_bytes`); this is an estimate, not the size the store would serve.
+pub fn download_estimate(b: &Build) -> u64 {
+    b.entries.values().map(|e| e.compressed).sum()
+}
+
 /// Bytes a naive patch would ship: the new build's compressed size of every added or changed entry.
 pub fn patch_estimate(diff: &Diff) -> u64 {
     diff.added.iter().map(|(_, e)| e.compressed).sum::<u64>()
@@ -175,6 +183,7 @@ impl Compare {
     fn data(&self) -> Value {
         let d = &self.diff;
         let delta = self.new.file_bytes as i64 - self.old.file_bytes as i64;
+        let (old_dl, new_dl) = (download_estimate(&self.old), download_estimate(&self.new));
         let features = self
             .feature_diff()
             .map(|(added, removed)| json!({"added": added, "removed": removed}));
@@ -193,6 +202,12 @@ impl Compare {
                 "changed": d.changed.iter().map(|(n, o, e)| json!({"name": n, "old_size": o.size, "new_size": e.size, "old_compressed": o.compressed, "new_compressed": e.compressed})).collect::<Vec<_>>(),
             },
             "features": features,
+            "download_estimate": {
+                "old_bytes": old_dl,
+                "new_bytes": new_dl,
+                "delta_bytes": new_dl as i64 - old_dl as i64,
+                "method": "compressed size of every entry of each build; zip headers and the signing block are not counted (file_bytes is the exact file size); an estimate, no network",
+            },
             "patch_estimate": {
                 "bytes": patch_estimate(d),
                 "method": "compressed size of every added or changed entry in the new build; no delta encoding",
@@ -255,6 +270,11 @@ impl Compare {
             }
             None => out += "features: not read (manifest missing or unparsed)\n",
         }
+        out += &format!(
+            "download estimate: {} -> {} bytes (compressed entries, without zip headers and the signing block; an estimate)\n",
+            download_estimate(&self.old),
+            download_estimate(&self.new)
+        );
         out += &format!(
             "patch estimate: {} bytes (compressed size of added and changed entries; no delta encoding)\n",
             patch_estimate(d)
@@ -325,6 +345,26 @@ mod tests {
         assert_eq!(c.diff.unchanged, 1);
         // Stored entries: compressed == size. The changed entry (9 bytes) plus the added one (5).
         assert_eq!(patch_estimate(&c.diff), 14);
+    }
+
+    #[test]
+    fn download_estimate_is_the_compressed_entry_total_and_is_below_the_file_size() {
+        // plain.apk: python3 zipfile (3.15) reads 2 entries whose compress_size sums to 515,
+        // in an 8339-byte file (the rest is zip headers and the APK signing block).
+        let c = compare(PLAIN, PLAIN).unwrap();
+        assert_eq!(download_estimate(&c.old), 515);
+        assert!(download_estimate(&c.old) < c.old.file_bytes);
+        // Stored entries: the estimate is their size.
+        let a = zip_of(&[("a", b"one"), ("b", b"two")]);
+        assert_eq!(download_estimate(&compare(&a, &a).unwrap().old), 6);
+        // Deflated entries count their compressed size, which is smaller.
+        let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let opt = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        w.start_file("big", opt).unwrap();
+        w.write_all(&[b'x'; 4000]).unwrap();
+        let d = w.finish().unwrap().into_inner();
+        let got = download_estimate(&compare(&d, &d).unwrap().old);
+        assert!(got > 0 && got < 4000, "{got}");
     }
 
     #[test]
