@@ -121,7 +121,8 @@
               "uid": 0
             },
             "path": "build.prop",
-            "status": "modified"
+            "status": "modified",
+            "unified_diff": "@@ -1,2 +1,2 @@\n-ro.secure=1\n-ro.debuggable=0\n+ro.secure=0\n+ro.debuggable=1\n"
           },
           {
             "new": null,

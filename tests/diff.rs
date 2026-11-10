@@ -253,6 +253,56 @@ fn every_known_difference_is_reported_and_the_envelope_conforms() {
     assert_eq!(v, again, "two runs give the same output");
 }
 
+/// The unified hunks GNU `diff -U3` prints for the same two texts (its `---`/`+++` headers dropped).
+fn gnu_hunks(d: &Scratch, old: &str, new: &str) -> String {
+    let (a, b) = (d.0.join("old.txt"), d.0.join("new.txt"));
+    std::fs::write(&a, old).unwrap();
+    std::fs::write(&b, new).unwrap();
+    let out = Command::new("diff")
+        .arg("-U3")
+        .arg(&a)
+        .arg(&b)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .skip(2)
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
+#[test]
+fn changed_text_files_get_a_unified_diff_matching_gnu_diff() {
+    let (d, o, n) = setup("textdiff");
+    let (_, v) = diff_json(&o, &n, &[]);
+    let files = v["data"]["images"][0]["files"].as_array().unwrap();
+    let file = |p: &str| files.iter().find(|f| f["path"] == p).unwrap();
+
+    // Text targets (.prop, .rc) get the line diff; a binary or other file does not.
+    let prop = gnu_hunks(
+        &d,
+        "ro.secure=1\nro.debuggable=0\n",
+        "ro.secure=0\nro.debuggable=1\n",
+    );
+    assert_eq!(file("build.prop")["unified_diff"], prop.as_str());
+    let rc = gnu_hunks(
+        &d,
+        "service foo /bin/foo\n    user system\n",
+        "service foo /bin/foo\n    user system\nservice bar /bin/bar\n",
+    );
+    assert_eq!(file("etc/init/a.rc")["unified_diff"], rc.as_str());
+    assert!(file("bin/tool").get("unified_diff").is_none());
+    assert!(
+        file("etc/selinux/plat_sepolicy.cil")
+            .get("unified_diff")
+            .is_none()
+    );
+
+    let human = run(&["diff".as_ref(), o.as_ref(), n.as_ref()]).stdout;
+    assert!(human.contains("      +ro.secure=0"), "{human}");
+    assert!(human.contains("      -ro.secure=1"), "{human}");
+}
+
 #[test]
 fn an_identical_pair_is_clean_and_exits_0() {
     let (_d, o, _) = setup("same");
