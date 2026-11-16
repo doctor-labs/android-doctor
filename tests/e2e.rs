@@ -602,8 +602,8 @@ fn small_consistent_ext2() -> Vec<u8> {
     le32(&mut img, gd + 8, 5); // inode table
     le16(&mut img, gd + 12, 58);
     le16(&mut img, gd + 14, 14);
-    // block bitmap: first 6 blocks used (0..5)
-    img[3 * bs] = 0b0011_1111;
+    // block bitmap: blocks 1..5 of this group used (superblock, GDT, bitmaps, inode table)
+    img[3 * bs] = 0b0001_1111;
     // inode bitmap: inodes 1,2 used
     img[4 * bs] = 0b0000_0011;
     img
