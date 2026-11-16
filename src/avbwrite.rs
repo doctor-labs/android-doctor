@@ -376,6 +376,92 @@ pub fn erase_footer(image: &[u8]) -> Result<Vec<u8>> {
     Ok(image[..original as usize].to_vec())
 }
 
+/// The vbmeta block carried by `image`: the whole image if it starts with `AVB0`, otherwise the
+/// bytes the AVB footer points to (avbtool `extract_vbmeta_image` reads the same region).
+pub fn extract_vbmeta(image: &[u8]) -> Result<Vec<u8>> {
+    if image.starts_with(b"AVB0") {
+        ensure!(image.len() >= HEADER_LEN, "vbmeta header is truncated");
+        let auth = u64::from_be_bytes(image[16..24].try_into().unwrap()) as usize;
+        let aux = u64::from_be_bytes(image[24..32].try_into().unwrap()) as usize;
+        let total = HEADER_LEN
+            .checked_add(auth)
+            .and_then(|n| n.checked_add(aux))
+            .context("vbmeta header sizes overflow")?;
+        ensure!(total <= image.len(), "vbmeta block runs past the image");
+        return Ok(image[..total].to_vec());
+    }
+    ensure!(has_footer(image), "not an AVB image: no vbmeta header and no AVB footer");
+    let f = &image[image.len() - FOOTER_LEN..];
+    let major = u32::from_be_bytes(f[4..8].try_into().unwrap());
+    ensure!(major == 1, "unsupported AVB footer version {major}");
+    let vbmeta_offset = u64::from_be_bytes(f[20..28].try_into().unwrap()) as usize;
+    let vbmeta_size = u64::from_be_bytes(f[28..36].try_into().unwrap()) as usize;
+    let end = vbmeta_offset
+        .checked_add(vbmeta_size)
+        .context("vbmeta range overflows")?;
+    ensure!(
+        end <= image.len() - FOOTER_LEN,
+        "the footer points outside the image (offset {vbmeta_offset}, size {vbmeta_size})"
+    );
+    ensure!(
+        image[vbmeta_offset..].starts_with(b"AVB0"),
+        "the footer does not point at a vbmeta image"
+    );
+    Ok(image[vbmeta_offset..end].to_vec())
+}
+
+/// Append `vbmeta` to `image` and write an AVB footer, as avbtool `append_vbmeta_image`: the
+/// original image bytes are kept, vbmeta is placed after them (padded to `block_size`), and the
+/// output is exactly `partition_size` bytes with a footer in the last 64 bytes. The input must not
+/// already have an AVB footer. The result is an unverified-on-device artefact.
+pub fn append_vbmeta(
+    image: &[u8],
+    vbmeta: &[u8],
+    partition_size: u64,
+    block_size: u64,
+) -> Result<Vec<u8>> {
+    let block = block_size as usize;
+    ensure!(
+        block > 0 && partition_size.is_multiple_of(block_size),
+        "partition size {partition_size} is not a multiple of the block size {block_size}"
+    );
+    ensure!(
+        !has_footer(image),
+        "the image already has an AVB footer; erase it first"
+    );
+    ensure!(vbmeta.starts_with(b"AVB0"), "vbmeta image must start with AVB0");
+    let max_metadata = (MAX_VBMETA + MAX_FOOTER) as u64;
+    ensure!(
+        partition_size >= max_metadata,
+        "partition size {partition_size} is below the {max_metadata} bytes of metadata"
+    );
+    ensure!(
+        image.len() as u64 <= partition_size - max_metadata,
+        "image of {} bytes does not fit in partition size {partition_size} with its metadata",
+        image.len()
+    );
+    let mut out = image.to_vec();
+    out.resize(round_up(out.len(), block), 0);
+    let vbmeta_offset = out.len();
+    out.extend_from_slice(vbmeta);
+    out.resize(round_up(out.len(), block), 0);
+    let partition = partition_size as usize;
+    ensure!(
+        out.len() <= partition - block,
+        "vbmeta does not fit before the footer block"
+    );
+    out.resize(partition - FOOTER_LEN, 0);
+    out.extend_from_slice(b"AVBf");
+    out.extend_from_slice(&1u32.to_be_bytes()); // footer major
+    out.extend_from_slice(&0u32.to_be_bytes()); // footer minor
+    out.extend_from_slice(&(image.len() as u64).to_be_bytes()); // original image size
+    out.extend_from_slice(&(vbmeta_offset as u64).to_be_bytes());
+    out.extend_from_slice(&(vbmeta.len() as u64).to_be_bytes());
+    out.extend_from_slice(&[0u8; 28]); // reserved
+    debug_assert_eq!(out.len(), partition);
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
