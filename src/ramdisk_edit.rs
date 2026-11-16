@@ -322,7 +322,11 @@ fn apply(records: &mut Vec<Record>, ops: &[Op]) -> Result<Checks> {
     }
     Ok(checks)
 }
-fn build(input: &Path, ops: &[Op]) -> Result<Built> {
+
+fn build_with<F>(input: &Path, edit: F) -> Result<Built>
+where
+    F: FnOnce(&mut Vec<Record>) -> Result<Checks>,
+{
     refuse_blocking_file(input)?;
     let image = bootimg::read(input)?;
     let mut f = File::open(input)?;
@@ -391,7 +395,7 @@ fn build(input: &Path, ops: &[Op]) -> Result<Built> {
         out
     };
     let mut records = parse_cpio(&cpio_bytes)?;
-    let checks = apply(&mut records, ops)?;
+    let checks = edit(&mut records)?;
     let new_cpio = emit_cpio(&records)?;
     let new_rd = if comp == Compression::None {
         new_cpio
@@ -399,167 +403,6 @@ fn build(input: &Path, ops: &[Op]) -> Result<Built> {
         ramdisk::compress(comp, &new_cpio)
             .with_context(|| format!("recompressing ramdisk as {}", comp.id()))?
     };
-    let mut head = orig_head.clone();
-    head[16..20].copy_from_slice(&u32::try_from(new_rd.len())?.to_le_bytes());
-
-    let page = page as usize;
-    let mut bytes = head.clone();
-    let mut order = Vec::new();
-    let mut kept = Vec::new();
-    for s in &secs {
-        let data = if s.name == "ramdisk" {
-            new_rd.clone()
-        } else {
-            let d = read_at(&mut f, s.offset, s.size)?;
-            kept.push((s.name.clone(), d.clone()));
-            d
-        };
-        bytes.extend_from_slice(&data);
-        bytes.resize(bytes.len().div_ceil(page) * page, 0);
-        order.push(s.name.clone());
-    }
-    let last = secs.last().context("no sections")?;
-    let end = (last.offset + last.size).div_ceil(page as u64) * page as u64;
-    if len > end {
-        ensure!(
-            tail_is_zero(&mut f, end)?,
-            "{} has data after its last section (an AVB footer, for example); that is not carried over",
-            input.display()
-        );
-    }
-    Ok(Built {
-        bytes,
-        orig_head,
-        head,
-        order,
-        kept,
-        entry_count: records.len(),
-        checks,
-    })
-}
-
-/// Read the written image back with the repo own readers and compare it with what was built.
-fn verify(part: &Path, built: &Built) -> Result<()> {
-    let written = std::fs::read(part)?;
-    let hl = built.head.len();
-    ensure!(
-        written.get(..hl) == Some(built.head.as_slice()),
-        "the written header differs from the built header"
-    );
-    ensure!(
-        written[..16] == built.orig_head[..16] && written[20..hl] == built.orig_head[20..hl],
-        "the written header changed fields other than the ramdisk size"
-    );
-    let image = bootimg::read(part)?;
-    let names: Vec<&str> = image.sections.iter().map(|s| s.name.as_str()).collect();
-    ensure!(
-        names == built.order,
-        "sections read back are {names:?}, expected {:?}",
-        built.order
-    );
-    for s in &image.sections {
-        let bytes = written
-            .get(s.offset as usize..(s.offset + s.size) as usize)
-            .with_context(|| format!("{} reads past the end of the file", s.name))?;
-        if s.name == "ramdisk" {
-            let rep = ramdisk::read_ramdisk(Cursor::new(bytes), None)?;
-            ensure!(
-                rep.entries.len() == built.entry_count,
-                "ramdisk reads back {} entries, expected {}",
-                rep.entries.len(),
-                built.entry_count
-            );
-            for (path, sha) in &built.checks.puts {
-                let e = rep
-                    .entries
-                    .iter()
-                    .find(|e| &e.path == path)
-                    .with_context(|| format!("{path} is missing after the edit"))?;
-                ensure!(
-                    e.sha256.as_deref() == Some(sha.as_str()),
-                    "{path} does not hold its source bytes"
-                );
-            }
-            for path in &built.checks.rms {
-                ensure!(
-                    !rep.entries.iter().any(|e| &e.path == path),
-                    "{path} is still there after the removal"
-                );
-            }
-        } else {
-            let want = built
-                .kept
-                .iter()
-                .find(|(n, _)| n == &s.name)
-                .map(|(_, b)| b.as_slice());
-            ensure!(want == Some(bytes), "{} changed", s.name);
-        }
-    }
-    Ok(())
-}
-
-fn build_with<F>(input: &Path, edit: F) -> Result<Built>
-where
-    F: FnOnce(&mut Vec<Record>) -> Result<Checks>,
-{
-    refuse_blocking_file(input)?;
-    let image = bootimg::read(input)?;
-    let mut f = File::open(input)?;
-    let len = f.metadata()?.len();
-    let mut magic = [0u8; 8];
-    f.read_exact(&mut magic)
-        .context("file is shorter than a boot image header")?;
-    ensure!(
-        &magic == b"ANDROID!",
-        "not a boot image with an ANDROID! header (vendor boot images are not edited)"
-    );
-    let mut secs = image.sections.clone();
-    secs.sort_by_key(|s| s.offset);
-    for s in &secs {
-        ensure!(
-            matches!(s.name.as_str(), "kernel" | "ramdisk" | "second" | "dtb"),
-            "section {} is not supported (kernel, ramdisk, second and dtb only)",
-            s.name
-        );
-    }
-    ensure!(
-        secs.first().is_some_and(|s| s.name == "kernel"),
-        "the image does not start with a kernel section"
-    );
-    ensure!(
-        secs.iter().filter(|s| s.name == "ramdisk").count() == 1,
-        "the image needs exactly one ramdisk section"
-    );
-    let kernel_at = secs[0].offset;
-    ensure!(
-        kernel_at <= MAX_HEADER,
-        "the header is {kernel_at} bytes; that is too large"
-    );
-    let orig_head = read_at(&mut f, 0, kernel_at)?;
-    ensure!(orig_head.len() >= 44, "the header is shorter than 44 bytes");
-    let version = le32(&orig_head, 40);
-    ensure!(
-        version <= 2,
-        "header version {version} is not edited (versions 0 to 2 only)"
-    );
-    let page = le32(&orig_head, 36) as u64;
-    ensure!(
-        page >= 512 && page.is_power_of_two() && kernel_at % page == 0,
-        "page size {page} does not fit this header"
-    );
-
-    let rd = secs
-        .iter()
-        .find(|s| s.name == "ramdisk")
-        .context("no ramdisk")?;
-    let raw = read_at(&mut f, rd.offset, rd.size)?;
-    ensure!(
-        matches!(ramdisk::compression_of(&raw), Some(Compression::None)),
-        "the ramdisk is not an uncompressed cpio (newc) archive; compressed ramdisks are not edited yet"
-    );
-    let mut records = parse_cpio(&raw)?;
-    let checks = edit(&mut records)?;
-    let new_rd = emit_cpio(&records)?;
     let mut head = orig_head.clone();
     head[16..20].copy_from_slice(&u32::try_from(new_rd.len())?.to_le_bytes());
 
