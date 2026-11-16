@@ -828,6 +828,16 @@ pub fn help(rule: &str) -> Option<Help> {
             "Label the path with a confined domain",
             Medium,
         ),
+        "selinux-file-context-unlabeled" => (
+            "A file_contexts entry assigns the unlabeled SELinux type",
+            "Label the path with a specific, confined type",
+            Medium,
+        ),
+        "selinux-binary-policy" => (
+            "A compiled SELinux policy is shipped but its contents are not decoded",
+            "Inspect the policy with an external SELinux tool; this scan does not decode binary policy contents",
+            Info,
+        ),
         _ => return None,
     };
     Some(Help {
@@ -1119,6 +1129,8 @@ const KNOWN_RULES: &[&str] = &[
     "apk-diff-new-permission",
     "apk-diff-exported-component",
     "apk-diff-signer-changed",
+    "selinux-file-context-unlabeled",
+    "selinux-binary-policy",
 ];
 
 #[cfg(test)]

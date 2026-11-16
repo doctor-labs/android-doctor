@@ -758,6 +758,31 @@ fn findings(a: &ImageAudit) -> Vec<(Finding, (String, String))> {
                 re,
             );
         }
+        for (re, ctx) in &c.unlabeled {
+            add(
+                Severity::Medium,
+                "selinux-file-context-unlabeled",
+                format!("{re} is labelled {ctx} in {}: the unlabeled type", c.file),
+                &c.file,
+                re,
+            );
+        }
+    }
+    for b in &a.sepolicy.binaries {
+        let ver = b
+            .version
+            .map(|v| format!(", policy version {v}"))
+            .unwrap_or_default();
+        add(
+            Severity::Info,
+            "selinux-binary-policy",
+            format!(
+                "{} is a compiled SELinux policy ({} bytes{ver}); its contents are not decoded",
+                b.file, b.size
+            ),
+            &b.file,
+            "",
+        );
     }
     f.extend(crate::elf::findings(&a.elf));
     let fstab_findings: Vec<_> = a
@@ -945,9 +970,9 @@ fn image_json(a: &ImageAudit) -> Value {
         "apks": a.apks.iter().map(apk_json).collect::<Vec<Value>>(),
         "elf": crate::elf::to_json(&a.elf),
     });
-    // Only images that ship text SELinux policy carry the key, so reports without it are unchanged.
+    // Only images that ship SELinux policy carry the key, so reports without it are unchanged.
     let sp = &a.sepolicy;
-    if !sp.cil.is_empty() || !sp.contexts.is_empty() || sp.skipped > 0 {
+    if !sp.cil.is_empty() || !sp.contexts.is_empty() || !sp.binaries.is_empty() || sp.skipped > 0 {
         v["sepolicy"] = crate::sepolicy::to_json(sp);
     }
     // Likewise: only images with a plaintext database carry the key.
@@ -1771,6 +1796,16 @@ service plain /system/bin/plain
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn unlabeled_file_contexts_are_flagged() {
+        let fc = "/data/secret u:object_r:unlabeled:s0\n";
+        let a = run(
+            vec![file("etc/selinux/plat_file_contexts", 0o644)],
+            &[("etc/selinux/plat_file_contexts", fc)],
+        );
+        assert!(rules(&a).contains(&"selinux-file-context-unlabeled"));
     }
 
     #[test]

@@ -1,10 +1,11 @@
-//! Text SELinux policy shipped in an image: the CIL sources (`*_sepolicy.cil`) and the
-//! `*file_contexts` label files under `etc/selinux`. The compiled policy binary is not parsed.
+//! SELinux policy shipped in an image: the CIL sources (`*_sepolicy.cil`), the `*file_contexts`
+//! label files, and compiled policy binaries under `etc/selinux`. Binary policies are identified by
+//! their on-disk magic and reported (version and size) but their contents are not decoded.
 //!
 //! From the CIL, every `(typepermissive X)` is a domain that runs in permissive mode even when the
 //! device enforces (CIL reference: secilc/docs/cil_type_statements.md, policy database version 23).
 //! `(neverallow ...)` is a compile-time check; shipped CIL may still carry it. Its count is kept, and
-//! a neverallow with plain names is matched exactly against plain `allow` rules. From the label files, an entry is flagged only when its label names a permissive domain.
+//! a neverallow with plain names is matched exactly against plain `allow` rules. From the label files, an entry is flagged when its label names a permissive domain or assigns the `unlabeled` type.
 use crate::tree::{Entry, Kind};
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -13,6 +14,11 @@ use serde_json::{Value, json};
 pub const MAX_POLICY_FILES: usize = 64;
 pub const MAX_POLICY_FILE_BYTES: u64 = 8 << 20;
 pub const MAX_POLICY_TOTAL_BYTES: u64 = 64 << 20;
+/// Prefix bytes read to identify a compiled policy binary.
+const BINARY_PROBE: usize = 16;
+/// Magic of the kernel policy binary (SE Linux / SELinux) in both byte orders.
+const SEPOL_MAGIC_LE: u32 = 0xf97cff8c;
+const SEPOL_MAGIC_BE: u32 = 0x8cff7cf9;
 /// Parenthesis nesting and atoms the CIL parser accepts in one file.
 const MAX_DEPTH: usize = 64;
 const MAX_ATOMS: usize = 1_000_000;
@@ -44,13 +50,25 @@ pub struct CilFile {
 }
 
 /// One file_contexts file: entries, lines that did not parse, and the labels that name a
-/// permissive domain as `(path regex, context)`.
+/// permissive domain or assign `unlabeled` as `(path regex, context)`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ContextsFile {
     pub file: String,
     pub entries: usize,
     pub malformed: usize,
     pub unconfined: Vec<(String, String)>,
+    /// Entries whose type is `unlabeled`, independent of the permissive-domain set.
+    pub unlabeled: Vec<(String, String)>,
+    pub error: Option<String>,
+}
+
+/// One compiled SELinux policy binary found in the image.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BinaryPolicy {
+    pub file: String,
+    /// Policy database version read from the header, when recognised.
+    pub version: Option<u32>,
+    pub size: u64,
     pub error: Option<String>,
 }
 
@@ -58,6 +76,7 @@ pub struct ContextsFile {
 pub struct SepolicyAudit {
     pub cil: Vec<CilFile>,
     pub contexts: Vec<ContextsFile>,
+    pub binaries: Vec<BinaryPolicy>,
     /// Policy files not read because of the count or size limits.
     pub skipped: usize,
     /// (file, rule) for each shipped allow that a neverallow forbids.
@@ -265,11 +284,13 @@ fn read_cil(file: &str, text: &str) -> CilFile {
     out
 }
 
-/// Parse one file_contexts text: entry count, malformed line count, and the labels whose type
-/// looks unconfined or permissive (filtered against the real permissive set by the caller).
-fn read_contexts(text: &str) -> (usize, usize, Vec<(String, String)>) {
+/// Parse one file_contexts text: entry count, malformed line count, labels whose type looks
+/// unconfined or permissive (candidates, later filtered to the permissive-domain set), and labels
+/// whose type is `unlabeled`.
+fn read_contexts(text: &str) -> (usize, usize, Vec<(String, String)>, Vec<(String, String)>) {
     let (mut entries, mut malformed) = (0usize, 0usize);
     let mut candidates = Vec::new();
+    let mut unlabeled = Vec::new();
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -297,27 +318,69 @@ fn read_contexts(text: &str) -> (usize, usize, Vec<(String, String)>) {
         if ty.contains("unconfined") || ty.contains("permissive") {
             candidates.push((re.to_string(), ctx.to_string()));
         }
+        if ty == "unlabeled" {
+            unlabeled.push((re.to_string(), ctx.to_string()));
+        }
     }
-    (entries, malformed, candidates)
+    (entries, malformed, candidates, unlabeled)
 }
 
-/// Whether a path is a CIL policy file or a file_contexts file under an `etc/selinux` directory.
-fn kind_of(path: &str) -> Option<bool> {
+/// Whether a path is a CIL policy file (`true`), a file_contexts file (`false`), or a compiled
+/// policy binary (`None` returned as `Some` sentinel is awkward, so use `PolicyKind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PolicyKind {
+    Cil,
+    Contexts,
+    Binary,
+}
+
+fn kind_of(path: &str) -> Option<PolicyKind> {
     let padded = format!("/{}", path.trim_start_matches('/'));
     if !padded.contains("/etc/selinux/") {
         return None;
     }
     let base = path.rsplit('/').next().unwrap_or(path);
     if base.ends_with("_sepolicy.cil") {
-        Some(true)
+        Some(PolicyKind::Cil)
     } else if base == "file_contexts" || base.ends_with("_file_contexts") {
-        Some(false)
+        Some(PolicyKind::Contexts)
+    } else if is_binary_policy_name(base) {
+        Some(PolicyKind::Binary)
     } else {
         None
     }
 }
 
-/// Read every shipped text policy file of an image. `read` gets an in-image path.
+/// Common names of compiled SELinux policy files shipped in Android images.
+fn is_binary_policy_name(base: &str) -> bool {
+    base == "sepolicy"
+        || base == "precompiled_sepolicy"
+        || base.starts_with("sepolicy.")
+        || base.starts_with("precompiled_sepolicy.")
+}
+
+/// Read the policy database version from a recognised compiled policy header.
+fn probe_binary_policy(bytes: &[u8]) -> Option<u32> {
+    if bytes.len() < 12 {
+        return None;
+    }
+    let magic = u32::from_le_bytes(bytes[0..4].try_into().ok()?);
+    let (version_off, known) = if magic == SEPOL_MAGIC_LE {
+        (8, true)
+    } else if u32::from_be_bytes(bytes[0..4].try_into().ok()?) == SEPOL_MAGIC_BE {
+        (8, true)
+    } else {
+        (0, false)
+    };
+    if !known {
+        return None;
+    }
+    Some(u32::from_le_bytes(
+        bytes[version_off..version_off + 4].try_into().ok()?,
+    ))
+}
+
+/// Read every shipped SELinux policy file of an image. `read` gets an in-image path.
 pub fn scan(entries: &[Entry], read: &mut dyn FnMut(&str) -> Result<Vec<u8>>) -> SepolicyAudit {
     let mut out = SepolicyAudit::default();
     let mut budget = MAX_POLICY_TOTAL_BYTES;
@@ -326,7 +389,7 @@ pub fn scan(entries: &[Entry], read: &mut dyn FnMut(&str) -> Result<Vec<u8>>) ->
         if e.kind != Kind::File {
             continue;
         }
-        let Some(is_cil) = kind_of(&e.path) else {
+        let Some(kind) = kind_of(&e.path) else {
             continue;
         };
         if files >= MAX_POLICY_FILES || e.size > MAX_POLICY_FILE_BYTES || e.size > budget {
@@ -339,34 +402,53 @@ pub fn scan(entries: &[Entry], read: &mut dyn FnMut(&str) -> Result<Vec<u8>>) ->
             Ok(b) => b,
             Err(err) => {
                 let error = Some(format!("{err:#}"));
-                if is_cil {
-                    out.cil.push(CilFile {
+                match kind {
+                    PolicyKind::Cil => out.cil.push(CilFile {
                         file: e.path.clone(),
                         error,
                         ..Default::default()
-                    });
-                } else {
-                    out.contexts.push(ContextsFile {
+                    }),
+                    PolicyKind::Contexts => out.contexts.push(ContextsFile {
                         file: e.path.clone(),
                         error,
                         ..Default::default()
-                    });
+                    }),
+                    PolicyKind::Binary => out.binaries.push(BinaryPolicy {
+                        file: e.path.clone(),
+                        size: e.size,
+                        error,
+                        ..Default::default()
+                    }),
                 }
                 continue;
             }
         };
-        let text = String::from_utf8_lossy(&bytes);
-        if is_cil {
-            out.cil.push(read_cil(&e.path, &text));
-        } else {
-            let (entries, malformed, candidates) = read_contexts(&text);
-            out.contexts.push(ContextsFile {
-                file: e.path.clone(),
-                entries,
-                malformed,
-                unconfined: candidates,
-                error: None,
-            });
+        match kind {
+            PolicyKind::Cil => {
+                let text = String::from_utf8_lossy(&bytes);
+                out.cil.push(read_cil(&e.path, &text));
+            }
+            PolicyKind::Contexts => {
+                let text = String::from_utf8_lossy(&bytes);
+                let (entries, malformed, candidates, unlabeled) = read_contexts(&text);
+                out.contexts.push(ContextsFile {
+                    file: e.path.clone(),
+                    entries,
+                    malformed,
+                    unconfined: candidates,
+                    unlabeled,
+                    error: None,
+                });
+            }
+            PolicyKind::Binary => {
+                let version = probe_binary_policy(&bytes[..bytes.len().min(BINARY_PROBE)]);
+                out.binaries.push(BinaryPolicy {
+                    file: e.path.clone(),
+                    version,
+                    size: e.size,
+                    error: None,
+                });
+            }
         }
     }
     // A label is flagged only when its domain is also typepermissive in the shipped CIL.
@@ -396,7 +478,15 @@ pub fn to_json(a: &SepolicyAudit) -> Value {
             "malformed_lines": c.malformed,
             "unconfined_labels": c.unconfined.iter()
                 .map(|(re, ctx)| json!({"path": re, "context": ctx})).collect::<Vec<_>>(),
+            "unlabeled_paths": c.unlabeled.iter()
+                .map(|(re, ctx)| json!({"path": re, "context": ctx})).collect::<Vec<_>>(),
             "error": c.error,
+        })).collect::<Vec<_>>(),
+        "binary_policies": a.binaries.iter().map(|b| json!({
+            "file": b.file,
+            "size": b.size,
+            "policy_version": b.version,
+            "error": b.error,
         })).collect::<Vec<_>>(),
         "files_skipped": a.skipped,
     })
@@ -472,9 +562,10 @@ mod tests {
 
     #[test]
     fn file_contexts_are_counted_and_unconfined_candidates_kept() {
-        let (entries, malformed, candidates) = read_contexts(CONTEXTS);
+        let (entries, malformed, candidates, unlabeled) = read_contexts(CONTEXTS);
         assert_eq!(entries, 3);
         assert_eq!(malformed, 1);
+        assert!(unlabeled.is_empty());
         assert_eq!(
             candidates,
             [(
@@ -485,17 +576,79 @@ mod tests {
     }
 
     #[test]
+    fn file_contexts_keep_unlabeled_entries() {
+        let text =
+            "/data/secret u:object_r:unlabeled:s0\n/system/bin/x u:object_r:system_file:s0\n";
+        let (entries, malformed, candidates, unlabeled) = read_contexts(text);
+        assert_eq!(entries, 2);
+        assert_eq!(malformed, 0);
+        assert!(candidates.is_empty());
+        assert_eq!(
+            unlabeled,
+            [(
+                "/data/secret".to_string(),
+                "u:object_r:unlabeled:s0".to_string()
+            )]
+        );
+    }
+
+    #[test]
     fn only_policy_paths_under_etc_selinux_are_taken() {
-        assert_eq!(kind_of("etc/selinux/plat_sepolicy.cil"), Some(true));
+        assert_eq!(
+            kind_of("etc/selinux/plat_sepolicy.cil"),
+            Some(PolicyKind::Cil)
+        );
         assert_eq!(
             kind_of("/system/etc/selinux/vendor_file_contexts"),
-            Some(false)
+            Some(PolicyKind::Contexts)
         );
         assert_eq!(
             kind_of("system/system_ext/etc/selinux/x_sepolicy.cil"),
-            Some(true)
+            Some(PolicyKind::Cil)
         );
+        assert_eq!(
+            kind_of("etc/selinux/precompiled_sepolicy"),
+            Some(PolicyKind::Binary)
+        );
+        assert_eq!(kind_of("etc/selinux/sepolicy"), Some(PolicyKind::Binary));
         assert_eq!(kind_of("etc/plat_sepolicy.cil"), None);
         assert_eq!(kind_of("etc/selinux/notes.txt"), None);
+    }
+
+    #[test]
+    fn binary_policy_header_version_is_read_when_magic_matches() {
+        let mut bytes = vec![0u8; 12];
+        bytes[0..4].copy_from_slice(&SEPOL_MAGIC_LE.to_le_bytes());
+        bytes[4..8].copy_from_slice(&b"SEPO");
+        bytes[8..12].copy_from_slice(&30u32.to_le_bytes());
+        assert_eq!(probe_binary_policy(&bytes), Some(30));
+        assert_eq!(probe_binary_policy(&[0u8; 8]), None);
+    }
+
+    #[test]
+    fn binary_policy_files_are_reported() {
+        let mut bytes = vec![0u8; 16];
+        bytes[0..4].copy_from_slice(&SEPOL_MAGIC_LE.to_le_bytes());
+        bytes[8..12].copy_from_slice(&33u32.to_le_bytes());
+        let entries = vec![Entry {
+            path: "etc/selinux/precompiled_sepolicy".to_string(),
+            kind: Kind::File,
+            mode: 0o644,
+            uid: 0,
+            gid: 0,
+            size: bytes.len() as u64,
+            mtime: 0,
+            ino: 1,
+            nlink: 1,
+            link: None,
+            rdev: None,
+            xattrs: vec![],
+            sha256: None,
+            extracted_as: None,
+            encrypted: false,
+        }];
+        let a = scan(&entries, &mut |_| Ok(bytes.clone()));
+        assert_eq!(a.binaries.len(), 1);
+        assert_eq!(a.binaries[0].version, Some(33));
     }
 }
