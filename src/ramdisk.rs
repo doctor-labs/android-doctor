@@ -87,6 +87,8 @@ pub enum Compression {
     Zstd,
     Lz4Frame,
     Lz4Legacy,
+    /// LG legacy LZ4: a legacy stream with a trailing `u32` total of the decoded bytes.
+    Lz4Lg,
     /// Legacy LZMA (`.lzma` container, not `.xz`).
     Lzma,
     /// `lzop` (`.lzo`): LZO1X blocks in the lzop 1.x container.
@@ -103,10 +105,26 @@ impl Compression {
             Self::Zstd => "zstd",
             Self::Lz4Frame => "lz4",
             Self::Lz4Legacy => "lz4-legacy",
+            Self::Lz4Lg => "lz4_lg",
             Self::Lzma => "lzma",
             Self::Lzop => "lzop",
         }
     }
+}
+
+fn is_lzma_header(head: &[u8]) -> bool {
+    // Legacy `.lzma` container: properties byte, then 4-byte dictionary size and
+    // 8-byte uncompressed size before the range-coded data. Parse with the same
+    // reader used for decompression so detection matches what we can actually read,
+    // and require a realistic dictionary size to avoid misclassifying unrelated data.
+    if head.len() < 13 {
+        return false;
+    }
+    let dict = u32::from_le_bytes([head[1], head[2], head[3], head[4]]);
+    if dict < 0x1000 {
+        return false;
+    }
+    lzma_rust2::LzmaReader::new_mem_limit(std::io::Cursor::new(head), u32::MAX, None).is_ok()
 }
 
 /// The compression of a ramdisk from its first bytes (`None` is a plain cpio archive).
@@ -128,10 +146,7 @@ pub fn compression_of(head: &[u8]) -> Option<Compression> {
         Compression::Lzop
     } else if at0(b"070701") || at0(b"070702") {
         Compression::None
-    } else if at0(&[0x5D]) && head.len() >= 13 {
-        // Legacy `.lzma` container: properties byte (0x5D = lc=3 lp=0 pb=2), then
-        // 4-byte dict size and 8-byte uncompressed size before the range-coded data.
-        // `lzma_rust2::LzmaReader` validates the rest, so this only needs the signature byte.
+    } else if is_lzma_header(head) {
         Compression::Lzma
     } else {
         return None;
@@ -213,6 +228,7 @@ struct LegacyLz4<R: Read> {
     pos: usize,
     started: bool,
     produced: u64,
+    lg: bool,
 }
 
 impl<R: Read> Read for LegacyLz4<R> {
@@ -257,6 +273,7 @@ impl<R: Read> Read for LegacyLz4<R> {
                 .take(size as u64)
                 .read_to_end(&mut block)?;
             if trailer && block.is_empty() {
+                self.lg = true;
                 return Ok(0);
             }
             if !valid {
@@ -318,12 +335,13 @@ pub(crate) fn decoder<'a, R: Read + 'a>(c: Compression, r: R) -> Result<Box<dyn 
             Box::new(ruzstd::decoding::StreamingDecoder::new(r).map_err(|e| anyhow!("zstd: {e}"))?)
         }
         Compression::Lz4Frame => Box::new(lz4_flex::frame::FrameDecoder::new(r)),
-        Compression::Lz4Legacy => Box::new(LegacyLz4 {
+        Compression::Lz4Legacy | Compression::Lz4Lg => Box::new(LegacyLz4 {
             inner: r,
             buf: Vec::new(),
             pos: 0,
             started: false,
             produced: 0,
+            lg: false,
         }),
         Compression::Lzop => Box::new(Lzop {
             inner: r,
@@ -644,6 +662,21 @@ impl<R: Read> Read for Lzop<R> {
         let n = out.len().min(self.buf.len() - self.pos);
         out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
         self.pos += n;
+        Ok(n)
+    }
+}
+
+struct Lz4Stream<R: Read> {
+    inner: LegacyLz4<R>,
+    lg_flag: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+impl<R: Read> Read for Lz4Stream<R> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(out)?;
+        if self.inner.lg {
+            self.lg_flag.set(true);
+        }
         Ok(n)
     }
 }
@@ -1098,6 +1131,31 @@ fn read_ramdisk_capped<R: Read>(mut source: R, out: Option<&Path>, cap: u64) -> 
     } else {
         Box::new(std::io::Cursor::new(head).chain(source))
     };
+    if matches!(c, Compression::Lz4Legacy | Compression::Lz4Lg) {
+        let lg_flag = std::rc::Rc::new(std::cell::Cell::new(false));
+        let lz4 = Lz4Stream {
+            inner: LegacyLz4 {
+                inner: chained,
+                buf: Vec::new(),
+                pos: 0,
+                started: false,
+                produced: 0,
+                lg: false,
+            },
+            lg_flag: lg_flag.clone(),
+        };
+        let plain = Capped {
+            inner: lz4,
+            left: cap,
+            cap,
+        };
+        let mut report =
+            read_cpio(plain, c, out).with_context(|| format!("reading the {} ramdisk", c.id()))?;
+        if lg_flag.get() {
+            report.compression = Compression::Lz4Lg;
+        }
+        return Ok(report);
+    }
     let plain = Capped {
         inner: decoder(c, chained)?,
         left: cap,
@@ -1413,6 +1471,11 @@ mod tests {
                 }
                 out
             }
+            Compression::Lz4Lg => {
+                let mut out = compress(Compression::Lz4Legacy, data);
+                out.extend((data.len() as u32).to_le_bytes());
+                out
+            }
             Compression::Lzop => {
                 // Stored blocks only (there is no LZO encoder here); the header, block lengths
                 // and Adler-32 are the lzop 1.04 layout.
@@ -1444,7 +1507,7 @@ mod tests {
         }
     }
 
-    const ALL: [Compression; 9] = [
+    const ALL: [Compression; 10] = [
         Compression::None,
         Compression::Gzip,
         Compression::Bzip2,
@@ -1452,6 +1515,7 @@ mod tests {
         Compression::Zstd,
         Compression::Lz4Frame,
         Compression::Lz4Legacy,
+        Compression::Lz4Lg,
         Compression::Lzma,
         Compression::Lzop,
     ];
@@ -1608,7 +1672,13 @@ mod tests {
     fn compression_is_detected_from_the_magic_bytes() {
         for c in ALL {
             let packed = compress(c, &cpio(&[file("a", b"x")]));
-            assert_eq!(compression_of(&packed), Some(c), "{}", c.id());
+            let want = match c {
+                // lz4_lg shares the legacy LZ4 magic; the trailing size word is only
+                // discovered while reading the stream.
+                Compression::Lz4Lg => Compression::Lz4Legacy,
+                other => other,
+            };
+            assert_eq!(compression_of(&packed), Some(want), "{}", c.id());
         }
         assert_eq!(compression_of(b"BZh0"), None);
         assert_eq!(compression_of(b"BZhx"), None);
@@ -1978,7 +2048,9 @@ mod tests {
         let archive = cpio(&[file("a", &data(300_000, 5))]);
         let mut lg = compress(Compression::Lz4Legacy, &archive);
         lg.extend((archive.len() as u32).to_le_bytes());
-        assert_eq!(read(&lg).unwrap().entries[0].size, 300_000);
+        let report = read(&lg).unwrap();
+        assert_eq!(report.entries[0].size, 300_000);
+        assert_eq!(report.compression, Compression::Lz4Lg);
         let mut wrong = compress(Compression::Lz4Legacy, &archive);
         wrong.extend((archive.len() as u32 + 1).to_le_bytes());
         assert!(format!("{:#}", read(&wrong).unwrap_err()).contains("ends"));
