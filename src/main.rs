@@ -518,6 +518,62 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Extract the vbmeta image from a partition image that has an AVB footer (avbtool extract_vbmeta_image)
+    AvbExtract {
+        /// Partition image with an AVB footer (never modified)
+        image: PathBuf,
+        /// Where to write the vbmeta image
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Replace the output if it exists
+        #[arg(long)]
+        force: bool,
+    },
+    /// Append an existing vbmeta image to a partition image and write an AVB footer (avbtool append_vbmeta_image)
+    AvbAppend {
+        /// Partition image without an AVB footer (never modified)
+        image: PathBuf,
+        /// vbmeta image to append
+        #[arg(long)]
+        vbmeta: PathBuf,
+        /// Partition size in bytes for the padded output
+        #[arg(long)]
+        partition_size: u64,
+        /// New image to write
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Replace the output if it exists
+        #[arg(long)]
+        force: bool,
+    },
+    /// Write a copy of a footer-bearing image with its hashtree zeroed (avbtool zero_hashtree)
+    AvbZeroHashtree {
+        /// Partition image with an AVB footer and a hashtree descriptor (never modified)
+        image: PathBuf,
+        /// New image to write
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Replace the output if it exists
+        #[arg(long)]
+        force: bool,
+    },
+    /// Re-sign a vbmeta image with a key, preserving its descriptors and header fields (unverified on a device)
+    AvbResign {
+        /// vbmeta image to read (never modified)
+        input: PathBuf,
+        /// Algorithm: NONE or SHA256_RSA2048/4096/8192
+        #[arg(long, default_value = "NONE")]
+        algorithm: String,
+        /// PEM RSA private key; required for RSA algorithms
+        #[arg(long)]
+        key: Option<PathBuf>,
+        /// New vbmeta image to write
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Replace the output if it exists
+        #[arg(long)]
+        force: bool,
+    },
     /// Compare two builds of one APK: requested permissions, new or newly exported components and the signing certificate; what got worse becomes findings
     ApkDiff {
         /// The old APK
@@ -667,6 +723,39 @@ enum Command {
         /// Boot image header version, 0 to 2
         #[arg(long, default_value_t = 2)]
         header_version: u32,
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Replace an existing output file instead of refusing
+        #[arg(long)]
+        force: bool,
+    },
+    /// Pack partition images into a logical-partition super image (LP metadata v10, one slot)
+    LpPack {
+        /// Partition to include, as NAME=PATH (repeatable)
+        #[arg(long = "partition", value_name = "NAME=PATH", required = true)]
+        partitions: Vec<String>,
+        /// Super device size in bytes (0 = fit partitions and metadata)
+        #[arg(long, default_value_t = 0)]
+        device_size: u64,
+        /// Metadata maximum size per slot in bytes
+        #[arg(long, default_value_t = 65536)]
+        metadata_size: u32,
+        /// Metadata slot count
+        #[arg(long, default_value_t = 1)]
+        metadata_slots: u32,
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Replace an existing output file instead of refusing
+        #[arg(long)]
+        force: bool,
+    },
+    /// Replace partition contents in an existing logical-partition super image
+    LpRepack {
+        /// Existing super image
+        input: PathBuf,
+        /// Replacement partition, as NAME=PATH (repeatable); data must fit the allocated extents
+        #[arg(long = "partition", value_name = "NAME=PATH", required = true)]
+        partitions: Vec<String>,
         #[arg(short, long)]
         output: PathBuf,
         /// Replace an existing output file instead of refusing
@@ -1543,6 +1632,85 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             force,
             json,
         } => avberase_command(&image, &output, force, json),
+        Command::AvbExtract {
+            image,
+            output,
+            force,
+        } => {
+            let img = std::fs::read(&image)?;
+            let vbmeta = avbwrite::extract_vbmeta(&img)?;
+            write_atomically(&output, force, |f| {
+                f.write_all(&vbmeta)?;
+                Ok(())
+            })?;
+            print_out(&format!(
+                "wrote {} ({} bytes, not vendor-signed; unverified on a device)",
+                output.display(),
+                vbmeta.len()
+            ))
+        }
+        Command::AvbAppend {
+            image,
+            vbmeta,
+            partition_size,
+            output,
+            force,
+        } => {
+            let img = std::fs::read(&image)?;
+            let vb = std::fs::read(&vbmeta)?;
+            let out = avbwrite::append_vbmeta(&img, &vb, partition_size)?;
+            write_atomically(&output, force, |f| {
+                f.write_all(&out)?;
+                Ok(())
+            })?;
+            print_out(&format!(
+                "wrote {} (not vendor-signed; unverified on a device)",
+                output.display()
+            ))
+        }
+        Command::AvbZeroHashtree {
+            image,
+            output,
+            force,
+        } => {
+            let img = std::fs::read(&image)?;
+            let out = avbwrite::zero_hashtree(&img)?;
+            write_atomically(&output, force, |f| {
+                f.write_all(&out)?;
+                Ok(())
+            })?;
+            print_out(&format!(
+                "wrote {} (not vendor-signed; unverified on a device)",
+                output.display()
+            ))
+        }
+        Command::AvbResign {
+            input,
+            algorithm,
+            key,
+            output,
+            force,
+        } => {
+            let vbmeta = std::fs::read(&input)?;
+            let private = match key.as_deref() {
+                Some(k) => {
+                    let mut pem = String::new();
+                    use std::io::Read as _;
+                    std::fs::File::open(k)?.read_to_string(&mut pem)?;
+                    Some(avbwrite::parse_private_key(&pem)?)
+                }
+                None => None,
+            };
+            let out = avbwrite::resign_vbmeta(&vbmeta, &algorithm, private.as_ref())?;
+            write_atomically(&output, force, |f| {
+                f.write_all(&out)?;
+                Ok(())
+            })?;
+            print_out(&format!(
+                "wrote {} (not vendor-signed; unverified on a device)",
+                output.display()
+            ))
+        }
         Command::ApkDiff {
             old,
             new,
@@ -1636,6 +1804,53 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
                 cmdline,
             };
             bootimg::pack_run(&parts, &output, force)
+        }
+        Command::LpPack {
+            partitions,
+            device_size,
+            metadata_size,
+            metadata_slots,
+            output,
+            force,
+        } => {
+            let mut parts = Vec::new();
+            for p in partitions {
+                let (name, path) = p
+                    .split_once('=')
+                    .with_context(|| format!("--partition {p:?} is not NAME=PATH"))?;
+                parts.push((name.to_string(), PathBuf::from(path)));
+            }
+            lp::lppack_command(
+                &parts,
+                &output,
+                device_size,
+                metadata_size,
+                metadata_slots,
+                force,
+            )?;
+            print_out(&format!(
+                "wrote {} (not vendor-signed; unverified on a device)",
+                output.display()
+            ))
+        }
+        Command::LpRepack {
+            input,
+            partitions,
+            output,
+            force,
+        } => {
+            let mut parts = Vec::new();
+            for p in partitions {
+                let (name, path) = p
+                    .split_once('=')
+                    .with_context(|| format!("--partition {p:?} is not NAME=PATH"))?;
+                parts.push((name.to_string(), PathBuf::from(path)));
+            }
+            lp::lprepack_command(&input, &parts, &output, force)?;
+            print_out(&format!(
+                "wrote {} (not vendor-signed; unverified on a device)",
+                output.display()
+            ))
         }
         Command::RamdiskEdit {
             image,

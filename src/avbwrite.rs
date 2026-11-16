@@ -376,6 +376,144 @@ pub fn erase_footer(image: &[u8]) -> Result<Vec<u8>> {
     Ok(image[..original as usize].to_vec())
 }
 
+/// Extract the vbmeta blob referenced by an image's AVB footer (avbtool `extract_vbmeta_image`).
+pub fn extract_vbmeta(image: &[u8]) -> Result<Vec<u8>> {
+    ensure!(has_footer(image), "the image has no AVB footer");
+    let f = &image[image.len() - FOOTER_LEN..];
+    let major = u32::from_be_bytes(f[4..8].try_into().unwrap());
+    ensure!(major == 1, "unsupported AVB footer version {major}");
+    let at = u64::from_be_bytes(f[20..28].try_into().unwrap()) as usize;
+    let len = u64::from_be_bytes(f[28..36].try_into().unwrap()) as usize;
+    ensure!(
+        at.checked_add(len)
+            .is_some_and(|end| end <= image.len() - FOOTER_LEN),
+        "footer points at a vbmeta outside the image"
+    );
+    Ok(image[at..at + len].to_vec())
+}
+
+/// Append an existing vbmeta blob to a partition image and write an AVB footer, padded to
+/// `partition_size` (avbtool `append_vbmeta_image` semantics for footer-bearing images).
+pub fn append_vbmeta(image: &[u8], vbmeta: &[u8], partition_size: u64) -> Result<Vec<u8>> {
+    ensure!(
+        !has_footer(image),
+        "the image already has an AVB footer; erase it first"
+    );
+    ensure!(
+        !vbmeta.is_empty() && &vbmeta[..4.min(vbmeta.len())] == b"AVB0",
+        "not a vbmeta image"
+    );
+    let block = 4096usize;
+    let max_metadata = (MAX_VBMETA + MAX_FOOTER) as u64;
+    ensure!(
+        partition_size >= max_metadata && partition_size.is_multiple_of(block as u64),
+        "partition size {partition_size} must be a multiple of {block} and at least {max_metadata}"
+    );
+    let mut out = image.to_vec();
+    out.resize(round_up(out.len(), block), 0);
+    let vbmeta_offset = out.len();
+    ensure!(
+        (vbmeta_offset as u64)
+            .checked_add(vbmeta.len() as u64)
+            .and_then(|n| n.checked_add(block as u64))
+            .is_some_and(|n| n <= partition_size),
+        "vbmeta does not fit in partition size {partition_size}"
+    );
+    out.extend_from_slice(vbmeta);
+    out.resize(round_up(out.len(), block), 0);
+    let partition = partition_size as usize;
+    out.resize(partition - FOOTER_LEN, 0);
+    out.extend_from_slice(b"AVBf");
+    out.extend_from_slice(&1u32.to_be_bytes());
+    out.extend_from_slice(&0u32.to_be_bytes());
+    out.extend_from_slice(&(image.len() as u64).to_be_bytes());
+    out.extend_from_slice(&(vbmeta_offset as u64).to_be_bytes());
+    out.extend_from_slice(&(vbmeta.len() as u64).to_be_bytes());
+    out.extend_from_slice(&[0u8; 28]);
+    Ok(out)
+}
+
+/// Zero the hashtree bytes of a footer-bearing image (avbtool `zero_hashtree`): the tree range
+/// from the first hashtree descriptor is filled with zeros and the vbmeta is left as-is.
+/// Returns a new image.
+pub fn zero_hashtree(image: &[u8]) -> Result<Vec<u8>> {
+    let vbmeta = extract_vbmeta(image)?;
+    let meta = crate::avb::parse(&vbmeta, None)?;
+    let ht = meta
+        .descriptors
+        .iter()
+        .find_map(|d| match d {
+            crate::avb::Descriptor::Hashtree(h) => Some(h.clone()),
+            _ => None,
+        })
+        .context("image vbmeta has no hashtree descriptor")?;
+    let start = ht.tree_offset as usize;
+    let end = start
+        .checked_add(ht.tree_size as usize)
+        .context("hashtree range overflows")?;
+    ensure!(end <= image.len(), "hashtree range runs past the image");
+    let mut out = image.to_vec();
+    for b in &mut out[start..end] {
+        *b = 0;
+    }
+    Ok(out)
+}
+
+/// Re-sign an existing vbmeta image with `key` (or make it unsigned with algorithm NONE when
+/// `key` is None but algorithm is NONE). The header fields and descriptors are preserved.
+pub fn resign_vbmeta(
+    vbmeta: &[u8],
+    algorithm: &str,
+    key: Option<&RsaPrivateKey>,
+) -> Result<Vec<u8>> {
+    let meta = crate::avb::parse(vbmeta, None)?;
+    ensure!(vbmeta.len() >= HEADER_LEN, "vbmeta too short");
+    let aux_start = HEADER_LEN + meta.auth_size as usize;
+    let desc_size = u64::from_be_bytes(vbmeta[72..80].try_into().unwrap()) as usize;
+    ensure!(
+        aux_start + desc_size <= vbmeta.len(),
+        "vbmeta descriptors truncated"
+    );
+    let descriptors = &vbmeta[aux_start..aux_start + desc_size];
+    let opts = Options {
+        algorithm,
+        rollback_index: meta.rollback_index,
+        flags: meta.flags,
+        rollback_index_location: meta.rollback_index_location,
+        padding_size: 0,
+        release_string: &meta.release,
+    };
+    make_vbmeta_with(&opts, key, descriptors)
+}
+
+/// Rewrite a vbmeta image keeping its descriptors but changing rollback index and flags, then sign.
+pub fn rewrite_vbmeta(
+    vbmeta: &[u8],
+    algorithm: &str,
+    key: Option<&RsaPrivateKey>,
+    rollback_index: u64,
+    flags: u32,
+) -> Result<Vec<u8>> {
+    let meta = crate::avb::parse(vbmeta, None)?;
+    ensure!(vbmeta.len() >= HEADER_LEN, "vbmeta too short");
+    let aux_start = HEADER_LEN + meta.auth_size as usize;
+    let desc_size = u64::from_be_bytes(vbmeta[72..80].try_into().unwrap()) as usize;
+    ensure!(
+        aux_start + desc_size <= vbmeta.len(),
+        "vbmeta descriptors truncated"
+    );
+    let descriptors = &vbmeta[aux_start..aux_start + desc_size];
+    let opts = Options {
+        algorithm,
+        rollback_index,
+        flags,
+        rollback_index_location: meta.rollback_index_location,
+        padding_size: 0,
+        release_string: &meta.release,
+    };
+    make_vbmeta_with(&opts, key, descriptors)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

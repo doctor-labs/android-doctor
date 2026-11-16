@@ -7,6 +7,7 @@
 //! All fields are little-endian; a sector is 512 bytes.
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
+use std::io::Write;
 
 /// Offset of the primary LP geometry within the image (`LP_PARTITION_RESERVED_BYTES`).
 const GEOMETRY_OFFSET: u64 = 4096;
@@ -518,6 +519,314 @@ pub fn is_super(path: &std::path::Path) -> Result<bool> {
     let n = file.read(&mut magic)?;
     Ok(n == 4 && magic == LP_GEOMETRY_MAGIC_BYTES)
 }
+
+/// A partition image to place in a newly packed super image.
+#[derive(Clone)]
+pub struct PackPart {
+    pub name: String,
+    pub data: Vec<u8>,
+}
+
+/// Parameters for `pack`: a single block device ("super") large enough for metadata and all partitions.
+pub struct PackOptions {
+    pub device_size: u64,
+    pub metadata_max_size: u32,
+    pub metadata_slot_count: u32,
+    pub logical_block_size: u32,
+    pub alignment: u32,
+}
+
+impl Default for PackOptions {
+    fn default() -> Self {
+        Self {
+            device_size: 0,
+            metadata_max_size: 65536,
+            metadata_slot_count: 1,
+            logical_block_size: 4096,
+            alignment: 1,
+        }
+    }
+}
+
+fn put_u16(v: &mut Vec<u8>, x: u16) {
+    v.extend_from_slice(&x.to_le_bytes());
+}
+fn put_u32(v: &mut Vec<u8>, x: u32) {
+    v.extend_from_slice(&x.to_le_bytes());
+}
+fn put_u64(v: &mut Vec<u8>, x: u64) {
+    v.extend_from_slice(&x.to_le_bytes());
+}
+
+fn build_geometry(opts: &PackOptions) -> Result<Vec<u8>> {
+    ensure!(
+        opts.logical_block_size != 0 && opts.logical_block_size.is_multiple_of(512),
+        "logical block size must be a non-zero multiple of 512"
+    );
+    let mut g = Vec::with_capacity(GEOMETRY_STRUCT_SIZE);
+    put_u32(&mut g, LP_GEOMETRY_MAGIC);
+    put_u32(&mut g, GEOMETRY_STRUCT_SIZE as u32);
+    g.extend_from_slice(&[0u8; 32]); // checksum
+    put_u32(&mut g, opts.metadata_max_size);
+    put_u32(&mut g, opts.metadata_slot_count.max(1));
+    put_u32(&mut g, opts.logical_block_size);
+    debug_assert_eq!(g.len(), GEOMETRY_STRUCT_SIZE);
+    let checksum = Sha256::digest(&g);
+    g[8..40].copy_from_slice(&checksum);
+    Ok(g)
+}
+
+fn build_metadata(
+    parts: &[(&str, u64, u64)],
+    opts: &PackOptions,
+    first_data_sector: u64,
+) -> Result<Vec<u8>> {
+    let n = parts.len();
+    let mut partitions = Vec::new();
+    let mut extents = Vec::new();
+    for (i, (name, sectors, at_sector)) in parts.iter().enumerate() {
+        let mut nm = [0u8; 36];
+        let nb = name.as_bytes();
+        ensure!(nb.len() <= 36, "partition name too long: {name}");
+        nm[..nb.len()].copy_from_slice(nb);
+        partitions.extend_from_slice(&nm);
+        put_u32(&mut partitions, 0); // attributes
+        put_u32(&mut partitions, i as u32); // first_extent_index
+        put_u32(&mut partitions, 1); // num_extents
+        put_u32(&mut partitions, 0); // group_index
+        put_u64(&mut extents, *sectors);
+        put_u32(&mut extents, EXTENT_LINEAR);
+        put_u64(&mut extents, *at_sector);
+        put_u32(&mut extents, 0); // target_source
+    }
+    let mut groups = Vec::new();
+    let mut gname = [0u8; 36];
+    gname[..7].copy_from_slice(b"default");
+    groups.extend_from_slice(&gname);
+    put_u32(&mut groups, 0);
+    put_u64(&mut groups, 0);
+
+    let mut devices = Vec::new();
+    put_u64(&mut devices, first_data_sector);
+    put_u32(&mut devices, opts.alignment.max(1));
+    put_u32(&mut devices, 0);
+    put_u64(&mut devices, opts.device_size);
+    let mut dname = [0u8; 36];
+    dname[..5].copy_from_slice(b"super");
+    devices.extend_from_slice(&dname);
+    put_u32(&mut devices, 0);
+
+    let mut tables = Vec::new();
+    let mut descriptors = Vec::new();
+    for (blob, count, size) in [
+        (&partitions, n, PARTITION_SIZE as u32),
+        (&extents, n, EXTENT_SIZE as u32),
+        (&groups, 1usize, GROUP_SIZE as u32),
+        (&devices, 1usize, BLOCK_DEVICE_SIZE as u32),
+    ] {
+        put_u32(&mut descriptors, tables.len() as u32);
+        put_u32(&mut descriptors, count as u32);
+        put_u32(&mut descriptors, size);
+        tables.extend_from_slice(blob);
+    }
+    let header_size: u32 = 128;
+    let mut header = Vec::new();
+    put_u32(&mut header, LP_HEADER_MAGIC);
+    put_u16(&mut header, 10);
+    put_u16(&mut header, 0);
+    put_u32(&mut header, header_size);
+    header.extend_from_slice(&[0u8; 32]);
+    put_u32(&mut header, tables.len() as u32);
+    header.extend_from_slice(&Sha256::digest(&tables));
+    header.extend_from_slice(&descriptors);
+    header.resize(header_size as usize, 0);
+    let checksum = Sha256::digest(&header);
+    header[12..44].copy_from_slice(&checksum);
+    let mut out = header;
+    out.extend_from_slice(&tables);
+    Ok(out)
+}
+
+/// Pack partition images into a new super image. Partitions are placed linearly after metadata.
+pub fn pack(parts: &[PackPart], opts: &PackOptions) -> Result<Vec<u8>> {
+    ensure!(!parts.is_empty(), "no partitions to pack");
+    let lbs = opts.logical_block_size.max(4096) as u64;
+    let align_sectors = (opts.alignment.max(1) as u64 * lbs / SECTOR_SIZE).max(1);
+    let geometry = build_geometry(opts)?;
+    let meta_slots = opts.metadata_slot_count.max(1) as u64;
+    let meta_max = opts.metadata_max_size.max(4096) as u64;
+    // primary+backup geometry blocks, then metadata slots (each slot: header+tables area in metadata_max_size?
+    // AOSP uses metadata_max_size per slot copy region; primary metadata at METADATA_OFFSET)
+    let metadata_area = METADATA_OFFSET + meta_slots * meta_max;
+    let mut first_data_sector = metadata_area.div_ceil(SECTOR_SIZE);
+    // align first data sector to alignment
+    first_data_sector = first_data_sector.div_ceil(align_sectors) * align_sectors;
+
+    let mut placements: Vec<(&str, u64, u64)> = Vec::new();
+    let mut cursor = first_data_sector;
+    let mut data_blobs: Vec<(u64, &[u8])> = Vec::new();
+    for p in parts {
+        let sectors = (p.data.len() as u64).div_ceil(SECTOR_SIZE);
+        placements.push((&p.name, sectors.max(1), cursor));
+        data_blobs.push((cursor * SECTOR_SIZE, &p.data));
+        cursor = (cursor + sectors.max(1)).div_ceil(align_sectors) * align_sectors;
+    }
+    let min_size = cursor * SECTOR_SIZE;
+    let device_size = if opts.device_size == 0 {
+        min_size
+    } else {
+        ensure!(
+            opts.device_size >= min_size,
+            "device size {} is too small for partitions and metadata (need at least {})",
+            opts.device_size,
+            min_size
+        );
+        opts.device_size
+    };
+    let mut packed_opts = PackOptions {
+        device_size,
+        ..*opts
+    };
+    packed_opts.device_size = device_size;
+
+    let metadata = build_metadata(&placements, &packed_opts, first_data_sector)?;
+    ensure!(
+        metadata.len() as u64 <= meta_max,
+        "metadata ({} bytes) exceeds metadata_max_size ({})",
+        metadata.len(),
+        meta_max
+    );
+
+    let mut img = vec![0u8; device_size as usize];
+    for at in [
+        GEOMETRY_OFFSET as usize,
+        (GEOMETRY_OFFSET as usize) + GEOMETRY_BLOCK,
+    ] {
+        img[at..at + geometry.len()].copy_from_slice(&geometry);
+    }
+    let m0 = METADATA_OFFSET as usize;
+    img[m0..m0 + metadata.len()].copy_from_slice(&metadata);
+    // backup metadata copy in next slot area if space (simplified: place after primary slot region)
+    if meta_slots >= 1 {
+        let backup = m0 + meta_max as usize;
+        if backup + metadata.len() <= img.len() {
+            img[backup..backup + metadata.len()].copy_from_slice(&metadata);
+        }
+    }
+    for (off, data) in data_blobs {
+        let end = off as usize + data.len();
+        ensure!(end <= img.len(), "partition data exceeds device image");
+        img[off as usize..end].copy_from_slice(data);
+    }
+    Ok(img)
+}
+
+/// Replace partition contents in a super image copy. Each named partition must fit in its
+/// allocated linear extents; bytes beyond the new image (up to allocated size) are zeroed.
+pub fn repack(image: &[u8], replacements: &[(&str, &[u8])]) -> Result<Vec<u8>> {
+    let parsed = parse_metadata(image)?;
+    let mut out = image.to_vec();
+    for (name, data) in replacements {
+        let part = parsed
+            .iter()
+            .find(|p| p.name == *name)
+            .with_context(|| format!("partition {name} not found in super image"))?;
+        let cap: u64 = part
+            .extents
+            .iter()
+            .filter(|e| e.target_type == EXTENT_LINEAR)
+            .map(|e| e.num_sectors * SECTOR_SIZE)
+            .sum();
+        ensure!(
+            (data.len() as u64) <= cap,
+            "replacement for {name} ({} bytes) exceeds allocated extents ({cap} bytes)",
+            data.len()
+        );
+        let mut written = 0usize;
+        for e in &part.extents {
+            if e.target_type != EXTENT_LINEAR {
+                continue;
+            }
+            let len = (e.num_sectors * SECTOR_SIZE) as usize;
+            let start = (e.target_data * SECTOR_SIZE) as usize;
+            let end = start + len;
+            ensure!(end <= out.len(), "extent for {name} runs past image");
+            let chunk = &mut out[start..end];
+            let take = len.min(data.len().saturating_sub(written));
+            if take > 0 {
+                chunk[..take].copy_from_slice(&data[written..written + take]);
+            }
+            if take < len {
+                for b in &mut chunk[take..] {
+                    *b = 0;
+                }
+            }
+            written += take;
+        }
+        ensure!(
+            written == data.len(),
+            "failed to write full replacement for {name}"
+        );
+    }
+    Ok(out)
+}
+
+/// `lppack`: read partition image files (name=path) and write a super image.
+pub fn lppack_command(
+    parts: &[(String, std::path::PathBuf)],
+    output: &std::path::Path,
+    device_size: u64,
+    metadata_size: u32,
+    metadata_slots: u32,
+    force: bool,
+) -> Result<()> {
+    let mut pack_parts = Vec::new();
+    for (name, path) in parts {
+        let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        pack_parts.push(PackPart {
+            name: name.clone(),
+            data,
+        });
+    }
+    let opts = PackOptions {
+        device_size,
+        metadata_max_size: metadata_size.max(4096),
+        metadata_slot_count: metadata_slots.max(1),
+        logical_block_size: 4096,
+        alignment: 1,
+    };
+    let img = pack(&pack_parts, &opts)?;
+    crate::write_atomically(output, force, |f| {
+        f.write_all(&img)?;
+        Ok(())
+    })
+}
+
+/// `lprepack`: replace named partitions in an existing super image.
+pub fn lprepack_command(
+    input: &std::path::Path,
+    replacements: &[(String, std::path::PathBuf)],
+    output: &std::path::Path,
+    force: bool,
+) -> Result<()> {
+    let image = std::fs::read(input).with_context(|| format!("reading {}", input.display()))?;
+    let mut reps: Vec<(String, Vec<u8>)> = Vec::new();
+    for (name, path) in replacements {
+        reps.push((
+            name.clone(),
+            std::fs::read(path).with_context(|| format!("reading {}", path.display()))?,
+        ));
+    }
+    let refs: Vec<(&str, &[u8])> = reps
+        .iter()
+        .map(|(n, d)| (n.as_str(), d.as_slice()))
+        .collect();
+    let out = repack(&image, &refs)?;
+    crate::write_atomically(output, force, |f| {
+        f.write_all(&out)?;
+        Ok(())
+    })
+}
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -664,5 +973,48 @@ pub(crate) mod tests {
         let p = d.join("not.img");
         std::fs::write(&p, [0u8; 8200]).unwrap();
         assert!(!is_super(&p).unwrap());
+    }
+
+    #[test]
+    fn pack_produces_a_parsable_super_image() {
+        let a = vec![1u8; 1000];
+        let b = vec![2u8; 4096];
+        let img = pack(
+            &[
+                PackPart {
+                    name: "system_a".into(),
+                    data: a.clone(),
+                },
+                PackPart {
+                    name: "vendor_a".into(),
+                    data: b.clone(),
+                },
+            ],
+            &PackOptions {
+                device_size: 2 * 1024 * 1024,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let parsed = parse_metadata(&img).unwrap();
+        assert_eq!(
+            parsed.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            ["system_a", "vendor_a"]
+        );
+        let out = split_partitions(&img, &parsed, None).unwrap();
+        assert_eq!(&out[0].1[..1000], &a[..]);
+        assert_eq!(&out[1].1[..4096], &b[..]);
+    }
+
+    #[test]
+    fn repack_replaces_partition_data_in_place() {
+        let img = lp_image(&[("system_a", &[0xAA; 2048]), ("vendor_a", &[0xBB; 1024])]);
+        let repl = vec![0xCCu8; 1536];
+        let out = repack(&img, &[("system_a", &repl)]).unwrap();
+        let parsed = parse_metadata(&out).unwrap();
+        let parts = split_partitions(&out, &parsed, None).unwrap();
+        assert_eq!(&parts[0].1[..1536], &repl[..]);
+        assert!(parts[0].1[1536..2048].iter().all(|&x| x == 0));
+        assert_eq!(&parts[1].1[..1024], &[0xBB; 1024]);
     }
 }
