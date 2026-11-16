@@ -3492,6 +3492,13 @@ mod tests {
 
     #[test]
     fn cli_definition_is_valid() {
-        Cli::command().debug_assert();
+        // The CLI tree is large enough that building it overflows the default test-thread
+        // stack; run it on a thread with room.
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| Cli::command().debug_assert())
+            .expect("spawn the CLI check")
+            .join()
+            .expect("the CLI definition is valid");
     }
 }
