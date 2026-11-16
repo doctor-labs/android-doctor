@@ -1085,7 +1085,14 @@ mod tests {
 
     #[test]
     fn code_without_risky_calls_has_no_findings_and_screen_rules_need_activities() {
-        assert!(run(CLEAN, 0).is_empty());
+        // demo.dex uses no behaviour API except reflection (see the categories test), so the
+        // only finding it carries is the info-level reflection category.
+        assert!(
+            run(CLEAN, 0)
+                .iter()
+                .all(|i| i.rule == "apk-code-behaviour-reflection"),
+            "demo.dex has no risky calls beyond reflection"
+        );
         let with = run(CLEAN, 2);
         let rules: Vec<_> = with.iter().map(|i| i.rule).collect();
         assert_eq!(rules, ["apk-code-tapjacking", "apk-code-screenshot"]);
