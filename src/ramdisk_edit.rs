@@ -195,6 +195,42 @@ fn find(records: &[Record], path: &str) -> Option<usize> {
         .position(|r| clean_path(&r.name).ok().as_deref() == Some(path))
 }
 
+/// Create any missing directory components of `dir` (mkdir -p semantics).
+fn ensure_dirs(records: &mut Vec<Record>, dir: &str) -> Result<()> {
+    let mut cur = String::new();
+    for part in dir.split('/') {
+        if part.is_empty() {
+            continue;
+        }
+        if cur.is_empty() {
+            cur.push_str(part);
+        } else {
+            cur.push('/');
+            cur.push_str(part);
+        }
+        if let Some(i) = find(records, &cur) {
+            ensure!(
+                records[i].fields[1] & MODE_TYPE == MODE_DIR,
+                "{cur} exists and is not a directory"
+            );
+            continue;
+        }
+        let ino = records
+            .iter()
+            .map(|r| r.fields[0])
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .context("inode numbers are exhausted")?;
+        records.push(Record {
+            fields: [ino, MODE_DIR | 0o755, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0],
+            name: cur.clone(),
+            data: Vec::new(),
+        });
+    }
+    Ok(())
+}
+
 /// Source bytes and their permission bits (0o644 where the platform has no mode).
 fn read_source(src: &Path) -> Result<(Vec<u8>, u32)> {
     let meta = std::fs::metadata(src).with_context(|| format!("reading {}", src.display()))?;
@@ -286,104 +322,6 @@ fn apply(records: &mut Vec<Record>, ops: &[Op]) -> Result<Checks> {
     Ok(checks)
 }
 
-fn build(input: &Path, ops: &[Op]) -> Result<Built> {
-    refuse_blocking_file(input)?;
-    let image = bootimg::read(input)?;
-    let mut f = File::open(input)?;
-    let len = f.metadata()?.len();
-    let mut magic = [0u8; 8];
-    f.read_exact(&mut magic)
-        .context("file is shorter than a boot image header")?;
-    ensure!(
-        &magic == b"ANDROID!",
-        "not a boot image with an ANDROID! header (vendor boot images are not edited)"
-    );
-    let mut secs = image.sections.clone();
-    secs.sort_by_key(|s| s.offset);
-    for s in &secs {
-        ensure!(
-            matches!(s.name.as_str(), "kernel" | "ramdisk" | "second" | "dtb"),
-            "section {} is not supported (kernel, ramdisk, second and dtb only)",
-            s.name
-        );
-    }
-    ensure!(
-        secs.first().is_some_and(|s| s.name == "kernel"),
-        "the image does not start with a kernel section"
-    );
-    ensure!(
-        secs.iter().filter(|s| s.name == "ramdisk").count() == 1,
-        "the image needs exactly one ramdisk section"
-    );
-    let kernel_at = secs[0].offset;
-    ensure!(
-        kernel_at <= MAX_HEADER,
-        "the header is {kernel_at} bytes; that is too large"
-    );
-    let orig_head = read_at(&mut f, 0, kernel_at)?;
-    ensure!(orig_head.len() >= 44, "the header is shorter than 44 bytes");
-    let version = le32(&orig_head, 40);
-    ensure!(
-        version <= 2,
-        "header version {version} is not edited (versions 0 to 2 only)"
-    );
-    let page = le32(&orig_head, 36) as u64;
-    ensure!(
-        page >= 512 && page.is_power_of_two() && kernel_at % page == 0,
-        "page size {page} does not fit this header"
-    );
-
-    let rd = secs
-        .iter()
-        .find(|s| s.name == "ramdisk")
-        .context("no ramdisk")?;
-    let raw = read_at(&mut f, rd.offset, rd.size)?;
-    ensure!(
-        matches!(ramdisk::compression_of(&raw), Some(Compression::None)),
-        "the ramdisk is not an uncompressed cpio (newc) archive; compressed ramdisks are not edited yet"
-    );
-    let mut records = parse_cpio(&raw)?;
-    let checks = apply(&mut records, ops)?;
-    let new_rd = emit_cpio(&records)?;
-    let mut head = orig_head.clone();
-    head[16..20].copy_from_slice(&u32::try_from(new_rd.len())?.to_le_bytes());
-
-    let page = page as usize;
-    let mut bytes = head.clone();
-    let mut order = Vec::new();
-    let mut kept = Vec::new();
-    for s in &secs {
-        let data = if s.name == "ramdisk" {
-            new_rd.clone()
-        } else {
-            let d = read_at(&mut f, s.offset, s.size)?;
-            kept.push((s.name.clone(), d.clone()));
-            d
-        };
-        bytes.extend_from_slice(&data);
-        bytes.resize(bytes.len().div_ceil(page) * page, 0);
-        order.push(s.name.clone());
-    }
-    let last = secs.last().context("no sections")?;
-    let end = (last.offset + last.size).div_ceil(page as u64) * page as u64;
-    if len > end {
-        ensure!(
-            tail_is_zero(&mut f, end)?,
-            "{} has data after its last section (an AVB footer, for example); that is not carried over",
-            input.display()
-        );
-    }
-    Ok(Built {
-        bytes,
-        orig_head,
-        head,
-        order,
-        kept,
-        entry_count: records.len(),
-        checks,
-    })
-}
-
 /// Read the written image back with the repo own readers and compare it with what was built.
 fn verify(part: &Path, built: &Built) -> Result<()> {
     let written = std::fs::read(part)?;
@@ -442,6 +380,210 @@ fn verify(part: &Path, built: &Built) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn build_with<F>(input: &Path, edit: F) -> Result<Built>
+where
+    F: FnOnce(&mut Vec<Record>) -> Result<Checks>,
+{
+    refuse_blocking_file(input)?;
+    let image = bootimg::read(input)?;
+    let mut f = File::open(input)?;
+    let len = f.metadata()?.len();
+    let mut magic = [0u8; 8];
+    f.read_exact(&mut magic)
+        .context("file is shorter than a boot image header")?;
+    ensure!(
+        &magic == b"ANDROID!",
+        "not a boot image with an ANDROID! header (vendor boot images are not edited)"
+    );
+    let mut secs = image.sections.clone();
+    secs.sort_by_key(|s| s.offset);
+    for s in &secs {
+        ensure!(
+            matches!(s.name.as_str(), "kernel" | "ramdisk" | "second" | "dtb"),
+            "section {} is not supported (kernel, ramdisk, second and dtb only)",
+            s.name
+        );
+    }
+    ensure!(
+        secs.first().is_some_and(|s| s.name == "kernel"),
+        "the image does not start with a kernel section"
+    );
+    ensure!(
+        secs.iter().filter(|s| s.name == "ramdisk").count() == 1,
+        "the image needs exactly one ramdisk section"
+    );
+    let kernel_at = secs[0].offset;
+    ensure!(
+        kernel_at <= MAX_HEADER,
+        "the header is {kernel_at} bytes; that is too large"
+    );
+    let orig_head = read_at(&mut f, 0, kernel_at)?;
+    ensure!(orig_head.len() >= 44, "the header is shorter than 44 bytes");
+    let version = le32(&orig_head, 40);
+    ensure!(
+        version <= 2,
+        "header version {version} is not edited (versions 0 to 2 only)"
+    );
+    let page = le32(&orig_head, 36) as u64;
+    ensure!(
+        page >= 512 && page.is_power_of_two() && kernel_at % page == 0,
+        "page size {page} does not fit this header"
+    );
+
+    let rd = secs
+        .iter()
+        .find(|s| s.name == "ramdisk")
+        .context("no ramdisk")?;
+    let raw = read_at(&mut f, rd.offset, rd.size)?;
+    ensure!(
+        matches!(ramdisk::compression_of(&raw), Some(Compression::None)),
+        "the ramdisk is not an uncompressed cpio (newc) archive; compressed ramdisks are not edited yet"
+    );
+    let mut records = parse_cpio(&raw)?;
+    let checks = edit(&mut records)?;
+    let new_rd = emit_cpio(&records)?;
+    let mut head = orig_head.clone();
+    head[16..20].copy_from_slice(&u32::try_from(new_rd.len())?.to_le_bytes());
+
+    let page = page as usize;
+    let mut bytes = head.clone();
+    let mut order = Vec::new();
+    let mut kept = Vec::new();
+    for s in &secs {
+        let data = if s.name == "ramdisk" {
+            new_rd.clone()
+        } else {
+            let d = read_at(&mut f, s.offset, s.size)?;
+            kept.push((s.name.clone(), d.clone()));
+            d
+        };
+        bytes.extend_from_slice(&data);
+        bytes.resize(bytes.len().div_ceil(page) * page, 0);
+        order.push(s.name.clone());
+    }
+    let last = secs.last().context("no sections")?;
+    let end = (last.offset + last.size).div_ceil(page as u64) * page as u64;
+    if len > end {
+        ensure!(
+            tail_is_zero(&mut f, end)?,
+            "{} has data after its last section (an AVB footer, for example); that is not carried over",
+            input.display()
+        );
+    }
+    Ok(Built {
+        bytes,
+        orig_head,
+        head,
+        order,
+        kept,
+        entry_count: records.len(),
+        checks,
+    })
+}
+
+fn build(input: &Path, ops: &[Op]) -> Result<Built> {
+    build_with(input, |records| apply(records, ops))
+}
+
+/// Apply a Magisk-style init patch to a ramdisk boot image (v0-v2, uncompressed cpio):
+/// move `init` to `keep_original` (creating parent directories) and write `magisk_init` as `init`.
+/// Writes a NEW image and verifies it by reading it back; the input is never changed.
+/// Not a vendor-signed image and not verified on a device.
+pub fn magisk_init_patch(
+    input: &Path,
+    magisk_init: &Path,
+    keep_original: &str,
+    output: &Path,
+    force: bool,
+) -> Result<String> {
+    ensure!(
+        output.symlink_metadata().is_err() || force,
+        "{} already exists; pass --force to overwrite",
+        output.display()
+    );
+    if let (Ok(a), Ok(b)) = (input.canonicalize(), output.canonicalize()) {
+        ensure!(a != b, "the output is the input; choose a new file");
+    }
+    let (init_data, _) = read_source(magisk_init)?;
+    let keep = norm(keep_original)?;
+    let built = build_with(input, |records| {
+        let mut checks = Checks::default();
+        let i = find(records, "init").context("no init in the ramdisk")?;
+        ensure!(
+            records[i].fields[1] & MODE_TYPE == MODE_FILE,
+            "init is not a regular file"
+        );
+        let orig = records[i].data.clone();
+        let orig_mode = records[i].fields[1];
+        if keep != "init" {
+            ensure!(
+                find(records, &keep).is_none(),
+                "{keep} already exists in the ramdisk"
+            );
+            if let Some((dir, _)) = keep.rsplit_once('/') {
+                ensure_dirs(records, dir)?;
+            }
+            let ino = records
+                .iter()
+                .map(|r| r.fields[0])
+                .max()
+                .unwrap_or(0)
+                .checked_add(1)
+                .context("inode numbers are exhausted")?;
+            records.push(Record {
+                fields: [ino, orig_mode, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+                name: keep.clone(),
+                data: orig.clone(),
+            });
+            let sha: String = Sha256::digest(&orig)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            checks
+                .plan
+                .push(format!("keep init -> /{keep} ({} bytes)", orig.len()));
+            checks.puts.push((keep.clone(), sha));
+        }
+        let i = find(records, "init").context("init disappeared")?;
+        records[i].data = init_data.clone();
+        records[i].fields[1] = MODE_FILE | 0o750;
+        let sha: String = Sha256::digest(&init_data)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        checks.plan.push(format!(
+            "replace init with {} ({} bytes)",
+            magisk_init.display(),
+            init_data.len()
+        ));
+        checks.puts.push(("init".to_string(), sha));
+        Ok(checks)
+    })?;
+    let mut part = output.as_os_str().to_owned();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    let written = (|| -> Result<()> {
+        let mut out = create_part(&part)?;
+        out.write_all(&built.bytes)?;
+        out.sync_all()?;
+        drop(out);
+        verify(&part, &built)
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&part);
+        return Err(e);
+    }
+    std::fs::rename(&part, output)?;
+    Ok(format!(
+        "wrote {} ({} bytes, {} ramdisk entries): init replaced with {}, original kept as /{}; read back ok; not a vendor-signed image and unverified on a device",
+        output.display(),
+        built.bytes.len(),
+        built.entry_count,
+        magisk_init.display(),
+        keep,
+    ))
 }
 
 /// The `ramdisk-edit` command: `--put SRC=DEST` and `--rm PATH` into `output`.
@@ -610,5 +752,45 @@ mod tests {
         let e = run(&input, &[], &["init".into()], &out, false, true).unwrap_err();
         assert!(e.to_string().contains("--force"), "{e}");
         assert_eq!(std::fs::read(&out).unwrap(), b"keep me");
+    }
+
+    fn ramdisk_bytes(img: &Path) -> Vec<u8> {
+        let image = bootimg::read(img).unwrap();
+        let rd = image.sections.iter().find(|s| s.name == "ramdisk").unwrap();
+        let bytes = std::fs::read(img).unwrap();
+        bytes[rd.offset as usize..(rd.offset + rd.size) as usize].to_vec()
+    }
+
+    fn entry_data(img: &Path, path: &str) -> Vec<u8> {
+        let rd = ramdisk_bytes(img);
+        let rep = ramdisk::read_ramdisk(std::io::Cursor::new(rd), None).unwrap();
+        let e = rep.entries.iter().find(|e| e.path == path).unwrap();
+        if e.kind == ramdisk::Kind::Symlink {
+            return e.link.as_deref().unwrap_or("").as_bytes().to_vec();
+        }
+        let raw = ramdisk_bytes(img);
+        // read the actual content by parsing cpio records
+        let recs = super::parse_cpio(&raw).unwrap();
+        recs.into_iter().find(|r| r.name == path).unwrap().data
+    }
+
+    #[test]
+    fn magisk_init_patch_keeps_original_and_replaces_init() {
+        let d = dir("magisk");
+        let input = boot(&d, &cpio(&[("init", b"orig-init"), ("sbin/adbd", b"x")]));
+        let before = std::fs::read(&input).unwrap();
+        let stub = d.join("magiskinit");
+        std::fs::write(&stub, b"magisk-init-bytes").unwrap();
+        let out = d.join("patched.img");
+        let msg = magisk_init_patch(&input, &stub, ".backup/init", &out, false).unwrap();
+        assert!(
+            msg.contains("not a vendor-signed image") && msg.contains("unverified on a device")
+        );
+        assert_eq!(std::fs::read(&input).unwrap(), before);
+        assert_eq!(entry_data(&out, "init"), b"magisk-init-bytes");
+        assert_eq!(entry_data(&out, ".backup/init"), b"orig-init");
+        assert_eq!(entry_data(&out, "sbin/adbd"), b"x");
+        // read-back already checked by verify(); also confirm boot parses
+        bootimg::read(&out).unwrap();
     }
 }

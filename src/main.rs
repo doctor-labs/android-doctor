@@ -837,7 +837,7 @@ enum Command {
     },
 }
 
-/// What `fec` should do.
+/// `patch` subcommands (write new artefacts only; outputs are not vendor-signed and unverified on a device).
 #[derive(Subcommand)]
 enum PatchAction {
     /// Write a copy of an OTA zip without its whole-file signature and without META-INF/com/android/otacert (unverified on a device)
@@ -896,6 +896,23 @@ enum PatchAction {
         /// Print JSON (doctor/1 envelope) instead of text
         #[arg(long)]
         json: bool,
+    },
+    /// Magisk-style boot patch step for ramdisk boot images (v0-v2, uncompressed cpio): replace `init` with --magisk-init and keep the original at --keep-original in a NEW image (not vendor-signed, unverified on a device)
+    MagiskInit {
+        /// Boot image (ANDROID! header, version 0-2)
+        input: PathBuf,
+        /// magiskinit (or replacement init) binary to place as /init
+        #[arg(long)]
+        magisk_init: PathBuf,
+        /// Path inside the ramdisk where the original init is kept
+        #[arg(long, default_value = ".backup/init")]
+        keep_original: String,
+        /// New boot image to write; the input is never changed
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Replace an existing output file instead of refusing
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -1834,6 +1851,19 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
                 &output,
                 force,
                 json,
+            )?),
+            PatchAction::MagiskInit {
+                input,
+                magisk_init,
+                keep_original,
+                output,
+                force,
+            } => print_out(&ramdisk_edit::magisk_init_patch(
+                &input,
+                &magisk_init,
+                &keep_original,
+                &output,
+                force,
             )?),
         },
         Command::VerifyOta {
