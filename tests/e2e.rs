@@ -620,7 +620,7 @@ fn fsck_command_reports_consistency() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let text = String::from_utf8_lossy(&o.stdout);
     assert!(
-        text.contains("0 findings") || text.contains("No findings"),
+        text.contains("0 findings") || text.contains("No findings") || text.contains("no findings"),
         "{text}"
     );
 
