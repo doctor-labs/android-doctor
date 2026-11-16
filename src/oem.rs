@@ -53,7 +53,7 @@ impl Kind {
             Kind::LgDz => "LG DZ firmware container (zlib partition chunks)",
             Kind::SonySin => "Sony .sin firmware image",
             Kind::CoolpadCpb => {
-                "Coolpad .cpb firmware container (recognized but unsupported, often encrypted)"
+                "Coolpad .cpb firmware container (recognized but unsupported, refused by design: no public spec)"
             }
             Kind::NokiaNb0 => "Nokia NB0 firmware container",
             Kind::RockchipRkfw => "Rockchip RKFW firmware (loader + RKAF update image)",
@@ -196,7 +196,7 @@ fn parse(kind: Kind, path: &Path) -> Result<Vec<Item>> {
         Kind::SonySin => crate::sonysin::parse(&mut f, len, path)?,
         Kind::CoolpadCpb => {
             return Err(anyhow::anyhow!(
-                "coolpad-cpb: Coolpad .cpb container (detected by extension, it has no magic): not supported. The layout is not publicly documented and bodies are commonly encrypted with vendor-specific keys, so nothing is guessed; decrypt/unpack it with the vendor tool first, then run android-doctor on the partition images"
+                "coolpad-cpb: Coolpad .cpb container (detected by extension, it has no magic): not supported (refused by design). The layout is not publicly documented and changed after ~2015, bodies are commonly encrypted with vendor-specific keys, and the only known reference tool (scue/unpackcpb) is unmaintained, so nothing is guessed; decrypt/unpack it with the vendor tool first, then run android-doctor on the partition images"
             ));
         }
         Kind::NokiaNb0 => crate::nokianb0::parse(&mut f, len)?,
