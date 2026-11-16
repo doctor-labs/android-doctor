@@ -1281,8 +1281,9 @@ pub(crate) fn compress(c: Compression, data: &[u8]) -> Result<Vec<u8>> {
             e.finish()?
         }
         Compression::Xz => {
-            let mut w = lzma_rust2::XzWriter::new(Vec::new(), lzma_rust2::XzOptions::with_preset(1))
-                .context("creating xz writer")?;
+            let mut w =
+                lzma_rust2::XzWriter::new(Vec::new(), lzma_rust2::XzOptions::with_preset(1))
+                    .context("creating xz writer")?;
             w.write_all(data)?;
             w.finish().context("finishing xz stream")?
         }
@@ -1333,7 +1334,6 @@ pub(crate) fn compress(c: Compression, data: &[u8]) -> Result<Vec<u8>> {
         }
     })
 }
-
 
 #[cfg(test)]
 mod tests {

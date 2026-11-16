@@ -242,7 +242,8 @@ fn hexpatch_command(
             "usage: hexpatch <file> <from-hex> <to-hex> -o <output> [--force]".into(),
         );
     }
-    let output = out.ok_or_else(|| "hexpatch needs -o <output> (never modifies the input)".to_string())?;
+    let output =
+        out.ok_or_else(|| "hexpatch needs -o <output> (never modifies the input)".to_string())?;
     let count = crate::hexpatch::run(Path::new(&rest[0]), &rest[1], &rest[2], &output, force)
         .map_err(|e| format!("hexpatch: {e:#}"))?;
     let text = format!(
@@ -252,7 +253,7 @@ fn hexpatch_command(
         output.display()
     );
     Ok(doctor_kit::session::Reply::new(
-        text.clone(),
+        text,
         serde_json::json!({"ok": true, "replacements": count, "output": output.display().to_string()}),
     ))
 }
@@ -266,9 +267,13 @@ fn cpio_command(
     args: &[String],
 ) -> Result<doctor_kit::session::Reply, String> {
     let (out, force, rest) = take_output_flag(args)?;
-    let output = out.ok_or_else(|| "cpio needs -o <output> (never modifies the input)".to_string())?;
+    let output =
+        out.ok_or_else(|| "cpio needs -o <output> (never modifies the input)".to_string())?;
     if rest.len() < 2 {
-        return Err("usage: cpio <boot.img> put <src> <dest> -o <out> | cpio <boot.img> rm <path> -o <out>".into());
+        return Err(
+            "usage: cpio <boot.img> put <src> <dest> -o <out> | cpio <boot.img> rm <path> -o <out>"
+                .into(),
+        );
     }
     let image = Path::new(&rest[0]);
     let op = rest[1].as_str();
@@ -306,7 +311,7 @@ fn cpio_command(
         output.display()
     );
     Ok(doctor_kit::session::Reply::new(
-        text.clone(),
+        text,
         serde_json::json!({
             "ok": true,
             "image": image.display().to_string(),
@@ -332,11 +337,16 @@ fn dtb_command(
     match op {
         "print" => {
             let text = crate::dtb_edit::print_dtb(file).map_err(|e| format!("dtb: {e:#}"))?;
-            Ok(doctor_kit::session::Reply::new(text, serde_json::json!({"file": file.display().to_string()})))
+            Ok(doctor_kit::session::Reply::new(
+                text,
+                serde_json::json!({"file": file.display().to_string()}),
+            ))
         }
         "patch" => {
             let (out, force, rest) = take_output_flag(&args[2..])?;
-            let output = out.ok_or_else(|| "dtb patch needs -o <output> (never modifies the input)".to_string())?;
+            let output = out.ok_or_else(|| {
+                "dtb patch needs -o <output> (never modifies the input)".to_string()
+            })?;
             let mut verity = false;
             let mut encryption = false;
             for r in &rest {
@@ -361,7 +371,7 @@ fn dtb_command(
                 encryption
             );
             Ok(doctor_kit::session::Reply::new(
-                text.clone(),
+                text,
                 serde_json::json!({
                     "ok": true,
                     "file": file.display().to_string(),
@@ -372,7 +382,9 @@ fn dtb_command(
                 }),
             ))
         }
-        _ => Err(format!("dtb: unknown operation {op:?} (supported: print, patch)")),
+        _ => Err(format!(
+            "dtb: unknown operation {op:?} (supported: print, patch)"
+        )),
     }
 }
 
