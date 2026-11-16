@@ -84,7 +84,11 @@
             "severity": "high"
           },
           "ruleId": "su-binary",
+<<<<<<< HEAD
           "ruleIndex": 118
+=======
+          "ruleIndex": 119
+>>>>>>> origin/agent/191-selinux-policy
         }
       ],
       "tool": {
@@ -1800,6 +1804,22 @@
             },
             {
               "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "A compiled SELinux policy is shipped but its contents are not decoded"
+              },
+              "help": {
+                "text": "Inspect the policy with an external SELinux tool; this scan does not decode binary policy contents"
+              },
+              "id": "selinux-binary-policy",
+              "name": "selinux-binary-policy",
+              "shortDescription": {
+                "text": "A compiled SELinux policy is shipped but its contents are not decoded"
+              }
+            },
+            {
+              "defaultConfiguration": {
                 "level": "warning"
               },
               "fullDescription": {
@@ -1812,6 +1832,22 @@
               "name": "selinux-file-context-unconfined",
               "shortDescription": {
                 "text": "A file_contexts label names a permissive domain"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "A file_contexts entry assigns the unlabeled SELinux type"
+              },
+              "help": {
+                "text": "Label the path with a specific, confined type"
+              },
+              "id": "selinux-file-context-unlabeled",
+              "name": "selinux-file-context-unlabeled",
+              "shortDescription": {
+                "text": "A file_contexts entry assigns the unlabeled SELinux type"
               }
             },
             {

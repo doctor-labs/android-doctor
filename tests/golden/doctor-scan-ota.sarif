@@ -25,7 +25,7 @@
             "severity": "low"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 108
+          "ruleIndex": 107
         },
         {
           "level": "note",
@@ -50,7 +50,7 @@
             "severity": "info"
           },
           "ruleId": "avb_signature",
-          "ruleIndex": 68
+          "ruleIndex": 67
         },
         {
           "level": "note",
@@ -66,7 +66,7 @@
             "severity": "info"
           },
           "ruleId": "duplicate_properties",
-          "ruleIndex": 89
+          "ruleIndex": 88
         },
         {
           "level": "note",
@@ -82,7 +82,7 @@
             "severity": "info"
           },
           "ruleId": "selinux_label_gaps",
-          "ruleIndex": 113
+          "ruleIndex": 114
         },
         {
           "level": "note",
@@ -107,7 +107,7 @@
             "severity": "info"
           },
           "ruleId": "mode_anomalies",
-          "ruleIndex": 107
+          "ruleIndex": 106
         },
         {
           "level": "note",
@@ -123,7 +123,7 @@
             "severity": "info"
           },
           "ruleId": "init_service_hygiene",
-          "ruleIndex": 104
+          "ruleIndex": 103
         },
         {
           "level": "note",
@@ -148,7 +148,7 @@
             "severity": "info"
           },
           "ruleId": "debug_leftovers",
-          "ruleIndex": 72
+          "ruleIndex": 71
         }
       ],
       "tool": {
@@ -394,22 +394,6 @@
               "name": "apk-code-behaviour-pim",
               "shortDescription": {
                 "text": "An APK's code uses APIs for personal data (contacts, SMS, call log or calendar content providers)"
-              }
-            },
-            {
-              "defaultConfiguration": {
-                "level": "note"
-              },
-              "fullDescription": {
-                "text": "An APK's code uses reflection APIs (Class.forName, Method.invoke, Constructor.newInstance, Proxy.newProxyInstance)"
-              },
-              "help": {
-                "text": "Informational: reflection is often used to hide behaviour or load code dynamically; check each listed call site against the app's stated purpose; this is not a finding by itself"
-              },
-              "id": "apk-code-behaviour-reflection",
-              "name": "apk-code-behaviour-reflection",
-              "shortDescription": {
-                "text": "An APK's code uses reflection APIs (Class.forName, Method.invoke, Constructor.newInstance, Proxy.newProxyInstance)"
               }
             },
             {
@@ -1864,6 +1848,22 @@
             },
             {
               "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "A compiled SELinux policy is shipped but its contents are not decoded"
+              },
+              "help": {
+                "text": "Inspect the policy with an external SELinux tool; this scan does not decode binary policy contents"
+              },
+              "id": "selinux-binary-policy",
+              "name": "selinux-binary-policy",
+              "shortDescription": {
+                "text": "A compiled SELinux policy is shipped but its contents are not decoded"
+              }
+            },
+            {
+              "defaultConfiguration": {
                 "level": "warning"
               },
               "fullDescription": {
@@ -1876,6 +1876,22 @@
               "name": "selinux-file-context-unconfined",
               "shortDescription": {
                 "text": "A file_contexts label names a permissive domain"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "A file_contexts entry assigns the unlabeled SELinux type"
+              },
+              "help": {
+                "text": "Label the path with a specific, confined type"
+              },
+              "id": "selinux-file-context-unlabeled",
+              "name": "selinux-file-context-unlabeled",
+              "shortDescription": {
+                "text": "A file_contexts entry assigns the unlabeled SELinux type"
               }
             },
             {
