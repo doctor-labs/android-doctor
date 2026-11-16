@@ -422,7 +422,7 @@ pub unsafe extern "C" fn fs_erofs_get_volume_info(
 
             let sb = fs.superblock();
             info.block_size = sb.block_size() as u32;
-            info.total_blocks = sb.blocks;
+            info.total_blocks = sb.blocks.min(u32::MAX as u64) as u32;
             info.inode_count = sb.inos;
             info.build_time = sb.build_time;
             let name = sb.volume_name_str().as_bytes();

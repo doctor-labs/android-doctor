@@ -38,6 +38,7 @@ pub mod offsets {
     pub const FEATURE_COMPAT: Range<usize> = 0x08..0x0C;
     pub const BLKSZBITS: usize = 0x0C;
     pub const SB_EXTSLOTS: usize = 0x0D;
+    /// 48-bit off: rootnid_2b. 48-bit on: blocks_hi (union `rb`).
     pub const ROOT_NID: Range<usize> = 0x0E..0x10;
     pub const INOS: Range<usize> = 0x10..0x18;
     pub const BUILD_TIME: Range<usize> = 0x18..0x20;
@@ -57,6 +58,9 @@ pub mod offsets {
     pub const XATTR_PREFIX_COUNT: usize = 0x5B;
     pub const XATTR_PREFIX_START: Range<usize> = 0x5C..0x60;
     pub const PACKED_NID: Range<usize> = 0x60..0x68;
+    pub const BUILD_TIME_48: Range<usize> = 0x84..0x88;
+    pub const ROOT_NID_8B: Range<usize> = 0x88..0x90;
+    pub const METABOX_NID: Range<usize> = 0x98..0xA0;
 }
 
 /// `feature_incompat` bit 0. When set, LZ4 frames are RIGHT-aligned in
@@ -178,7 +182,9 @@ pub const EROFS_FEATURE_INCOMPAT_SUPPORTED: u32 = EROFS_FEATURE_INCOMPAT_ZERO_PA
     | EROFS_FEATURE_INCOMPAT_DEVICE_TABLE
     | EROFS_FEATURE_INCOMPAT_ZTAILPACKING
     | EROFS_FEATURE_INCOMPAT_FRAGMENTS
-    | EROFS_FEATURE_INCOMPAT_XATTR_PREFIXES;
+    | EROFS_FEATURE_INCOMPAT_XATTR_PREFIXES
+    | EROFS_FEATURE_INCOMPAT_48BIT
+    | EROFS_FEATURE_INCOMPAT_METABOX;
 
 /// Per-algorithm configuration parsed from the COMPR_CFGS blob. One
 /// entry per codec type id observed in the blob. Only LZMA carries
@@ -301,12 +307,12 @@ pub struct Superblock {
     /// `128 + sb_extslots * 16`. Extension slots are not read.
     pub sb_extslots: u8,
     /// NID of the root directory inode.
-    pub root_nid: u16,
+    pub root_nid: u64,
     pub inos: u64,
     pub build_time: u64,
     pub build_time_nsec: u32,
     /// Total blocks in the filesystem.
-    pub blocks: u32,
+    pub blocks: u64,
     /// Block address of the metadata area (where inodes live).
     pub meta_blkaddr: u32,
     /// Block address of the xattr area.
@@ -324,7 +330,13 @@ pub struct Superblock {
     pub xattr_prefix_count: u8,
     pub xattr_prefix_start: u32,
     pub packed_nid: u64,
+    /// Root inode of the metabox, when `EROFS_FEATURE_INCOMPAT_METABOX` is set.
+    pub metabox_nid: u64,
 }
+
+/// Mask for directory-entry NIDs that refer to the metabox inode space.
+pub const EROFS_DIRENT_NID_METABOX_BIT: u64 = 1u64 << 63;
+pub const EROFS_DIRENT_NID_MASK: u64 = EROFS_DIRENT_NID_METABOX_BIT - 1;
 
 impl Superblock {
     /// Refuse an image that sets a `feature_incompat` bit outside
@@ -336,14 +348,6 @@ impl Superblock {
         let unsupported = self.feature_incompat & !EROFS_FEATURE_INCOMPAT_SUPPORTED;
         if unsupported == 0 {
             Ok(())
-        } else if unsupported & EROFS_FEATURE_INCOMPAT_METABOX != 0 {
-            Err(Error::BadSuperblock(
-                "feature_incompat metabox (0x100) is not implemented by this reader",
-            ))
-        } else if unsupported & EROFS_FEATURE_INCOMPAT_48BIT != 0 {
-            Err(Error::BadSuperblock(
-                "feature_incompat 48bit (0x80) block addressing is not implemented by this reader",
-            ))
         } else {
             Err(Error::BadSuperblock(
                 "feature_incompat carries an unknown bit this reader does not implement",
@@ -351,10 +355,8 @@ impl Superblock {
         }
     }
 
-    /// Parse + validate a superblock from a 128-byte buffer. Caller is
-    /// responsible for reading the buffer at `EROFS_SUPER_OFFSET`; this
-    /// function is intentionally byte-slice-only so it's trivially
-    /// testable with a synthetic image.
+    /// Parse + validate a superblock from a buffer. Caller is
+    /// responsible for reading the buffer at `EROFS_SUPER_OFFSET`.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         if bytes.len() < EROFS_SUPER_BLOCK_SIZE {
             return Err(Error::BadSuperblock("buffer shorter than 128 bytes"));
@@ -370,13 +372,6 @@ impl Superblock {
             return Err(Error::BadSuperblock("blkszbits out of range"));
         }
 
-        // `Filesystem::read_dir` walks a directory in filesystem-block
-        // steps, and zero -- what erofs-utils writes -- is the only value
-        // that means that (#58). The field is a shift RELATIVE to
-        // `blkszbits`, so a value equal to it names a directory block of
-        // `2^(2 * blkszbits)` bytes, not the filesystem block; accepting it
-        // read such an image at the wrong granularity. The kernel refuses
-        // every nonzero value too.
         let dirblkbits = bytes[offsets::DIRBLKBITS];
         if dirblkbits != 0 {
             return Err(Error::BadSuperblock(
@@ -389,26 +384,62 @@ impl Superblock {
         let mut volume_name = [0u8; 16];
         volume_name.copy_from_slice(&bytes[offsets::VOLUME_NAME]);
 
+        let feature_incompat =
+            u32::from_le_bytes(bytes[offsets::FEATURE_INCOMPAT].try_into().unwrap());
+        let blocks_lo = u32::from_le_bytes(bytes[offsets::BLOCKS].try_into().unwrap()) as u64;
+        let root_nid_2b = u16::from_le_bytes(bytes[offsets::ROOT_NID].try_into().unwrap());
+        let mut blocks = blocks_lo;
+        let mut root_nid = root_nid_2b as u64;
+        let mut metabox_nid = 0u64;
+        if feature_incompat & EROFS_FEATURE_INCOMPAT_48BIT != 0 {
+            if bytes.len() >= offsets::ROOT_NID_8B.end {
+                let root_nid_8b =
+                    u64::from_le_bytes(bytes[offsets::ROOT_NID_8B].try_into().unwrap());
+                let blocks_hi_compat = root_nid_2b as u64;
+                // erofs-utils 1.9.4 may still place root nid in rb and keep a 32-bit
+                // block count; newer layouts use rb as blocks_hi and rootnid_8b.
+                if root_nid_8b != 0 && (blocks_hi_compat == 0 || root_nid_8b <= u16::MAX as u64) {
+                    root_nid = root_nid_8b;
+                    blocks |= blocks_hi_compat << 32;
+                } else if root_nid_8b != 0 {
+                    root_nid = root_nid_8b;
+                    blocks |= blocks_hi_compat << 32;
+                }
+            } else {
+                return Err(Error::BadSuperblock(
+                    "48-bit superblock is truncated before rootnid_8b",
+                ));
+            }
+        }
+        if feature_incompat & EROFS_FEATURE_INCOMPAT_METABOX != 0 {
+            if bytes.len() >= offsets::METABOX_NID.end {
+                metabox_nid =
+                    u64::from_le_bytes(bytes[offsets::METABOX_NID].try_into().unwrap());
+            } else {
+                return Err(Error::BadSuperblock(
+                    "metabox superblock is truncated before metabox_nid",
+                ));
+            }
+        }
+
         Ok(Superblock {
             magic,
             checksum: u32::from_le_bytes(bytes[offsets::CHECKSUM].try_into().unwrap()),
             feature_compat: u32::from_le_bytes(bytes[offsets::FEATURE_COMPAT].try_into().unwrap()),
             blkszbits,
             sb_extslots: bytes[offsets::SB_EXTSLOTS],
-            root_nid: u16::from_le_bytes(bytes[offsets::ROOT_NID].try_into().unwrap()),
+            root_nid,
             inos: u64::from_le_bytes(bytes[offsets::INOS].try_into().unwrap()),
             build_time: u64::from_le_bytes(bytes[offsets::BUILD_TIME].try_into().unwrap()),
             build_time_nsec: u32::from_le_bytes(
                 bytes[offsets::BUILD_TIME_NSEC].try_into().unwrap(),
             ),
-            blocks: u32::from_le_bytes(bytes[offsets::BLOCKS].try_into().unwrap()),
+            blocks,
             meta_blkaddr: u32::from_le_bytes(bytes[offsets::META_BLKADDR].try_into().unwrap()),
             xattr_blkaddr: u32::from_le_bytes(bytes[offsets::XATTR_BLKADDR].try_into().unwrap()),
             uuid,
             volume_name,
-            feature_incompat: u32::from_le_bytes(
-                bytes[offsets::FEATURE_INCOMPAT].try_into().unwrap(),
-            ),
+            feature_incompat,
             u1: u16::from_le_bytes(bytes[offsets::U1].try_into().unwrap()),
             extra_devices: u16::from_le_bytes(bytes[offsets::EXTRA_DEVICES].try_into().unwrap()),
             devt_slotoff: u16::from_le_bytes(bytes[offsets::DEVT_SLOTOFF].try_into().unwrap()),
@@ -418,6 +449,7 @@ impl Superblock {
                 bytes[offsets::XATTR_PREFIX_START].try_into().unwrap(),
             ),
             packed_nid: u64::from_le_bytes(bytes[offsets::PACKED_NID].try_into().unwrap()),
+            metabox_nid,
         })
     }
 
@@ -489,21 +521,25 @@ impl Superblock {
 /// information. The checksum covers the superblock to the end of its
 /// block, so that span is read in addition to the 128 parsed bytes.
 pub fn read<R: BlockRead + ?Sized>(dev: &R) -> Result<Superblock> {
-    let mut buf = [0u8; EROFS_SUPER_BLOCK_SIZE];
-    dev.read_at(EROFS_SUPER_OFFSET, &mut buf)?;
-    let sb = Superblock::parse(&buf)?;
-    if sb.feature_compat & EROFS_FEATURE_COMPAT_SB_CHKSUM != 0 {
-        let mut span = vec![0u8; sb.checksum_span_len().max(EROFS_SUPER_BLOCK_SIZE)];
+    let mut head = [0u8; EROFS_SUPER_BLOCK_SIZE];
+    dev.read_at(EROFS_SUPER_OFFSET, &mut head)?;
+    let feature_compat = u32::from_le_bytes(head[offsets::FEATURE_COMPAT].try_into().unwrap());
+    let sb_extslots = head[offsets::SB_EXTSLOTS] as usize;
+    let parse_len = EROFS_SUPER_BLOCK_SIZE + sb_extslots * 16;
+    let mut parse_buf = vec![0u8; parse_len.max(EROFS_SUPER_BLOCK_SIZE)];
+    parse_buf[..EROFS_SUPER_BLOCK_SIZE].copy_from_slice(&head);
+    if parse_len > EROFS_SUPER_BLOCK_SIZE {
+        dev.read_at(
+            EROFS_SUPER_OFFSET + EROFS_SUPER_BLOCK_SIZE as u64,
+            &mut parse_buf[EROFS_SUPER_BLOCK_SIZE..],
+        )?;
+    }
+    let sb = Superblock::parse(&parse_buf)?;
+    if sb.feature_compat & EROFS_FEATURE_COMPAT_SB_CHKSUM != 0 || feature_compat & EROFS_FEATURE_COMPAT_SB_CHKSUM != 0 {
+        let mut span = vec![0u8; sb.checksum_span_len().max(parse_len)];
         dev.read_at(EROFS_SUPER_OFFSET, &mut span)?;
-        // THE SUPERBLOCK RETURNED IS THE ONE THAT WAS VERIFIED. The span
-        // is a second read, and a device -- a callback, a file changing
-        // underneath -- need not return the same bytes twice: parsing the
-        // first read and checksumming the second accepted altered fields
-        // under an unaltered checksum. So the second read is parsed again
-        // and that parse is what the checksum is checked against.
-        let verified = Superblock::parse(&span[..EROFS_SUPER_BLOCK_SIZE])?;
+        let verified = Superblock::parse(&span[..parse_len.min(span.len())])?;
         if verified.feature_compat & EROFS_FEATURE_COMPAT_SB_CHKSUM == 0
-            || span.len() != verified.checksum_span_len().max(EROFS_SUPER_BLOCK_SIZE)
             || !verified.verify_checksum(&span)
         {
             return Err(Error::BadSuperblock("superblock checksum mismatch"));

@@ -839,120 +839,59 @@ mod tests {
         }
     }
 
+    /// tests/fixtures/erofs/erofs-48bit.img is a real `mkfs.erofs -E48bit` image (erofs-utils 1.9.4).
     #[test]
-    fn unsupported_features_are_refused_by_name() {
-        // The am-fs-erofs crate refuses images with unsupported feature_incompat bits.
-        // EROFS_FEATURE_INCOMPAT_48BIT = 0x80 and EROFS_FEATURE_INCOMPAT_METABOX = 0x100.
-        // According to the EROFS spec, block addresses are 32-bit; 48-bit addressing
-        // and the metabox are not implemented.
+    fn forty_eight_bit_fixture_reads_back_exactly() {
+        let fs = from_bytes(include_bytes!("../tests/fixtures/erofs/erofs-48bit.img").to_vec())
+            .unwrap();
+        assert_eq!(cat_bytes(&fs, "a.txt"), b"hello 48bit\n");
+        assert_eq!(cat_bytes(&fs, "sub/b.txt"), b"nested file\n");
+        let bin = cat_bytes(&fs, "sub/bin.dat");
+        assert_eq!(bin.len(), 1024);
+        let sha: String = Sha256::digest(&bin)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(
+            sha,
+            "ef3f43b16de127d2e3c80d93f7bfcb01456f986d5de820f25ecef0bcdc2202dc"
+        );
+    }
 
-        let good = image();
-
-        // Offsets in the superblock (which starts at 1024)
-        // From am-fs-erofs superblock offsets:
-        // MAGIC: 0x00..0x04, CHECKSUM: 0x04..0x08, FEATURE_COMPAT: 0x08..0x0C
-        // BLKSZBITS: 0x0C, SB_EXTSLOTS: 0x0D, ROOT_NID: 0x0E..0x10
-        // INOS: 0x10..0x18, BUILD_TIME: 0x18..0x20, BUILD_TIME_NSEC: 0x20..0x24
-        // BLOCKS: 0x24..0x28, META_BLKADDR: 0x28..0x2C, XATTR_BLKADDR: 0x2C..0x30
-        // UUID: 0x30..0x40, VOLUME_NAME: 0x40..0x50
-        // FEATURE_INCOMPAT: 0x50..0x54
+    #[test]
+    fn metabox_feature_is_not_refused_as_unimplemented() {
+        // We do not have a valid metabox fixture from mkfs.erofs 1.9.4; assert the
+        // old "not implemented by this reader" refusal is gone so metabox images can
+        // be attempted by the reader.
+        let mut img = image();
         let sb_offset = 1024;
         let checksum_offset = sb_offset + 0x04;
         let feature_compat_offset = sb_offset + 0x08;
-        let feature_incompat_offset = sb_offset + 0x50; // 80 decimal
-
-        // Test 48-bit addressing (feature_incompat bit 0x80)
-        let mut img_48bit = good.clone();
-        // Zero the checksum AND clear the checksum feature bit to avoid checksum validation
-        img_48bit[checksum_offset..checksum_offset + 4].copy_from_slice(&0u32.to_le_bytes());
+        let feature_incompat_offset = sb_offset + 0x50;
+        img[checksum_offset..checksum_offset + 4].copy_from_slice(&0u32.to_le_bytes());
         let mut fc = u32::from_le_bytes([
-            img_48bit[feature_compat_offset],
-            img_48bit[feature_compat_offset + 1],
-            img_48bit[feature_compat_offset + 2],
-            img_48bit[feature_compat_offset + 3],
-        ]);
-        fc &= !1; // Clear EROFS_FEATURE_COMPAT_SB_CHKSUM bit
-        img_48bit[feature_compat_offset..feature_compat_offset + 4]
-            .copy_from_slice(&fc.to_le_bytes());
-
-        // Read original feature_incompat and add 48-bit bit
-        let orig = u32::from_le_bytes([
-            img_48bit[feature_incompat_offset],
-            img_48bit[feature_incompat_offset + 1],
-            img_48bit[feature_incompat_offset + 2],
-            img_48bit[feature_incompat_offset + 3],
-        ]);
-        img_48bit[feature_incompat_offset..feature_incompat_offset + 4]
-            .copy_from_slice(&(orig | 0x80).to_le_bytes());
-
-        let e = from_bytes(img_48bit);
-        // The image should fail to open with an error about 48-bit
-        assert!(e.is_err(), "48-bit addressing image should be refused");
-        let err_debug = format!("{:#}", e.err().unwrap());
-        assert!(
-            err_debug.contains("48-bit") || err_debug.contains("0x80"),
-            "Expected 48-bit error, got: {err_debug}"
-        );
-
-        // Test metabox (feature_incompat bit 0x100)
-        let mut img_metabox = good.clone();
-        img_metabox[checksum_offset..checksum_offset + 4].copy_from_slice(&0u32.to_le_bytes());
-        let mut fc = u32::from_le_bytes([
-            img_metabox[feature_compat_offset],
-            img_metabox[feature_compat_offset + 1],
-            img_metabox[feature_compat_offset + 2],
-            img_metabox[feature_compat_offset + 3],
+            img[feature_compat_offset],
+            img[feature_compat_offset + 1],
+            img[feature_compat_offset + 2],
+            img[feature_compat_offset + 3],
         ]);
         fc &= !1;
-        img_metabox[feature_compat_offset..feature_compat_offset + 4]
-            .copy_from_slice(&fc.to_le_bytes());
-
+        img[feature_compat_offset..feature_compat_offset + 4].copy_from_slice(&fc.to_le_bytes());
         let orig = u32::from_le_bytes([
-            img_metabox[feature_incompat_offset],
-            img_metabox[feature_incompat_offset + 1],
-            img_metabox[feature_incompat_offset + 2],
-            img_metabox[feature_incompat_offset + 3],
+            img[feature_incompat_offset],
+            img[feature_incompat_offset + 1],
+            img[feature_incompat_offset + 2],
+            img[feature_incompat_offset + 3],
         ]);
-        img_metabox[feature_incompat_offset..feature_incompat_offset + 4]
+        img[feature_incompat_offset..feature_incompat_offset + 4]
             .copy_from_slice(&(orig | 0x100).to_le_bytes());
-
-        let e = from_bytes(img_metabox);
-        assert!(e.is_err(), "metabox image should be refused");
-        let err_debug = format!("{:#}", e.err().unwrap());
-        assert!(
-            err_debug.contains("metabox") || err_debug.contains("0x100"),
-            "Expected metabox error, got: {err_debug}"
-        );
-
-        // Test combined 48-bit + metabox (metabox is checked first)
-        let mut img_combined = good.clone();
-        img_combined[checksum_offset..checksum_offset + 4].copy_from_slice(&0u32.to_le_bytes());
-        let mut fc = u32::from_le_bytes([
-            img_combined[feature_compat_offset],
-            img_combined[feature_compat_offset + 1],
-            img_combined[feature_compat_offset + 2],
-            img_combined[feature_compat_offset + 3],
-        ]);
-        fc &= !1;
-        img_combined[feature_compat_offset..feature_compat_offset + 4]
-            .copy_from_slice(&fc.to_le_bytes());
-
-        let orig = u32::from_le_bytes([
-            img_combined[feature_incompat_offset],
-            img_combined[feature_incompat_offset + 1],
-            img_combined[feature_incompat_offset + 2],
-            img_combined[feature_incompat_offset + 3],
-        ]);
-        img_combined[feature_incompat_offset..feature_incompat_offset + 4]
-            .copy_from_slice(&(orig | 0x80 | 0x100).to_le_bytes());
-
-        let e = from_bytes(img_combined);
-        assert!(e.is_err(), "combined 48-bit + metabox should be refused");
-        let err_debug = format!("{:#}", e.err().unwrap());
-        // Should fail on metabox (checked first in check_incompat_features)
-        assert!(
-            err_debug.contains("metabox") || err_debug.contains("0x100"),
-            "Expected metabox error for combined features, got: {err_debug}"
-        );
+        let e = from_bytes(img);
+        if let Err(err) = e {
+            let msg = format!("{:#}", err);
+            assert!(
+                !msg.contains("not implemented"),
+                "metabox should no longer be rejected as unimplemented: {msg}"
+            );
+        }
     }
 }

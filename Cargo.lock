@@ -58,8 +58,6 @@ checksum = "e863635b901379df89efa7df22469d3d51963b7bbd9bca124d7552cfe8e04bc1"
 [[package]]
 name = "am-fs-erofs"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f375383f78f6ce022b54a870e592c2e3bb0415f586d9dd181851b243e5d4c59"
 dependencies = [
  "am-fs-core",
  "crc32c",

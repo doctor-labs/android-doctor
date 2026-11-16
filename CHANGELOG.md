@@ -57,9 +57,7 @@ All notable changes to this project are documented here. The format follows
 - `prop <image> <name>` prints every value a property is set to in the image's property files, with the file that sets it; `init <image> <service>` decodes one init service (path, args, class, user, groups, capabilities, seclabel, sockets, flags) from the `.rc` files. Both are read-only, bounded, and take `--json` (a plain array, no doctor/1 envelope) (#222).
 - `shell` gains a `stat [sel]` verb: the entry's inode, owner, mode, size, link count, mtime and SELinux label, read from the opened image's own directory listing (#223).
 
-- A test now covers the refusal of EROFS images that use 48-bit addressing or the
-  metabox. ZSTD-compressed images are read back exactly from a committed
-  `mkfs.erofs -zzstd` fixture (#228).
+- EROFS: read ZSTD-compressed images (including 4 KiB blocks) and 48-bit addressing images from committed `mkfs.erofs` fixtures; metabox feature images are no longer refused as unimplemented (reader support attempted, not fixture-verified). Vendored `am-fs-erofs` updated for 48-bit/metabox superblock parsing (#228).
 - `deleted` command lists deleted (unlinked but not freed) inodes in an ext2/3/4 image — the same set `debugfs lsdel` scans (inodes with `i_links_count == 0` and `i_mode != 0`) — and optionally recovers their data blocks into a new directory (`-o <dir>`, with `--max-bytes` capping per-file output). Read-only: the image is never written to. erofs and f2fs are reported as unsupported (#225).
 - f2fs encrypted files (the `FADVISE_ENCRYPT_BIT` in the on-disk `i_advise` byte) are reported as encrypted with no decryption, and compressed files (`F2FS_COMPR_FL 0x4` with the compression feature, or a compressed cluster marker) are reported as "compressed: not checked" instead of being misread (#229).
 - ext4 files stored as inline data (`EXT4_INLINE_DATA_FL`) are read from the inode body: the first 60 bytes from `i_block`, the rest from the `system.data` xattr, for `cat`, `files` and extraction (#227).
