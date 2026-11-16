@@ -126,11 +126,13 @@ struct Out {
 }
 
 fn run(args: &[&std::ffi::OsStr]) -> Out {
-    let out = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
-        .args(args)
-        .env("NO_COLOR", "1")
-        .output()
-        .unwrap();
+    let out = Command::new(
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+    )
+    .args(args)
+    .env("NO_COLOR", "1")
+    .output()
+    .unwrap();
     Out {
         code: out.status.code().unwrap(),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -416,12 +418,14 @@ fn mcp_returns_the_cli_envelope_unchanged() {
     ]);
     let call = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
         "name":"diff","arguments":{"old":o.to_str().unwrap(),"new":n.to_str().unwrap(),"fail_on":"low"}}});
-    let mut child = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
-        .arg("mcp")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = Command::new(
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+    )
+    .arg("mcp")
+    .stdin(std::process::Stdio::piped())
+    .stdout(std::process::Stdio::piped())
+    .spawn()
+    .unwrap();
     writeln!(child.stdin.take().unwrap(), "{call}").unwrap();
     let mut out = String::new();
     child

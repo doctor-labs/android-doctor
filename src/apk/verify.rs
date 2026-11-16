@@ -1025,8 +1025,10 @@ pub(crate) fn p7_hash(p7: &[u8]) -> Option<Hash> {
     si.digest
 }
 
-/// Verify a detached PKCS#7 (CMS) signature whose signed attributes carry `content_digest` (the
-/// digest of the content under [`p7_hash`]). Returns the signer certificate's DER on success.
+/// Verify a detached PKCS#7 (CMS) signature. When signed attributes are present they must
+/// carry `content_digest` (the digest of the content under [`p7_hash`]) and the signature is
+/// over their DER (SET OF). When absent the signature is over the content digest directly.
+/// Returns the signer certificate's DER on success.
 pub(crate) fn p7_verify(p7: &[u8], content_digest: &[u8]) -> Result<Vec<u8>, String> {
     let (certs, si) = parse_p7(p7).ok_or("malformed PKCS#7 signature")?;
     let cert = certs
@@ -1037,14 +1039,33 @@ pub(crate) fn p7_verify(p7: &[u8], content_digest: &[u8]) -> Result<Vec<u8>, Str
     let (_, spki) = cert_serial_spki(cert).ok_or("malformed certificate")?;
     let alg = p7_alg(&si).ok_or("not checked: unsupported signature algorithm")?;
     let key = parse_spki(spki).ok_or("malformed public key")?;
-    let attrs = si
-        .attrs
-        .ok_or("not checked: signature without signed attributes")?;
-    if payload_md(attrs).as_deref() != Some(content_digest) {
-        return Err("the signed digest does not match the content".into());
+    match si.attrs {
+        Some(attrs) => {
+            if payload_md(attrs).as_deref() != Some(content_digest) {
+                return Err("the signed digest does not match the content".into());
+            }
+            let signed = [&[0x31][..], &attrs[1..]].concat();
+            verify_sig(&key, alg, &signed, si.signature)?;
+        }
+        None => {
+            // CMS without signed attributes: signature over DigestInfo of the content digest.
+            // RSA PKCS#1 v1.5 is the common case (signapk/OTA); other algorithms are not checked.
+            match (key, alg) {
+                (Key::Rsa { ref n, ref e }, Alg::Pkcs1(h)) => {
+                    if !pkcs1_digest_ok(n, e, h, content_digest, si.signature) {
+                        return Err("signature does not verify".into());
+                    }
+                }
+                (Key::Other(why), _) => return Err(format!("not checked: {why}")),
+                _ => {
+                    return Err(
+                        "not checked: signature without signed attributes is only supported for RSA PKCS#1 v1.5"
+                            .into(),
+                    );
+                }
+            }
+        }
     }
-    let signed = [&[0x31][..], &attrs[1..]].concat();
-    verify_sig(&key, alg, &signed, si.signature)?;
     Ok(cert.to_vec())
 }
 

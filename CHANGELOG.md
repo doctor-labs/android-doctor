@@ -9,6 +9,11 @@ All notable changes to this project are documented here. The format follows
 - Coolpad `.cpb` is documented as refused by design: `identify` names it and `extract` refuses it with a clear unsupported message because the layout is not publicly documented (it changed after ~2015), bodies are commonly encrypted with vendor-specific keys, and the only known reference tool (scue/unpackcpb) is unmaintained, so decoding would be guesswork (#133, #175).
 
 ### Added
+- `docs/benchmark.md`: evidence-based benchmark and parity gap list against reference firmware/OTA tools (avbtool, magiskboot, payload_dumper/avbroot applicability, MobSF rule comparison), with per-image observations on the sandbox corpus (#167).
+- `tests/vbkernel.rs`: regression coverage for verifying a ChromeOS kernel image in magiskboot `futility.rs`'s packed layout (64 KiB vblock, blob body at offset 65536), referencing the #176 gap.
+
+### Fixed
+- `verify-ota`: verify detached CMS/PKCS#7 whole-file zip signatures without signed attributes for RSA PKCS#1 v1.5 (signature over the content digest directly), instead of reporting them as not checked (#167).
 - `diff` shows a unified line diff of each modified text file (`.rc`, `.prop`, `fstab*`, `*_contexts`, up to 256 KiB per side): a `unified_diff` string per file in the JSON, and indented hunks under the change in the text report. Checked against GNU `diff -U3` (#215).
 - `sqlite <FILE> [--json]` reads a plaintext SQLite database's header (page size, pages, freelist, encoding) and its schema rows, read only and first page only. `audit` lists the plaintext databases of an image (`sqlite_databases`, only when there are some) and reports two findings: `sqlite-world-readable` (medium, a plaintext database with the other-read bit) and `sqlite-unencrypted` (low, a plaintext database under a `databases/` directory). Encrypted databases have no SQLite magic and are not listed. Checked against python3 `sqlite3` (fileformat2 section 1.3). Row counts are not read (#188).
 - `apk-compare` adds a download-size estimate: the compressed size of every entry of each build (`download_estimate` in the JSON with the old, new and delta bytes; a `download estimate` line in the text). Zip headers and the APK signing block are not counted, so it is below the file size; it needs no network (#214).

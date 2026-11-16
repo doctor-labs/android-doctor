@@ -41,8 +41,8 @@ const PROFILES: [(&str, &str); 3] = [
     ),
 ];
 
-fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_android-doctor")
+fn bin() -> String {
+    std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor")
 }
 
 /// Deterministic pseudo-random bytes.

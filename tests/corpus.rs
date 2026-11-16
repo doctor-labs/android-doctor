@@ -238,11 +238,13 @@ fn pin_ext4_times(img: &Path) {
 }
 
 fn bin_json(args: &[&str], dir: &Path) -> Value {
-    let out = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
-        .args(args)
-        .arg(dir)
-        .output()
-        .unwrap();
+    let out = Command::new(
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+    )
+    .args(args)
+    .arg(dir)
+    .output()
+    .unwrap();
     // `doctor scan` exits non-zero when a finding is critical; stdout is still JSON.
     serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
         panic!(
@@ -420,13 +422,15 @@ fn apk_diff_cases_match_the_committed_snapshots() {
     let mut report = String::new();
     for case in cases {
         let case_dir = dir.join(&case);
-        let out = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
-            .arg("apk-diff")
-            .arg(case_dir.join("old.apk"))
-            .arg(case_dir.join("new.apk"))
-            .arg("--json")
-            .output()
-            .unwrap();
+        let out = Command::new(
+            std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+        )
+        .arg("apk-diff")
+        .arg(case_dir.join("old.apk"))
+        .arg(case_dir.join("new.apk"))
+        .arg("--json")
+        .output()
+        .unwrap();
         let v: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
             panic!(
                 "{case}: no JSON ({e}): {}",

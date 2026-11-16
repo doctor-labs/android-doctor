@@ -144,10 +144,12 @@ fn tmp_dir(name: &str) -> PathBuf {
 }
 
 fn run(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_android-doctor"))
-        .args(args)
-        .output()
-        .unwrap()
+    Command::new(
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+    )
+    .args(args)
+    .output()
+    .unwrap()
 }
 
 fn run_json(image: &Path, key: Option<&Path>) -> (Option<i32>, serde_json::Value) {
@@ -369,4 +371,76 @@ fn a_data_key_of_the_wrong_size_is_refused_and_no_output_is_written() {
     let s = sign_run(&img, &data_pem, &root_pem, &out);
     assert!(!s.status.success(), "{s:?}");
     assert!(!out.exists());
+}
+
+/// Build an image in the layout magiskboot's futility.rs produces (issue #176): a 64 KiB
+/// vblock (keyblock + preamble padded to fill it) followed by the kernel blob (kernel padded
+/// to 4 KiB, 4 KiB config, 4 KiB params, 4 KiB bootloader). The body signature covers the
+/// whole blob. Our verify must accept this layout.
+fn magiskboot_style_image(root: &RsaPrivateKey, data: &RsaPrivateKey) -> Vec<u8> {
+    const VBLOCK: usize = 65536;
+    const ALIGN: usize = 4096;
+    let kernel: Vec<u8> = (0..5000).map(|i| (i * 13 + 7) as u8).collect();
+    let kernel_end = kernel.len().div_ceil(ALIGN) * ALIGN;
+    let mut blob = vec![0u8; kernel_end + 3 * ALIGN];
+    blob[..kernel.len()].copy_from_slice(&kernel);
+    // config and params are zero; bootloader is a single newline as in futility.rs
+    blob[kernel_end + 2 * ALIGN] = b'\n';
+
+    let preamble_size = VBLOCK - KEYBLOCK_SIZE;
+    let body_sig_at = 72;
+    let body_data = 116; // end of vb2_kernel_preamble 2.2 header
+    let pre_sig_at = 8;
+    let pre_data = body_data + 256;
+
+    let kd = key_data(&RsaPublicKey::from(data));
+    let mut kb = vec![0u8; KEYBLOCK_SIZE];
+    kb[0..8].copy_from_slice(b"CHROMEOS");
+    put32(&mut kb, 8, 2);
+    put32(&mut kb, 12, 1);
+    put32(&mut kb, 16, KEYBLOCK_SIZE as u32);
+    put32(&mut kb, 24, (632 - 24) as u32);
+    put32(&mut kb, 32, 256);
+    put32(&mut kb, 40, 632);
+    put32(&mut kb, 80, 32);
+    put32(&mut kb, 88, kd.len() as u32);
+    put32(&mut kb, 96, 4);
+    kb[112..632].copy_from_slice(&kd);
+    let keyblock_sig = sign(root, &kb[..632]);
+    kb[632..KEYBLOCK_SIZE].copy_from_slice(&keyblock_sig);
+
+    let mut pre = vec![0u8; preamble_size];
+    put32(&mut pre, 0, preamble_size as u32);
+    put32(&mut pre, pre_sig_at, (pre_data - pre_sig_at) as u32);
+    put32(&mut pre, pre_sig_at + 8, 256);
+    put32(&mut pre, pre_sig_at + 16, pre_data as u32);
+    put32(&mut pre, 32, 2);
+    put32(&mut pre, 36, 2);
+    put32(&mut pre, 40, 1);
+    put32(&mut pre, body_sig_at, (body_data - body_sig_at) as u32);
+    put32(&mut pre, body_sig_at + 8, 256);
+    put32(&mut pre, body_sig_at + 16, blob.len() as u32);
+    let body_sig = sign(data, &blob);
+    pre[body_data..pre_data].copy_from_slice(&body_sig);
+    let pre_sig = sign(data, &pre[..pre_data]);
+    pre[pre_data..pre_data + 256].copy_from_slice(&pre_sig);
+
+    let mut img = kb;
+    img.extend(pre);
+    img.extend(blob);
+    img
+}
+
+#[test]
+fn magiskboot_futility_layout_verifies() {
+    let (root, data) = (&keys().root, &keys().data);
+    let dir = tmp_dir("magiskboot-layout");
+    let img = dir.join("kernel.img");
+    std::fs::write(&img, magiskboot_style_image(root, data)).unwrap();
+    let key = write_root_pem(&dir, root);
+
+    let (code, json) = run_json(&img, Some(&key));
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(json["verdict"], "valid", "{json}");
+    assert_eq!(json["body"]["offset"], 65536, "{json}");
 }
