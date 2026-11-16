@@ -5,6 +5,9 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Coolpad `.cpb` is documented as refused by design: `identify` names it and `extract` refuses it with a clear unsupported message because the layout is not publicly documented (it changed after ~2015), bodies are commonly encrypted with vendor-specific keys, and the only known reference tool (scue/unpackcpb) is unmaintained, so decoding would be guesswork (#133, #175).
+
 ### Added
 - `diff` shows a unified line diff of each modified text file (`.rc`, `.prop`, `fstab*`, `*_contexts`, up to 256 KiB per side): a `unified_diff` string per file in the JSON, and indented hunks under the change in the text report. Checked against GNU `diff -U3` (#215).
 - `sqlite <FILE> [--json]` reads a plaintext SQLite database's header (page size, pages, freelist, encoding) and its schema rows, read only and first page only. `audit` lists the plaintext databases of an image (`sqlite_databases`, only when there are some) and reports two findings: `sqlite-world-readable` (medium, a plaintext database with the other-read bit) and `sqlite-unencrypted` (low, a plaintext database under a `databases/` directory). Encrypted databases have no SQLite magic and are not listed. Checked against python3 `sqlite3` (fileformat2 section 1.3). Row counts are not read (#188).
