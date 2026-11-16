@@ -577,7 +577,7 @@ pub fn magisk_init_patch(
     }
     std::fs::rename(&part, output)?;
     Ok(format!(
-        "wrote {} ({} bytes, {} ramdisk entries): init replaced with {}, original kept as /{}; read back ok; not a vendor-signed image and not verified on a device",
+        "wrote {} ({} bytes, {} ramdisk entries): init replaced with {}, original kept as /{}; read back ok; not a vendor-signed image and unverified on a device",
         output.display(),
         built.bytes.len(),
         built.entry_count,
