@@ -766,7 +766,7 @@ mod tests {
         let rep = ramdisk::read_ramdisk(std::io::Cursor::new(rd), None).unwrap();
         let e = rep.entries.iter().find(|e| e.path == path).unwrap();
         if e.kind == ramdisk::Kind::Symlink {
-            return e.target.as_deref().unwrap_or("").as_bytes().to_vec();
+            return e.link.as_deref().unwrap_or("").as_bytes().to_vec();
         }
         let raw = ramdisk_bytes(img);
         // read the actual content by parsing cpio records
