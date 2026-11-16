@@ -87,11 +87,7 @@
             "severity": "high"
           },
           "ruleId": "su-binary",
-<<<<<<< HEAD
-          "ruleIndex": 118
-=======
-          "ruleIndex": 119
->>>>>>> origin/agent/191-selinux-policy
+          "ruleIndex": 120
         }
       ],
       "tool": {

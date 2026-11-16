@@ -86,11 +86,7 @@
             "severity": "info"
           },
           "ruleId": "selinux_label_gaps",
-<<<<<<< HEAD
-          "ruleIndex": 113
-=======
-          "ruleIndex": 114
->>>>>>> origin/agent/191-selinux-policy
+          "ruleIndex": 115
         },
         {
           "baselineState": "new",
