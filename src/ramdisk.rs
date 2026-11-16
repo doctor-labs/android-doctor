@@ -1151,7 +1151,8 @@ fn read_ramdisk_capped<R: Read>(mut source: R, out: Option<&Path>, cap: u64) -> 
             left: cap,
             cap,
         };
-        let mut report = read_cpio(plain, c, out).with_context(|| format!("reading the {} ramdisk", c.id()))?;
+        let mut report = read_cpio(plain, c, out)
+            .with_context(|| format!("reading the {} ramdisk", c.id()))?;
         if lg_flag.get() {
             report.compression = Compression::Lz4Lg;
         }
@@ -1164,8 +1165,6 @@ fn read_ramdisk_capped<R: Read>(mut source: R, out: Option<&Path>, cap: u64) -> 
     };
     read_cpio(plain, c, out).with_context(|| format!("reading the {} ramdisk", c.id()))
 }
-
-
 
 impl Report {
     pub fn to_json(&self) -> Value {
