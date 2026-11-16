@@ -56,6 +56,7 @@ All notable changes to this project are documented here. The format follows
 - MCP server exposes seven read-only browse tools, `ls`, `cat`, `info`, `vbmeta`, `ramdisk`, `files` and `unpack`, over the existing CLI commands. They take no output option (so they never write) and cap output at 1 MiB; `cat` returns raw text, the others the CLI's `--json` (#218).
 - `prop <image> <name>` prints every value a property is set to in the image's property files, with the file that sets it; `init <image> <service>` decodes one init service (path, args, class, user, groups, capabilities, seclabel, sockets, flags) from the `.rc` files. Both are read-only, bounded, and take `--json` (a plain array, no doctor/1 envelope) (#222).
 - `shell` gains a `stat [sel]` verb: the entry's inode, owner, mode, size, link count, mtime and SELinux label, read from the opened image's own directory listing (#223).
+- `shell` gains a `find [path]` verb on one opened image: search by name, SELinux label, setuid/setgid, xattr or file content, using the same filters as the `find` CLI command (part of #223).
 
 - A test now covers the refusal of EROFS images that use 48-bit addressing or the
   metabox. ZSTD-compressed images are read back exactly from a committed

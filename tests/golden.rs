@@ -671,6 +671,31 @@ fn shell_decodes_init_rc_and_props_on_demand() {
     assert!(!text.contains("# a comment"), "{text}");
 }
 
+/// `find` in the shell searches inside one opened image (name/label/bits/xattr/grep filters).
+#[test]
+fn shell_finds_entries_in_an_opened_image() {
+    let t = firmware("shell-find");
+    let out = Command::new(bin())
+        .args([
+            "shell",
+            t.p("fw").to_str().unwrap(),
+            "-c",
+            "cd images; cd system; find --name su; find xbin --name 's*'; find --name '*.prop'",
+        ])
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(text.contains("/xbin/su"), "{text}");
+    assert!(text.contains("/build.prop"), "{text}");
+}
+
 /// `android-doctor audit ... | head -c0`: a closed stdout is exit 2 with one line on stderr, never
 /// a panic (101) and never a silent success (doctor-kit 0.2.2).
 #[test]

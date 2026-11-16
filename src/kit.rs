@@ -162,6 +162,108 @@ fn stat_command(
     ))
 }
 
+/// Parse `find` flags from a session command line.
+fn parse_find_args(args: &[String]) -> Result<crate::find::Query, String> {
+    let mut q = crate::find::Query::default();
+    let mut path: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        match a.as_str() {
+            "--name" => {
+                i += 1;
+                q.name = Some(args.get(i).ok_or("find: --name needs a glob")?.clone());
+            }
+            "--selinux" => {
+                i += 1;
+                q.selinux = Some(args.get(i).ok_or("find: --selinux needs a glob")?.clone());
+            }
+            "--setuid" => q.setuid = true,
+            "--setgid" => q.setgid = true,
+            "--xattr" => {
+                i += 1;
+                let spec = args
+                    .get(i)
+                    .ok_or("find: --xattr needs NAME or NAME=GLOB")?;
+                q.xattr = Some(match spec.split_once('=') {
+                    Some((n, g)) => (n.to_string(), Some(g.to_string())),
+                    None => (spec.clone(), None),
+                });
+            }
+            "--grep" => {
+                i += 1;
+                q.grep = Some(args.get(i).ok_or("find: --grep needs text")?.clone());
+            }
+            s if s.starts_with('-') => return Err(format!("find: unknown flag {s}")),
+            s => {
+                if path.is_some() {
+                    return Err("find: at most one path".into());
+                }
+                path = Some(s.to_string());
+            }
+        }
+        i += 1;
+    }
+    if !q.has_filter() {
+        return Err(
+            "find: give at least one filter (--name/--selinux/--setuid/--setgid/--xattr/--grep)"
+                .into(),
+        );
+    }
+    if let Some(p) = path {
+        q.under = p;
+    }
+    Ok(q)
+}
+
+/// `find` in the shell: search the opened image by name, label, bits, xattr or content.
+fn find_command(
+    s: &mut doctor_kit::session::Session<'_>,
+    args: &[String],
+) -> Result<doctor_kit::session::Reply, String> {
+    let mut q = parse_find_args(args)?;
+    // Resolve image and base path from cwd when inside an opened image.
+    let cwd = s.node(None)?;
+    let image = cwd
+        .meta
+        .get("image")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "find: not inside an opened image; `cd` into one first".to_string())?;
+    let cwd_path = cwd
+        .meta
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or("/")
+        .trim_matches('/');
+    if q.under.is_empty() {
+        q.under = cwd_path.to_string();
+    } else if q.under.starts_with('/') {
+        q.under = q.under.trim_matches('/').to_string();
+    } else {
+        let rel = q.under.trim_matches('/');
+        q.under = if cwd_path.is_empty() {
+            rel.to_string()
+        } else {
+            format!("{cwd_path}/{rel}")
+        };
+    }
+    let found = crate::find::run(Path::new(image), &q).map_err(|e| format!("find: {e:#}"))?;
+    let mut lines: Vec<String> = found.matches.iter().map(|e| format!("/{}", e.path)).collect();
+    for (p, why) in &found.not_checked {
+        lines.push(format!("(not checked: /{p}: {why})"));
+    }
+    let text = if lines.is_empty() {
+        "no matches".to_string()
+    } else {
+        lines.join("\n")
+    };
+    let data = serde_json::json!({
+        "matches": found.matches.iter().map(crate::tree::entry_json).collect::<Vec<_>>(),
+        "not_checked": found.not_checked.iter().map(|(p,w)| serde_json::json!({"path": p, "reason": w})).collect::<Vec<_>>(),
+    });
+    Ok(doctor_kit::session::Reply::new(text, data))
+}
+
 /// `decode` of an init `.rc`: the counts, then one line per import, action and service.
 fn initrc_view(text: &str) -> String {
     let rc = crate::initrc::parse(text);
@@ -300,14 +402,22 @@ impl Doctor for AndroidDoctor {
     fn checks(&self) -> Vec<Box<dyn Check>> {
         vec![]
     }
-    /// `stat` in the shell: one entry of an opened image, read from the image's own listing.
+    /// `stat` and `find` in the shell, over one opened image.
     fn commands(&self) -> Vec<doctor_kit::session::Command> {
-        vec![doctor_kit::session::Command {
-            name: "stat",
-            help: "stat [sel]         one file or directory of an opened image: mode, owner, size, links, mtime",
-            flags: &[],
-            run: stat_command,
-        }]
+        vec![
+            doctor_kit::session::Command {
+                name: "stat",
+                help: "stat [sel]         one file or directory of an opened image: mode, owner, size, links, mtime",
+                flags: &[],
+                run: stat_command,
+            },
+            doctor_kit::session::Command {
+                name: "find",
+                help: "find [path]        search the opened image: --name GLOB --selinux GLOB --setuid --setgid --xattr NAME[=GLOB] --grep TEXT",
+                flags: &[],
+                run: find_command,
+            },
+        ]
     }
     /// The subject is an image, a directory of images or two builds, chosen by the command.
     fn target(&self) -> TargetKind {
