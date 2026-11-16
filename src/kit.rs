@@ -220,30 +220,31 @@ fn find_command(
     args: &[String],
 ) -> Result<doctor_kit::session::Reply, String> {
     let mut q = parse_find_args(args)?;
-    // Resolve image and base path from cwd when inside an opened image.
-    let cwd = s.node(None)?;
-    let image = cwd
+    // Use an explicit path selector as the search root when given; otherwise search from cwd.
+    let root_arg = if q.under.is_empty() { None } else { Some(q.under.clone()) };
+    let node = match root_arg.as_deref() {
+        Some(sel) => s.node(Some(sel)).or_else(|_| s.node(None))?,
+        None => s
+            .node(None)
+            .or_else(|_| s.node(Some(".")))
+            .or_else(|_| s.node(Some("")))?,
+    };
+    let image = node
         .meta
         .get("image")
         .and_then(Value::as_str)
         .ok_or_else(|| "find: not inside an opened image; `cd` into one first".to_string())?;
-    let cwd_path = cwd
+    let node_path = node
         .meta
         .get("path")
         .and_then(Value::as_str)
         .unwrap_or("/")
         .trim_matches('/');
-    if q.under.is_empty() {
-        q.under = cwd_path.to_string();
-    } else if q.under.starts_with('/') {
-        q.under = q.under.trim_matches('/').to_string();
+    if root_arg.is_some() {
+        // Explicit selector: search under that node's path (absolute in-image path).
+        q.under = node_path.to_string();
     } else {
-        let rel = q.under.trim_matches('/');
-        q.under = if cwd_path.is_empty() {
-            rel.to_string()
-        } else {
-            format!("{cwd_path}/{rel}")
-        };
+        q.under = node_path.to_string();
     }
     let found = crate::find::run(Path::new(image), &q).map_err(|e| format!("find: {e:#}"))?;
     let mut lines: Vec<String> = found
