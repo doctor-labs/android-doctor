@@ -234,22 +234,25 @@ fn find_command(
     let mut q = parse_find_args(args)?;
     // Resolve the current image context from cwd/selection.
     let cwd = s.pwd().to_string();
+    let rest = cwd
+        .strip_prefix("/images/")
+        .ok_or_else(|| "find: not inside an opened image; `cd` into one first".to_string())?;
+    let (img_name, in_base) = match rest.split_once('/') {
+        Some((n, b)) => (n.to_string(), b.trim_matches('/').to_string()),
+        None => (rest.to_string(), String::new()),
+    };
+    let img_node_path = format!("/images/{img_name}");
     let node = s
-        .node(None)
+        .node(Some(&img_node_path))
+        .or_else(|_| s.node(None))
         .or_else(|_| s.node(Some(&cwd)))
-        .or_else(|_| s.node(Some(".")))
-        .or_else(|_| s.node(Some("")))?;
+        .or_else(|_| s.node(Some(".")))?;
     let image = node
         .meta
         .get("image")
         .and_then(Value::as_str)
         .ok_or_else(|| "find: not inside an opened image; `cd` into one first".to_string())?;
-    let base = node
-        .meta
-        .get("path")
-        .and_then(Value::as_str)
-        .unwrap_or("/")
-        .trim_matches('/');
+    let base = in_base.as_str();
     if q.under.is_empty() {
         q.under = base.to_string();
     } else if q.under.starts_with('/') {
