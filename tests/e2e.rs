@@ -420,7 +420,7 @@ fn journal_command_emits_json_or_text_and_lists_fields() {
     put_be(&mut img, jblk + 4, 4); // h_blocktype
     put_be(&mut img, jblk + 12, bs as u32); // s_blocksize
     put_be(&mut img, jblk + 16, 3); // s_maxlen
-    put_be(&mut img, jblk + 20, 0); // s_first
+    put_be(&mut img, jblk + 20, 1); // s_first
     put_be(&mut img, jblk + 24, 1); // s_sequence
     put_be(&mut img, jblk + 28, 1); // s_start (dirty)
     put_be(&mut img, jblk + 32, 0); // s_errno
@@ -481,4 +481,177 @@ fn journal_command_emits_json_or_text_and_lists_fields() {
     assert!(text.contains("Journal superblock version: 2"), "{text}");
     assert!(text.contains("dirty, recovery starts here"), "{text}");
     assert!(text.contains("seq 1"), "{text}");
+}
+
+#[test]
+fn journal_replay_outputs_overlay_plan() {
+    // Tiny ext4 with a jbd2 journal holding one committed transaction that replays one block.
+    let bs = 1024usize;
+    let blocks = 24usize;
+    let inodes = 64usize;
+    let mut img = vec![0u8; bs * blocks];
+    le32(&mut img, 1024, inodes as u32);
+    le32(&mut img, 1024 + 4, blocks as u32);
+    le32(&mut img, 1024 + 12, blocks as u32);
+    le32(&mut img, 1024 + 16, inodes as u32 - 2);
+    le32(&mut img, 1024 + 20, 1);
+    le32(&mut img, 1024 + 32, 8192);
+    le32(&mut img, 1024 + 40, inodes as u32);
+    le16(&mut img, 1024 + 56, 0xEF53);
+    le32(&mut img, 1024 + 76, 1);
+    le16(&mut img, 1024 + 88, 256);
+    le32(&mut img, 1024 + 96, 0x80 | 0x40);
+    le16(&mut img, 1024 + 254, 64);
+    le32(&mut img, 1024 + 0xE0, 8);
+    le32(&mut img, 2048 + 8, 3);
+    let itable = 3 * bs;
+    le16(&mut img, itable, 0o040755);
+    le32(&mut img, itable + 4, bs as u32);
+    le16(&mut img, itable + 26, 2);
+    le32(&mut img, itable + 40, 20);
+    // journal inode (8): 4 blocks at 20..23 (superblock, descriptor, data, commit)
+    let jino = itable + 7 * 256;
+    le16(&mut img, jino, 0o100644);
+    le32(&mut img, jino + 4, (4 * bs) as u32);
+    le32(&mut img, jino + 40, 20);
+    le32(&mut img, jino + 44, 21);
+    le32(&mut img, jino + 48, 22);
+    le32(&mut img, jino + 52, 23);
+    let jblk = bs * 20;
+    fn put_be(img: &mut [u8], off: usize, v: u32) {
+        img[off..off + 4].copy_from_slice(&v.to_be_bytes());
+    }
+    // block 0: journal superblock v2 (dirty, log starts at 1)
+    put_be(&mut img, jblk, 0xC03B3998);
+    put_be(&mut img, jblk + 4, 4);
+    put_be(&mut img, jblk + 12, bs as u32);
+    put_be(&mut img, jblk + 16, 4); // s_maxlen
+    put_be(&mut img, jblk + 20, 1); // s_first
+    put_be(&mut img, jblk + 24, 1); // s_sequence
+    put_be(&mut img, jblk + 28, 1); // s_start (dirty)
+    put_be(&mut img, jblk + 48, 0x12345678);
+    put_be(&mut img, jblk + 52, 0x12341234);
+    put_be(&mut img, jblk + 56, 0x12345678);
+    put_be(&mut img, jblk + 60, 0x9abcdef0);
+    put_be(&mut img, jblk + 64, 2);
+    // block 1: descriptor (seq 1) with one tag: replay journal data block 2 to fs block 5
+    put_be(&mut img, jblk + bs, 0xC03B3998);
+    put_be(&mut img, jblk + bs + 4, 1);
+    put_be(&mut img, jblk + bs + 8, 1);
+    put_be(&mut img, jblk + bs + 12, 5); // target fs block
+    put_be(&mut img, jblk + bs + 16, 2 | 8); // SAME_UUID | LAST
+    // block 2: data (content to replay)
+    img[jblk + 2 * bs..jblk + 2 * bs + 4].copy_from_slice(b"DATA");
+    // block 3: commit (seq 1)
+    put_be(&mut img, jblk + 3 * bs, 0xC03B3998);
+    put_be(&mut img, jblk + 3 * bs + 4, 2);
+    put_be(&mut img, jblk + 3 * bs + 8, 1);
+
+    let d = Scratch::new("journal-replay");
+    let path = d.join("system.img");
+    std::fs::write(&path, &img).unwrap();
+    let o = Command::new(
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+    )
+    .arg("journal")
+    .arg(&path)
+    .arg("--json")
+    .arg("--replay")
+    .output()
+    .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let j: serde_json::Value = serde_json::from_str(&String::from_utf8(o.stdout).unwrap()).unwrap();
+    assert!(j["replay"].is_object(), "replay plan missing: {j}");
+    assert_eq!(j["replay"]["transactions"], 1);
+    let blocks = j["replay"]["blocks"].as_array().unwrap();
+    assert_eq!(blocks.len(), 1, "replay plan: {j}");
+    assert_eq!(blocks[0]["fs_block"], 5);
+    assert_eq!(blocks[0]["journal_block"], 2);
+    assert_eq!(blocks[0]["sequence"], 1);
+
+    let o = Command::new(
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+    )
+    .arg("journal")
+    .arg(&path)
+    .arg("--replay")
+    .output()
+    .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let text = String::from_utf8_lossy(&o.stdout);
+    assert!(text.contains("Replay plan"), "{text}");
+}
+
+fn small_consistent_ext2() -> Vec<u8> {
+    let bs = 1024usize;
+    let mut img = vec![0u8; 64 * bs];
+    let sb = 1024;
+    le32(&mut img, sb, 16); // inodes
+    le32(&mut img, sb + 4, 64); // blocks
+    le32(&mut img, sb + 12, 58); // free blocks
+    le32(&mut img, sb + 16, 14); // free inodes
+    le32(&mut img, sb + 20, 1); // first data block
+    le32(&mut img, sb + 32, 8192); // blocks per group
+    le32(&mut img, sb + 40, 16); // inodes per group
+    le16(&mut img, sb + 56, 0xEF53);
+    le32(&mut img, sb + 76, 1);
+    le16(&mut img, sb + 88, 128);
+    let gd = 2 * bs;
+    le32(&mut img, gd, 3); // block bitmap
+    le32(&mut img, gd + 4, 4); // inode bitmap
+    le32(&mut img, gd + 8, 5); // inode table
+    le16(&mut img, gd + 12, 58);
+    le16(&mut img, gd + 14, 14);
+    // block bitmap: blocks 1..5 of this group used (superblock, GDT, bitmaps, inode table)
+    img[3 * bs] = 0b0001_1111;
+    // inode bitmap: inodes 1,2 used
+    img[4 * bs] = 0b0000_0011;
+    img
+}
+
+#[test]
+fn fsck_command_reports_consistency() {
+    let d = Scratch::new("fsck-e2e");
+    let path = d.join("fs.img");
+    std::fs::write(&path, small_consistent_ext2()).unwrap();
+    let bin = std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor");
+
+    let o = Command::new(&bin).arg("fsck").arg(&path).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let text = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        text.contains("0 findings") || text.contains("No findings") || text.contains("no findings"),
+        "{text}"
+    );
+
+    let o = Command::new(&bin)
+        .arg("fsck")
+        .arg(&path)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let j: serde_json::Value = serde_json::from_str(&String::from_utf8(o.stdout).unwrap()).unwrap();
+    assert_eq!(j["schema"], "doctor/1");
+    assert_eq!(j["data"]["groups"], 1);
+    assert!(j["findings"].as_array().unwrap().is_empty(), "{j}");
+
+    // introduce a mismatch: superblock says 60 free blocks but bitmap/group say 58
+    let mut bad = small_consistent_ext2();
+    le32(&mut bad, 1024 + 12, 60);
+    let badp = d.join("bad.img");
+    std::fs::write(&badp, bad).unwrap();
+    let o = Command::new(&bin)
+        .arg("fsck")
+        .arg(&badp)
+        .arg("--json")
+        .output()
+        .unwrap();
+    // findings at medium by default? fsck uses emit with fail_default None -> 0 unless fail-on; but findings exist
+    let j: serde_json::Value = serde_json::from_str(&String::from_utf8(o.stdout).unwrap()).unwrap();
+    let findings = j["findings"].as_array().unwrap();
+    assert!(
+        findings.iter().any(|f| f["id"] == "ext/fsck-free-blocks"),
+        "{j}"
+    );
 }
