@@ -41,7 +41,7 @@ const PROFILES: [(&str, &str); 3] = [
     ),
 ];
 
-fn bin() -> &'static str {
+fn bin() -> String {
     std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor")
 }
 
