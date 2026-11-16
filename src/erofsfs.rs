@@ -842,8 +842,8 @@ mod tests {
     /// tests/fixtures/erofs/erofs-48bit.img is a real `mkfs.erofs -E48bit` image (erofs-utils 1.9.4).
     #[test]
     fn forty_eight_bit_fixture_reads_back_exactly() {
-        let fs = from_bytes(include_bytes!("../tests/fixtures/erofs/erofs-48bit.img").to_vec())
-            .unwrap();
+        let fs =
+            from_bytes(include_bytes!("../tests/fixtures/erofs/erofs-48bit.img").to_vec()).unwrap();
         assert_eq!(cat_bytes(&fs, "a.txt"), b"hello 48bit\n");
         assert_eq!(cat_bytes(&fs, "sub/b.txt"), b"nested file\n");
         let bin = cat_bytes(&fs, "sub/bin.dat");

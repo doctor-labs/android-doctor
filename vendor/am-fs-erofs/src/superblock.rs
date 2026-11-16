@@ -398,28 +398,18 @@ impl Superblock {
                 let blocks_hi_compat = root_nid_2b as u64;
                 // erofs-utils 1.9.4 may still place root nid in rb and keep a 32-bit
                 // block count; newer layouts use rb as blocks_hi and rootnid_8b.
-                if root_nid_8b != 0 && (blocks_hi_compat == 0 || root_nid_8b <= u16::MAX as u64) {
+                if root_nid_8b != 0 && root_nid_8b <= u32::MAX as u64 {
                     root_nid = root_nid_8b;
                     blocks |= blocks_hi_compat << 32;
                 } else if root_nid_8b != 0 {
-                    root_nid = root_nid_8b;
-                    blocks |= blocks_hi_compat << 32;
+                    // keep compat root_nid from rb when 8b field looks invalid for this image
                 }
-            } else {
-                return Err(Error::BadSuperblock(
-                    "48-bit superblock is truncated before rootnid_8b",
-                ));
             }
         }
-        if feature_incompat & EROFS_FEATURE_INCOMPAT_METABOX != 0 {
-            if bytes.len() >= offsets::METABOX_NID.end {
-                metabox_nid =
-                    u64::from_le_bytes(bytes[offsets::METABOX_NID].try_into().unwrap());
-            } else {
-                return Err(Error::BadSuperblock(
-                    "metabox superblock is truncated before metabox_nid",
-                ));
-            }
+        if feature_incompat & EROFS_FEATURE_INCOMPAT_METABOX != 0
+            && bytes.len() >= offsets::METABOX_NID.end
+        {
+            metabox_nid = u64::from_le_bytes(bytes[offsets::METABOX_NID].try_into().unwrap());
         }
 
         Ok(Superblock {
@@ -524,8 +514,13 @@ pub fn read<R: BlockRead + ?Sized>(dev: &R) -> Result<Superblock> {
     let mut head = [0u8; EROFS_SUPER_BLOCK_SIZE];
     dev.read_at(EROFS_SUPER_OFFSET, &mut head)?;
     let feature_compat = u32::from_le_bytes(head[offsets::FEATURE_COMPAT].try_into().unwrap());
+    let feature_incompat =
+        u32::from_le_bytes(head[offsets::FEATURE_INCOMPAT].try_into().unwrap());
     let sb_extslots = head[offsets::SB_EXTSLOTS] as usize;
-    let parse_len = EROFS_SUPER_BLOCK_SIZE + sb_extslots * 16;
+    let mut parse_len = EROFS_SUPER_BLOCK_SIZE + sb_extslots * 16;
+    if feature_incompat & (EROFS_FEATURE_INCOMPAT_48BIT | EROFS_FEATURE_INCOMPAT_METABOX) != 0 {
+        parse_len = parse_len.max(offsets::METABOX_NID.end);
+    }
     let mut parse_buf = vec![0u8; parse_len.max(EROFS_SUPER_BLOCK_SIZE)];
     parse_buf[..EROFS_SUPER_BLOCK_SIZE].copy_from_slice(&head);
     if parse_len > EROFS_SUPER_BLOCK_SIZE {
@@ -535,7 +530,9 @@ pub fn read<R: BlockRead + ?Sized>(dev: &R) -> Result<Superblock> {
         )?;
     }
     let sb = Superblock::parse(&parse_buf)?;
-    if sb.feature_compat & EROFS_FEATURE_COMPAT_SB_CHKSUM != 0 || feature_compat & EROFS_FEATURE_COMPAT_SB_CHKSUM != 0 {
+    if sb.feature_compat & EROFS_FEATURE_COMPAT_SB_CHKSUM != 0
+        || feature_compat & EROFS_FEATURE_COMPAT_SB_CHKSUM != 0
+    {
         let mut span = vec![0u8; sb.checksum_span_len().max(parse_len)];
         dev.read_at(EROFS_SUPER_OFFSET, &mut span)?;
         let verified = Superblock::parse(&span[..parse_len.min(span.len())])?;
