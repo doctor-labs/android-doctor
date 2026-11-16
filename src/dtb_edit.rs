@@ -130,5 +130,5 @@ pub fn run_patch(
 /// Dump a human-readable description of a DTB (like magiskboot dtb print, for session use).
 pub fn print_dtb(input: &Path) -> Result<String> {
     refuse_blocking_file(input)?;
-    Ok(dt::describe_file(input)?)
+    dt::describe_file(input)
 }

@@ -1267,7 +1267,6 @@ pub fn read_input(input: &Path, out: Option<&Path>) -> Result<Vec<Found>> {
 /// Compress `data` with `c` (the inverse of `decoder`). Used by ramdisk editing to rewrite a
 /// ramdisk in the same compression it was read in.
 pub(crate) fn compress(c: Compression, data: &[u8]) -> Result<Vec<u8>> {
-    use std::io::Write;
     Ok(match c {
         Compression::None => data.to_vec(),
         Compression::Gzip => {
