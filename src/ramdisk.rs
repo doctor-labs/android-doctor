@@ -112,6 +112,23 @@ impl Compression {
     }
 }
 
+fn is_lzma_header(head: &[u8]) -> bool {
+    // Legacy `.lzma` container: properties byte, then 4-byte dictionary size and
+    // 8-byte uncompressed size before the range-coded data.
+    if head.len() < 13 {
+        return false;
+    }
+    let props = head[0];
+    if props > 224 {
+        return false;
+    }
+    let lc = props % 9;
+    let rem = props / 9;
+    let lp = rem % 5;
+    let pb = rem / 5;
+    lc + lp <= 4 && pb <= 4
+}
+
 /// The compression of a ramdisk from its first bytes (`None` is a plain cpio archive).
 pub fn compression_of(head: &[u8]) -> Option<Compression> {
     let at0 = |m: &[u8]| head.starts_with(m);
@@ -131,10 +148,7 @@ pub fn compression_of(head: &[u8]) -> Option<Compression> {
         Compression::Lzop
     } else if at0(b"070701") || at0(b"070702") {
         Compression::None
-    } else if at0(&[0x5D]) && head.len() >= 13 {
-        // Legacy `.lzma` container: properties byte (0x5D = lc=3 lp=0 pb=2), then
-        // 4-byte dict size and 8-byte uncompressed size before the range-coded data.
-        // `lzma_rust2::LzmaReader` validates the rest, so this only needs the signature byte.
+    } else if is_lzma_header(head) {
         Compression::Lzma
     } else {
         return None;
@@ -2025,7 +2039,9 @@ mod tests {
         let archive = cpio(&[file("a", &data(300_000, 5))]);
         let mut lg = compress(Compression::Lz4Legacy, &archive);
         lg.extend((archive.len() as u32).to_le_bytes());
-        assert_eq!(read(&lg).unwrap().entries[0].size, 300_000);
+        let report = read(&lg).unwrap();
+        assert_eq!(report.entries[0].size, 300_000);
+        assert_eq!(report.compression, Compression::Lz4Lg);
         let mut wrong = compress(Compression::Lz4Legacy, &archive);
         wrong.extend((archive.len() as u32 + 1).to_le_bytes());
         assert!(format!("{:#}", read(&wrong).unwrap_err()).contains("ends"));
