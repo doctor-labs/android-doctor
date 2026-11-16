@@ -221,7 +221,11 @@ fn find_command(
 ) -> Result<doctor_kit::session::Reply, String> {
     let mut q = parse_find_args(args)?;
     // Use an explicit path selector as the search root when given; otherwise search from cwd.
-    let root_arg = if q.under.is_empty() { None } else { Some(q.under.clone()) };
+    let root_arg = if q.under.is_empty() {
+        None
+    } else {
+        Some(q.under.clone())
+    };
     let node = match root_arg.as_deref() {
         Some(sel) => s.node(Some(sel)).or_else(|_| s.node(None))?,
         None => s
