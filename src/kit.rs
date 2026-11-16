@@ -480,7 +480,7 @@ impl Doctor for AndroidDoctor {
             },
             doctor_kit::session::Command {
                 name: "cpio",
-                help: "cpio <boot.img> put <src> <dest> -o <out> [--force] | cpio <boot.img> rm <path> -o <out>  edit uncompressed ramdisk (v0-2) into a new image",
+                help: "cpio <boot.img> put <src> <dest> -o <out> [--force] | cpio <boot.img> rm <path> -o <out>  edit ramdisk (v0-2, compressed or plain cpio) into a new image",
                 flags: &[],
                 run: cpio_command,
             },

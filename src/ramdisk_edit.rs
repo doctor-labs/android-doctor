@@ -1,9 +1,10 @@
-//! `ramdisk-edit`: put files into, or remove them from, the uncompressed cpio ramdisk of a boot
-//! image (header versions 0 to 2) and write the result to a NEW image. The input is never changed.
+//! `ramdisk-edit`: put files into, or remove them from, the cpio ramdisk of a boot image
+//! (header versions 0 to 2) and write the result to a NEW image. The input is never changed.
 //! Without `--yes` nothing is written; the output is verified by reading it back with `bootimg::read`
 //! and `ramdisk::read_ramdisk` before it is renamed into place.
-//! ponytail: uncompressed newc ramdisks only (gzip, lz4 and friends are refused), header versions 0 to 2,
-//! mtime 0 for new entries, whole source file read into memory (256 MiB cap), no vendor_ramdisk.
+//! Compressed ramdisks (gzip, bzip2, xz, zstd, lz4, lzma, lzop) are decompressed, edited as newc cpio,
+//! and recompressed in the same format. ponytail: header versions 0 to 2, mtime 0 for new entries,
+//! whole source file read into memory (256 MiB cap), no vendor_ramdisk.
 
 use crate::bootimg;
 use crate::detect::refuse_blocking_file;
@@ -338,13 +339,31 @@ fn build(input: &Path, ops: &[Op]) -> Result<Built> {
         .find(|s| s.name == "ramdisk")
         .context("no ramdisk")?;
     let raw = read_at(&mut f, rd.offset, rd.size)?;
-    ensure!(
-        matches!(ramdisk::compression_of(&raw), Some(Compression::None)),
-        "the ramdisk is not an uncompressed cpio (newc) archive; compressed ramdisks are not edited yet"
-    );
-    let mut records = parse_cpio(&raw)?;
+    let comp = ramdisk::compression_of(&raw)
+        .context("the ramdisk is not a compressed or plain cpio (newc) archive")?;
+    let cpio_bytes = if comp == Compression::None {
+        raw
+    } else {
+        let mut dec = ramdisk::decoder(comp, Cursor::new(&raw))?;
+        let mut out = Vec::new();
+        dec.read_to_end(&mut out)
+            .with_context(|| format!("decompressing {} ramdisk", comp.id()))?;
+        ensure!(
+            (out.len() as u64) <= ramdisk::MAX_DECOMPRESSED,
+            "the decompressed ramdisk is larger than the {}-byte limit",
+            ramdisk::MAX_DECOMPRESSED
+        );
+        out
+    };
+    let mut records = parse_cpio(&cpio_bytes)?;
     let checks = apply(&mut records, ops)?;
-    let new_rd = emit_cpio(&records)?;
+    let new_cpio = emit_cpio(&records)?;
+    let new_rd = if comp == Compression::None {
+        new_cpio
+    } else {
+        ramdisk::compress(comp, &new_cpio)
+            .with_context(|| format!("recompressing ramdisk as {}", comp.id()))?
+    };
     let mut head = orig_head.clone();
     head[16..20].copy_from_slice(&u32::try_from(new_rd.len())?.to_le_bytes());
 

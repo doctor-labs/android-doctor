@@ -4,7 +4,7 @@
 
 use crate::detect::refuse_blocking_file;
 use crate::extract::create_part;
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use std::io::Write;
 use std::path::Path;
 
