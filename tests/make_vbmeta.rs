@@ -23,7 +23,7 @@ fn scratch(name: &str) -> std::path::PathBuf {
 }
 
 fn run(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+    Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
         .args(args)
         .output()
         .unwrap()

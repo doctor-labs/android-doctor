@@ -25,7 +25,7 @@ fn unsigned_zip() -> Vec<u8> {
 }
 
 fn verify_ota(input: &PathBuf, extra: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+    Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
         .arg("verify-ota")
         .arg(input)
         .args(extra)

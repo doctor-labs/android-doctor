@@ -144,7 +144,7 @@ fn tmp_dir(name: &str) -> PathBuf {
 }
 
 fn run(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+    Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
         .args(args)
         .output()
         .unwrap()

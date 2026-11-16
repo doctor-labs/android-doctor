@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn exe() -> &'static str {
-    env!("CARGO_BIN_EXE_android-doctor")
+    std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor")
 }
 
 /// Build a zImage wrapper around `payload`, the way the bootloader expects to find one.

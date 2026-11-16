@@ -67,7 +67,7 @@ fn fixture(tag: &str) -> PathBuf {
 }
 
 fn find(img: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+    Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
         .arg("find")
         .arg(img)
         .args(args)

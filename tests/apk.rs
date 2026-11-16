@@ -11,7 +11,7 @@ fn apk_audit_reports_signers() {
     let apk_path = dir.join("test.apk");
     std::fs::write(&apk_path, apk).unwrap();
 
-    let out = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+    let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
         .args(["apk", apk_path.to_str().unwrap(), "--json"])
         .output()
         .unwrap();
@@ -38,7 +38,7 @@ fn apk_audit_reports_verification() {
     let apk_path = dir.join("test.apk");
     std::fs::write(&apk_path, apk).unwrap();
 
-    let out = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+    let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
         .args(["apk", apk_path.to_str().unwrap(), "--json"])
         .output()
         .unwrap();
@@ -62,7 +62,7 @@ fn apk_audit_refuses_directory_input() {
     let dir = std::env::temp_dir().join(format!("apk-dir-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
 
-    let out = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+    let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
         .args(["apk", dir.to_str().unwrap()])
         .output()
         .unwrap();
@@ -79,7 +79,7 @@ fn apk_audit_handles_invalid_apk() {
     let apk_path = dir.join("not-an-apk.apk");
     std::fs::write(&apk_path, b"not a valid zip file").unwrap();
 
-    let out = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+    let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
         .args(["apk", apk_path.to_str().unwrap(), "--json"])
         .output()
         .unwrap();
@@ -91,7 +91,7 @@ fn apk_audit_handles_invalid_apk() {
     assert_eq!(json["schema"], "doctor/1");
     assert!(json["data"]["error"].is_string(), "output: {json}");
 
-    let text = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+    let text = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
         .args(["apk", apk_path.to_str().unwrap()])
         .output()
         .unwrap();
@@ -107,7 +107,7 @@ fn apk_audit_text_output_shows_basic_info() {
     let apk_path = dir.join("test.apk");
     std::fs::write(&apk_path, apk).unwrap();
 
-    let out = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+    let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
         .args(["apk", apk_path.to_str().unwrap()])
         .output()
         .unwrap();
@@ -137,7 +137,7 @@ fn v1_fixture() -> std::path::PathBuf {
 
 #[test]
 fn apk_json_uses_the_doctor1_envelope() {
-    let out = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+    let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
         .args(["apk", v1_fixture().to_str().unwrap(), "--json"])
         .output()
         .unwrap();
@@ -165,7 +165,7 @@ fn apk_json_uses_the_doctor1_envelope() {
 
 #[test]
 fn dex_flag_is_not_accepted_because_code_rules_always_run() {
-    let out = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+    let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
         .args(["apk", v1_fixture().to_str().unwrap(), "--dex"])
         .output()
         .unwrap();
@@ -182,7 +182,7 @@ fn fixture_path(name: &str) -> std::path::PathBuf {
 #[test]
 fn apk_files_lists_each_entry_with_sizes_and_method() {
     let apk = fixture_path("v23.apk");
-    let text = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+    let text = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
         .args(["apk", apk.to_str().unwrap(), "--files"])
         .output()
         .unwrap();
@@ -195,7 +195,7 @@ fn apk_files_lists_each_entry_with_sizes_and_method() {
         "{stdout}"
     );
 
-    let json = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+    let json = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
         .args(["apk", apk.to_str().unwrap(), "--files", "--json"])
         .output()
         .unwrap();
@@ -216,7 +216,7 @@ fn apk_files_lists_each_entry_with_sizes_and_method() {
 #[test]
 fn apk_cat_prints_one_entry_byte_for_byte() {
     let apk = fixture_path("v23.apk");
-    let out = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+    let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
         .args(["apk", apk.to_str().unwrap(), "--cat", "AndroidManifest.xml"])
         .output()
         .unwrap();
@@ -233,7 +233,7 @@ fn apk_cat_prints_one_entry_byte_for_byte() {
 #[test]
 fn apk_cat_of_a_missing_entry_exits_2() {
     let apk = fixture_path("v23.apk");
-    let out = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+    let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
         .args(["apk", apk.to_str().unwrap(), "--cat", "no/such/entry"])
         .output()
         .unwrap();
@@ -246,7 +246,7 @@ fn apk_cat_of_a_missing_entry_exits_2() {
 fn apk_cat_refuses_json_and_files() {
     let apk = fixture_path("v23.apk");
     for extra in [["--json"], ["--files"]] {
-        let out = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+        let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
             .args(["apk", apk.to_str().unwrap(), "--cat", "AndroidManifest.xml"])
             .args(extra)
             .output()
@@ -261,7 +261,7 @@ fn apk_cat_refuses_json_and_files() {
 #[test]
 fn apk_json_lists_uses_permissions_under_data_manifest() {
     let apk = fixture_path("v1.apk");
-    let out = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+    let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
         .args(["apk", apk.to_str().unwrap(), "--json"])
         .output()
         .unwrap();

@@ -47,7 +47,7 @@ fn image(tag: &str) -> PathBuf {
 }
 
 fn run(args: &[&str]) -> (i32, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_android-doctor"))
+    let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
         .args(args)
         .output()
         .unwrap();
