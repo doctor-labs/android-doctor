@@ -1338,7 +1338,6 @@ pub(crate) fn compress(c: Compression, data: &[u8]) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::treeout::staging_path;
-    use std::io::Write;
     use std::path::PathBuf;
 
     /// One entry for the in-test cpio builder.
