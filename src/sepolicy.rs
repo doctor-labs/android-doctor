@@ -287,7 +287,11 @@ fn read_cil(file: &str, text: &str) -> CilFile {
 /// Parse one file_contexts text: entry count, malformed line count, labels whose type looks
 /// unconfined or permissive (candidates, later filtered to the permissive-domain set), and labels
 /// whose type is `unlabeled`.
-fn read_contexts(text: &str) -> (usize, usize, Vec<(String, String)>, Vec<(String, String)>) {
+/// The four counts a context scan produces: entries read, malformed lines, permissive/unconfined
+/// candidates, and `unlabeled` labels.
+type ContextScan = (usize, usize, Vec<(String, String)>, Vec<(String, String)>);
+
+fn read_contexts(text: &str) -> ContextScan {
     let (mut entries, mut malformed) = (0usize, 0usize);
     let mut candidates = Vec::new();
     let mut unlabeled = Vec::new();
@@ -365,13 +369,9 @@ fn probe_binary_policy(bytes: &[u8]) -> Option<u32> {
         return None;
     }
     let magic = u32::from_le_bytes(bytes[0..4].try_into().ok()?);
-    let (version_off, known) = if magic == SEPOL_MAGIC_LE {
-        (8, true)
-    } else if u32::from_be_bytes(bytes[0..4].try_into().ok()?) == SEPOL_MAGIC_BE {
-        (8, true)
-    } else {
-        (0, false)
-    };
+    let known = magic == SEPOL_MAGIC_LE
+        || u32::from_be_bytes(bytes[0..4].try_into().ok()?) == SEPOL_MAGIC_BE;
+    let version_off = if known { 8 } else { 0 };
     if !known {
         return None;
     }
@@ -619,7 +619,7 @@ mod tests {
     fn binary_policy_header_version_is_read_when_magic_matches() {
         let mut bytes = vec![0u8; 12];
         bytes[0..4].copy_from_slice(&SEPOL_MAGIC_LE.to_le_bytes());
-        bytes[4..8].copy_from_slice(&b"SEPO");
+        bytes[4..8].copy_from_slice(b"SEPO");
         bytes[8..12].copy_from_slice(&30u32.to_le_bytes());
         assert_eq!(probe_binary_policy(&bytes), Some(30));
         assert_eq!(probe_binary_policy(&[0u8; 8]), None);
