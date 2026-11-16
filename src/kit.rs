@@ -223,9 +223,9 @@ fn find_command(
     // Resolve the current image context from cwd/selection.
     let cwd = s.pwd().to_string();
     let node = s
-        .node(Some(&cwd))
+        .node(None)
+        .or_else(|_| s.node(Some(&cwd)))
         .or_else(|_| s.node(Some(".")))
-        .or_else(|_| s.node(None))
         .or_else(|_| s.node(Some("")))?;
     let image = node
         .meta
