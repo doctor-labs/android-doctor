@@ -1672,7 +1672,13 @@ mod tests {
     fn compression_is_detected_from_the_magic_bytes() {
         for c in ALL {
             let packed = compress(c, &cpio(&[file("a", b"x")]));
-            assert_eq!(compression_of(&packed), Some(c), "{}", c.id());
+            let want = match c {
+                // lz4_lg shares the legacy LZ4 magic; the trailing size word is only
+                // discovered while reading the stream.
+                Compression::Lz4Lg => Compression::Lz4Legacy,
+                other => other,
+            };
+            assert_eq!(compression_of(&packed), Some(want), "{}", c.id());
         }
         assert_eq!(compression_of(b"BZh0"), None);
         assert_eq!(compression_of(b"BZhx"), None);
