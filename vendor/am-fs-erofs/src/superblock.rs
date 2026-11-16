@@ -514,8 +514,7 @@ pub fn read<R: BlockRead + ?Sized>(dev: &R) -> Result<Superblock> {
     let mut head = [0u8; EROFS_SUPER_BLOCK_SIZE];
     dev.read_at(EROFS_SUPER_OFFSET, &mut head)?;
     let feature_compat = u32::from_le_bytes(head[offsets::FEATURE_COMPAT].try_into().unwrap());
-    let feature_incompat =
-        u32::from_le_bytes(head[offsets::FEATURE_INCOMPAT].try_into().unwrap());
+    let feature_incompat = u32::from_le_bytes(head[offsets::FEATURE_INCOMPAT].try_into().unwrap());
     let sb_extslots = head[offsets::SB_EXTSLOTS] as usize;
     let mut parse_len = EROFS_SUPER_BLOCK_SIZE + sb_extslots * 16;
     if feature_incompat & (EROFS_FEATURE_INCOMPAT_48BIT | EROFS_FEATURE_INCOMPAT_METABOX) != 0 {
