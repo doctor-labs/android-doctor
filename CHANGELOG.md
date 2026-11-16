@@ -9,6 +9,7 @@ All notable changes to this project are documented here. The format follows
 - Coolpad `.cpb` is documented as refused by design: `identify` names it and `extract` refuses it with a clear unsupported message because the layout is not publicly documented (it changed after ~2015), bodies are commonly encrypted with vendor-specific keys, and the only known reference tool (scue/unpackcpb) is unmaintained, so decoding would be guesswork (#133, #175).
 
 ### Added
+- `lp-pack --partition NAME=PATH... -o OUT [--device-size N] [--metadata-size N] [--metadata-slots N] [--force]` packs partition images into a logical-partition super image (LP metadata v10, linear extents, one block device) and writes a new image. `lp-repack <super.img> --partition NAME=PATH... -o OUT [--force]` writes a copy of a super image with named partitions replaced in their allocated extents. Both write to a new path (atomic `.part` rename), never modify the input, and the produced artefact is not vendor-signed and unverified on a device (#177).
 - `docs/benchmark.md`: evidence-based benchmark and parity gap list against reference firmware/OTA tools (avbtool, magiskboot, payload_dumper/avbroot applicability, MobSF rule comparison), with per-image observations on the sandbox corpus (#167).
 - `tests/vbkernel.rs`: regression coverage for verifying a ChromeOS kernel image in magiskboot `futility.rs`'s packed layout (64 KiB vblock, blob body at offset 65536), referencing the #176 gap.
 

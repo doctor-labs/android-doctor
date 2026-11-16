@@ -673,6 +673,39 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Pack partition images into a logical-partition super image (LP metadata v10, one slot)
+    LpPack {
+        /// Partition to include, as NAME=PATH (repeatable)
+        #[arg(long = "partition", value_name = "NAME=PATH", required = true)]
+        partitions: Vec<String>,
+        /// Super device size in bytes (0 = fit partitions and metadata)
+        #[arg(long, default_value_t = 0)]
+        device_size: u64,
+        /// Metadata maximum size per slot in bytes
+        #[arg(long, default_value_t = 65536)]
+        metadata_size: u32,
+        /// Number of metadata slots
+        #[arg(long, default_value_t = 1)]
+        metadata_slots: u32,
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Replace an existing output file instead of refusing
+        #[arg(long)]
+        force: bool,
+    },
+    /// Replace named partitions in an existing super image and write a new image
+    LpRepack {
+        /// Existing super image (never modified)
+        input: PathBuf,
+        /// Partition to replace, as NAME=PATH (repeatable)
+        #[arg(long = "partition", value_name = "NAME=PATH", required = true)]
+        partitions: Vec<String>,
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Replace an existing output file instead of refusing
+        #[arg(long)]
+        force: bool,
+    },
     /// Patch an OTA or vbmeta image (unverified on a device): strip or re-sign an OTA zip, clear vbmeta verification flags
     Patch {
         #[command(subcommand)]
@@ -957,6 +990,20 @@ enum CiAction {
         #[arg(long, value_name = "LEVEL", default_value = "critical", value_parser = ci::FAIL_ON)]
         fail_on: String,
     },
+}
+
+fn parse_name_path_pairs(pairs: &[String], what: &str) -> anyhow::Result<Vec<(String, PathBuf)>> {
+    pairs
+        .iter()
+        .map(|s| {
+            let (name, path) = s
+                .split_once('=')
+                .ok_or_else(|| anyhow::anyhow!("{what} must be NAME=PATH, got {s:?}"))?;
+            anyhow::ensure!(!name.is_empty(), "{what} name must not be empty");
+            anyhow::ensure!(!path.is_empty(), "{what} path must not be empty");
+            Ok((name.to_string(), PathBuf::from(path)))
+        })
+        .collect()
 }
 
 /// A new output file next to `target`, renamed into place on success; refuses to replace an
@@ -1636,6 +1683,41 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
                 cmdline,
             };
             bootimg::pack_run(&parts, &output, force)
+        }
+        Command::LpPack {
+            partitions,
+            device_size,
+            metadata_size,
+            metadata_slots,
+            output,
+            force,
+        } => {
+            let parts = parse_name_path_pairs(&partitions, "partition")?;
+            lp::pack_run(
+                &parts,
+                &output,
+                device_size,
+                metadata_size,
+                metadata_slots,
+                force,
+            )?;
+            print_out(&format!(
+                "wrote {} (not vendor-signed; unverified on a device)",
+                output.display()
+            ))
+        }
+        Command::LpRepack {
+            input,
+            partitions,
+            output,
+            force,
+        } => {
+            let parts = parse_name_path_pairs(&partitions, "partition")?;
+            lp::repack_run(&input, &parts, &output, force)?;
+            print_out(&format!(
+                "wrote {} (not vendor-signed; unverified on a device)",
+                output.display()
+            ))
         }
         Command::RamdiskEdit {
             image,
