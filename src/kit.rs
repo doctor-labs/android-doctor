@@ -221,8 +221,10 @@ fn find_command(
 ) -> Result<doctor_kit::session::Reply, String> {
     let mut q = parse_find_args(args)?;
     // Resolve the current image context from cwd/selection.
+    let cwd = s.cwd().to_string_lossy().to_string();
     let node = s
-        .node(Some("."))
+        .node(Some(&cwd))
+        .or_else(|_| s.node(Some(".")))
         .or_else(|_| s.node(None))
         .or_else(|_| s.node(Some("")))?;
     let image = node
