@@ -114,26 +114,12 @@ impl Compression {
 
 fn is_lzma_header(head: &[u8]) -> bool {
     // Legacy `.lzma` container: properties byte, then 4-byte dictionary size and
-    // 8-byte uncompressed size before the range-coded data.
+    // 8-byte uncompressed size before the range-coded data. Parse with the same
+    // reader used for decompression so detection matches what we can actually read.
     if head.len() < 13 {
         return false;
     }
-    let props = head[0];
-    if props > 224 {
-        return false;
-    }
-    let lc = props % 9;
-    let rem = props / 9;
-    let lp = rem % 5;
-    let pb = rem / 5;
-    if lc + lp > 4 || pb > 4 {
-        return false;
-    }
-    let dict = u32::from_le_bytes([head[1], head[2], head[3], head[4]]);
-    // Real LZMA streams use a dictionary of at least 4 KiB; this avoids
-    // misclassifying arbitrary data whose first byte happens to be a valid
-    // properties value.
-    dict >= 0x1000
+    lzma_rust2::LzmaReader::new_mem_limit(std::io::Cursor::new(head), u32::MAX, None).is_ok()
 }
 
 /// The compression of a ramdisk from its first bytes (`None` is a plain cpio archive).
