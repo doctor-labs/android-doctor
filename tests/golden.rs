@@ -712,6 +712,7 @@ fn help_texts() {
         "partitions",
         "unpack",
         "journal",
+        "fsck",
         "ls",
         "cat",
         "tree",
