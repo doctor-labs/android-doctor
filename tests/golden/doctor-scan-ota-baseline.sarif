@@ -26,7 +26,7 @@
             "severity": "low"
           },
           "ruleId": "partition_coverage",
-          "ruleIndex": 107
+          "ruleIndex": 108
         },
         {
           "baselineState": "new",
@@ -52,7 +52,7 @@
             "severity": "info"
           },
           "ruleId": "avb_signature",
-          "ruleIndex": 67
+          "ruleIndex": 68
         },
         {
           "baselineState": "new",
@@ -69,7 +69,7 @@
             "severity": "info"
           },
           "ruleId": "duplicate_properties",
-          "ruleIndex": 88
+          "ruleIndex": 89
         },
         {
           "baselineState": "new",
@@ -86,7 +86,7 @@
             "severity": "info"
           },
           "ruleId": "selinux_label_gaps",
-          "ruleIndex": 112
+          "ruleIndex": 113
         },
         {
           "baselineState": "new",
@@ -112,7 +112,7 @@
             "severity": "info"
           },
           "ruleId": "mode_anomalies",
-          "ruleIndex": 106
+          "ruleIndex": 107
         },
         {
           "baselineState": "new",
@@ -129,7 +129,7 @@
             "severity": "info"
           },
           "ruleId": "init_service_hygiene",
-          "ruleIndex": 103
+          "ruleIndex": 104
         },
         {
           "baselineState": "new",
@@ -155,7 +155,7 @@
             "severity": "info"
           },
           "ruleId": "debug_leftovers",
-          "ruleIndex": 71
+          "ruleIndex": 72
         }
       ],
       "tool": {
@@ -401,6 +401,22 @@
               "name": "apk-code-behaviour-pim",
               "shortDescription": {
                 "text": "An APK's code uses APIs for personal data (contacts, SMS, call log or calendar content providers)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An APK's code uses reflection APIs (Class.forName, Method.invoke, Constructor.newInstance, Proxy.newProxyInstance)"
+              },
+              "help": {
+                "text": "Informational: reflection is often used to hide behaviour or load code dynamically; check each listed call site against the app's stated purpose; this is not a finding by itself"
+              },
+              "id": "apk-code-behaviour-reflection",
+              "name": "apk-code-behaviour-reflection",
+              "shortDescription": {
+                "text": "An APK's code uses reflection APIs (Class.forName, Method.invoke, Constructor.newInstance, Proxy.newProxyInstance)"
               }
             },
             {

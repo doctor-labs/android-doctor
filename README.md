@@ -361,6 +361,7 @@ MobSF `android_apis` / `android_rules` and qark, not a copy of either rule set.
 | `apk-code-behaviour-sockets` | info | `Socket`, `ServerSocket` and `DatagramSocket` constructors |
 | `apk-code-behaviour-native` | info | `System` and `Runtime` `load`/`loadLibrary` (native code loading; `exec` is `apk-code-command-exec`) |
 | `apk-code-behaviour-pim` | info | a content URI of contacts, SMS, MMS, call log or calendar in the dex strings |
+| `apk-code-behaviour-reflection` | info | reflection APIs: `Class.forName`, `Method.invoke`, `Constructor.newInstance`, `Proxy.newProxyInstance` |
 | `apk-code-unscanned` | info | a dex was too large, unreadable or unsupported (not a pass) |
 
 Limits: no data flow beyond constants set in the same straight-line stretch (registers are

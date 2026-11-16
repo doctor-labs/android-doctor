@@ -34,7 +34,7 @@
             "severity": "high"
           },
           "ruleId": "debuggable-build",
-          "ruleIndex": 72
+          "ruleIndex": 73
         },
         {
           "level": "error",
@@ -59,7 +59,7 @@
             "severity": "high"
           },
           "ruleId": "insecure-adb",
-          "ruleIndex": 104
+          "ruleIndex": 105
         },
         {
           "level": "error",
@@ -84,7 +84,7 @@
             "severity": "high"
           },
           "ruleId": "su-binary",
-          "ruleIndex": 117
+          "ruleIndex": 118
         }
       ],
       "tool": {
@@ -330,6 +330,22 @@
               "name": "apk-code-behaviour-pim",
               "shortDescription": {
                 "text": "An APK's code uses APIs for personal data (contacts, SMS, call log or calendar content providers)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "An APK's code uses reflection APIs (Class.forName, Method.invoke, Constructor.newInstance, Proxy.newProxyInstance)"
+              },
+              "help": {
+                "text": "Informational: reflection is often used to hide behaviour or load code dynamically; check each listed call site against the app's stated purpose; this is not a finding by itself"
+              },
+              "id": "apk-code-behaviour-reflection",
+              "name": "apk-code-behaviour-reflection",
+              "shortDescription": {
+                "text": "An APK's code uses reflection APIs (Class.forName, Method.invoke, Constructor.newInstance, Proxy.newProxyInstance)"
               }
             },
             {

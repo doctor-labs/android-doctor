@@ -723,6 +723,11 @@ pub fn help(rule: &str) -> Option<Help> {
             "Informational: check each listed call site against the app's stated purpose; this is not a finding by itself",
             Info,
         ),
+        "apk-code-behaviour-reflection" => (
+            "An APK's code uses reflection APIs (Class.forName, Method.invoke, Constructor.newInstance, Proxy.newProxyInstance)",
+            "Informational: reflection is often used to hide behaviour or load code dynamically; check each listed call site against the app's stated purpose; this is not a finding by itself",
+            Info,
+        ),
         "apk-code-hardcoded-ip" => (
             "Public IP addresses are hardcoded in an APK's code",
             "Resolve hosts by name over TLS and keep server addresses in configuration",
@@ -1083,6 +1088,7 @@ const KNOWN_RULES: &[&str] = &[
     "apk-code-behaviour-sockets",
     "apk-code-behaviour-native",
     "apk-code-behaviour-pim",
+    "apk-code-behaviour-reflection",
     "apk-code-hardcoded-ip",
     "apk-code-cleartext-url",
     "apk-code-sms-send",

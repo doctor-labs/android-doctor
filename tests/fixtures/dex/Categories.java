@@ -10,6 +10,7 @@ import android.media.MediaRecorder;
 import android.provider.Settings;
 import android.telephony.SmsMessage;
 import android.telephony.TelephonyManager;
+import java.lang.reflect.Method;
 import java.net.ServerSocket;
 import java.net.Socket;
 
@@ -51,6 +52,12 @@ public class Categories extends BroadcastReceiver {
 
     void nat() {
         System.loadLibrary("native");
+    }
+
+    void reflect() throws Exception {
+        Class<?> c = Class.forName("java.lang.String");
+        Method m = c.getDeclaredMethod("length");
+        m.invoke("x");
     }
 
     void safe(int x) {
