@@ -3434,6 +3434,11 @@ mod tests {
 
     #[test]
     fn cli_definition_is_valid() {
-        Cli::command().debug_assert();
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| Cli::command().debug_assert())
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }
