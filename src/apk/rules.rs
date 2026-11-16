@@ -557,7 +557,7 @@ fn judge(s: &Site, c: &mut Collector) {
 /// substrings of a call's callee (class, name and prototype), so a call on an app subclass such
 /// as `abortBroadcast()` still counts. Method names checked against android.jar (API 34).
 /// `exec` is not here: `apk-code-command-exec` already reports Runtime.exec and ProcessBuilder.
-const BEHAVIOURS: [(&str, &str, &[&str]); 7] = [
+const BEHAVIOURS: [(&str, &str, &[&str]); 8] = [
     (
         "apk-code-behaviour-telephony",
         "telephony identifiers",
@@ -631,6 +631,16 @@ const BEHAVIOURS: [(&str, &str, &[&str]); 7] = [
             "Ljava/lang/System;->load(",
             "Ljava/lang/Runtime;->loadLibrary(",
             "Ljava/lang/Runtime;->load(",
+        ],
+    ),
+    (
+        "apk-code-behaviour-reflection",
+        "reflection",
+        &[
+            "Ljava/lang/Class;->forName(",
+            "Ljava/lang/reflect/Method;->invoke(",
+            "Ljava/lang/reflect/Constructor;->newInstance(",
+            "Ljava/lang/reflect/Proxy;->newProxyInstance(",
         ],
     ),
 ];
@@ -943,15 +953,21 @@ mod tests {
             ("apk-code-behaviour-sockets", "sockets"),
             ("apk-code-behaviour-native", "native code loading"),
             ("apk-code-behaviour-pim", "PIM access"),
+            ("apk-code-behaviour-reflection", "reflection"),
         ] {
             let d = detail(&v, rule, Severity::Info);
             assert!(d.contains(cat), "{rule}: {d}");
         }
+        let clean_hits: Vec<_> = run(CLEAN, 0)
+            .into_iter()
+            .filter(|i| i.rule.starts_with("apk-code-behaviour"))
+            .map(|i| i.rule)
+            .collect();
         assert!(
-            run(CLEAN, 0)
+            clean_hits
                 .iter()
-                .all(|i| !i.rule.starts_with("apk-code-behaviour")),
-            "demo.dex uses none of the behaviour APIs"
+                .all(|r| *r == "apk-code-behaviour-reflection"),
+            "demo.dex uses no behaviour APIs except reflection: {clean_hits:?}"
         );
     }
 
@@ -1069,10 +1085,24 @@ mod tests {
 
     #[test]
     fn code_without_risky_calls_has_no_findings_and_screen_rules_need_activities() {
-        assert!(run(CLEAN, 0).is_empty());
+        // demo.dex uses no behaviour API except reflection (see the categories test), so the
+        // only finding it carries is the info-level reflection category.
+        assert!(
+            run(CLEAN, 0)
+                .iter()
+                .all(|i| i.rule == "apk-code-behaviour-reflection"),
+            "demo.dex has no risky calls beyond reflection"
+        );
         let with = run(CLEAN, 2);
         let rules: Vec<_> = with.iter().map(|i| i.rule).collect();
-        assert_eq!(rules, ["apk-code-tapjacking", "apk-code-screenshot"]);
+        assert_eq!(
+            rules,
+            [
+                "apk-code-behaviour-reflection",
+                "apk-code-tapjacking",
+                "apk-code-screenshot"
+            ]
+        );
     }
 
     #[test]

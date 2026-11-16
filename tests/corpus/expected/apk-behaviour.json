@@ -21,6 +21,11 @@
       "subject": "system"
     },
     {
+      "id": "apk-code-behaviour-reflection",
+      "severity": "info",
+      "subject": "system"
+    },
+    {
       "id": "apk-code-behaviour-settings",
       "severity": "info",
       "subject": "system"
