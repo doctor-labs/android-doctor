@@ -6,14 +6,12 @@ Arguments:
   <IMAGE>  An ext2/3/4 image
 
 Options:
-      --json                      Print the doctor/1 JSON envelope instead of text
-      --baseline <BASELINE>       Only report findings whose fingerprint is not in BASELINE (a prior --json envelope, its `findings` array, or a JSON array of strings). Exit code 3 if any are new
-      --baseline-mode <MODE>      How a baseline finding is matched [default: fingerprint] [possible values: fingerprint, subject, message, id]
-      --baseline-file <FILE>      Re-read BASELINE from FILE on every comparison (human mode: for live comparison)
-      --sarif <FILE>              Also write the findings as SARIF 2.1.0 to FILE
-      --sarif-suppressions        Add suppression entries for baselined findings (only with --sarif and --baseline)
-      --exclude <RULE>            Ignore findings whose rule id matches RULE (repeatable)
-      --fail-on <SEVERITY>        Exit 1 on a finding at or above this severity; audit gates on medium by default, diff on high [possible values: critical, high, medium, low, info]
-      --verbose                   Print the per-image detail; without this, only summary and findings
-      --no-color                  Never emit colour, even on a terminal (also honours the NO_COLOR environment variable)
-  -h, --help                      Print help
+      --json                Print JSON instead of text
+      --no-color            Never emit colour, even on a terminal (also honours the NO_COLOR environment variable)
+      --score               Print only the 0-100 health score
+      --sarif <FILE>        Also write the findings as SARIF 2.1.0 to FILE
+      --baseline <FILE>     Report only findings that are not in FILE, a previous `--json` report; exit 3 if there are new ones
+      --fail-on <SEVERITY>  Exit 1 when a finding is at or above this severity (critical, high, medium, low, info); with --baseline, exit 3 when a new one is. Default: critical for `doctor scan`, never for `audit`; with --baseline, low for both
+      --face <FACE>         Layout of the human output: plain, rich or compact (default: rich on a terminal, plain when piped) [possible values: plain, rich, compact]
+      --theme <NAME>        Colours of the human output: mono, clinical or contrast
+  -h, --help                Print help
