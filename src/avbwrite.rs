@@ -390,7 +390,10 @@ pub fn extract_vbmeta(image: &[u8]) -> Result<Vec<u8>> {
         ensure!(total <= image.len(), "vbmeta block runs past the image");
         return Ok(image[..total].to_vec());
     }
-    ensure!(has_footer(image), "not an AVB image: no vbmeta header and no AVB footer");
+    ensure!(
+        has_footer(image),
+        "not an AVB image: no vbmeta header and no AVB footer"
+    );
     let f = &image[image.len() - FOOTER_LEN..];
     let major = u32::from_be_bytes(f[4..8].try_into().unwrap());
     ensure!(major == 1, "unsupported AVB footer version {major}");
@@ -429,7 +432,10 @@ pub fn append_vbmeta(
         !has_footer(image),
         "the image already has an AVB footer; erase it first"
     );
-    ensure!(vbmeta.starts_with(b"AVB0"), "vbmeta image must start with AVB0");
+    ensure!(
+        vbmeta.starts_with(b"AVB0"),
+        "vbmeta image must start with AVB0"
+    );
     let max_metadata = (MAX_VBMETA + MAX_FOOTER) as u64;
     ensure!(
         partition_size >= max_metadata,

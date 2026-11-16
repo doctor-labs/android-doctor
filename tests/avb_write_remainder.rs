@@ -72,14 +72,27 @@ fn extract_vbmeta_from_footer_round_trips_and_appends_back() {
     .as_slice());
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let rebuilt = std::fs::read(&out).unwrap();
-    assert_eq!(rebuilt, std::fs::read(&img).unwrap(), "append of extracted vbmeta reproduces the footer image");
+    assert_eq!(
+        rebuilt,
+        std::fs::read(&img).unwrap(),
+        "append of extracted vbmeta reproduces the footer image"
+    );
 }
 
 #[test]
 fn extract_vbmeta_from_bare_vbmeta_writes_the_image() {
     let dir = scratch("extract-bare");
     let vb = dir.join("vbmeta.img");
-    let o = run(["avbmake", "-o", s(&vb), "--algorithm", "NONE", "--rollback-index", "3"].as_slice());
+    let o = run([
+        "avbmake",
+        "-o",
+        s(&vb),
+        "--algorithm",
+        "NONE",
+        "--rollback-index",
+        "3",
+    ]
+    .as_slice());
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = dir.join("out.img");
     let o = run(["avbextract", s(&vb), "-o", s(&out)].as_slice());

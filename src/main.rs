@@ -1594,7 +1594,15 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             block_size,
             force,
             json,
-        } => avbappend_command(&image, &vbmeta, &output, partition_size, block_size, force, json),
+        } => avbappend_command(
+            &image,
+            &vbmeta,
+            &output,
+            partition_size,
+            block_size,
+            force,
+            json,
+        ),
         Command::ApkDiff {
             old,
             new,
