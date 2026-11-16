@@ -222,8 +222,8 @@ fn find_command(
     let mut q = parse_find_args(args)?;
     // Resolve the current image context from cwd/selection.
     let node = s
-        .node(None)
-        .or_else(|_| s.node(Some(".")))
+        .node(Some("."))
+        .or_else(|_| s.node(None))
         .or_else(|_| s.node(Some("")))?;
     let image = node
         .meta
