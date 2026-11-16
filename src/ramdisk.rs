@@ -126,7 +126,14 @@ fn is_lzma_header(head: &[u8]) -> bool {
     let rem = props / 9;
     let lp = rem % 5;
     let pb = rem / 5;
-    lc + lp <= 4 && pb <= 4
+    if lc + lp > 4 || pb > 4 {
+        return false;
+    }
+    let dict = u32::from_le_bytes([head[1], head[2], head[3], head[4]]);
+    // Real LZMA streams use a dictionary of at least 4 KiB; this avoids
+    // misclassifying arbitrary data whose first byte happens to be a valid
+    // properties value.
+    dict >= 0x1000
 }
 
 /// The compression of a ramdisk from its first bytes (`None` is a plain cpio archive).
