@@ -1151,8 +1151,8 @@ fn read_ramdisk_capped<R: Read>(mut source: R, out: Option<&Path>, cap: u64) -> 
             left: cap,
             cap,
         };
-        let mut report = read_cpio(plain, c, out)
-            .with_context(|| format!("reading the {} ramdisk", c.id()))?;
+        let mut report =
+            read_cpio(plain, c, out).with_context(|| format!("reading the {} ramdisk", c.id()))?;
         if lg_flag.get() {
             report.compression = Compression::Lz4Lg;
         }
@@ -1473,6 +1473,11 @@ mod tests {
                 }
                 out
             }
+            Compression::Lz4Lg => {
+                let mut out = compress(Compression::Lz4Legacy, data);
+                out.extend((data.len() as u32).to_le_bytes());
+                out
+            }
             Compression::Lzop => {
                 // Stored blocks only (there is no LZO encoder here); the header, block lengths
                 // and Adler-32 are the lzop 1.04 layout.
@@ -1504,7 +1509,7 @@ mod tests {
         }
     }
 
-    const ALL: [Compression; 9] = [
+    const ALL: [Compression; 10] = [
         Compression::None,
         Compression::Gzip,
         Compression::Bzip2,
@@ -1512,6 +1517,7 @@ mod tests {
         Compression::Zstd,
         Compression::Lz4Frame,
         Compression::Lz4Legacy,
+        Compression::Lz4Lg,
         Compression::Lzma,
         Compression::Lzop,
     ];
