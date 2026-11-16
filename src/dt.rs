@@ -155,7 +155,7 @@ fn walk_struct(
 }
 
 /// Parse a raw FDT blob. `data` is the complete blob.
-fn parse_fdt(data: &[u8]) -> Result<Fdt> {
+pub(crate) fn parse_fdt(data: &[u8]) -> Result<Fdt> {
     ensure!(
         data.len() >= FDT_HEADER_SIZE,
         "FDT blob is too short for a header"

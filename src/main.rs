@@ -40,6 +40,8 @@ mod findings;
 mod fix;
 mod fstab;
 mod fwdiff;
+mod hexpatch;
+mod dtb_edit;
 mod hashtree;
 mod huawei;
 mod imgdiff;
