@@ -446,7 +446,6 @@ fn build(input: &Path, ops: &[Op]) -> Result<Built> {
     build_with(input, |records| apply(records, ops))
 }
 
-
 /// Read the written image back with the repo own readers and compare it with what was built.
 fn verify(part: &Path, built: &Built) -> Result<()> {
     let written = std::fs::read(part)?;
