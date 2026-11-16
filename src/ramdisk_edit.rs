@@ -446,6 +446,67 @@ fn build(input: &Path, ops: &[Op]) -> Result<Built> {
     build_with(input, |records| apply(records, ops))
 }
 
+
+/// Read the written image back with the repo own readers and compare it with what was built.
+fn verify(part: &Path, built: &Built) -> Result<()> {
+    let written = std::fs::read(part)?;
+    let hl = built.head.len();
+    ensure!(
+        written.get(..hl) == Some(built.head.as_slice()),
+        "the written header differs from the built header"
+    );
+    ensure!(
+        written[..16] == built.orig_head[..16] && written[20..hl] == built.orig_head[20..hl],
+        "the written header changed fields other than the ramdisk size"
+    );
+    let image = bootimg::read(part)?;
+    let names: Vec<&str> = image.sections.iter().map(|s| s.name.as_str()).collect();
+    ensure!(
+        names == built.order,
+        "sections read back are {names:?}, expected {:?}",
+        built.order
+    );
+    for s in &image.sections {
+        let bytes = written
+            .get(s.offset as usize..(s.offset + s.size) as usize)
+            .with_context(|| format!("{} reads past the end of the file", s.name))?;
+        if s.name == "ramdisk" {
+            let rep = ramdisk::read_ramdisk(Cursor::new(bytes), None)?;
+            ensure!(
+                rep.entries.len() == built.entry_count,
+                "ramdisk reads back {} entries, expected {}",
+                rep.entries.len(),
+                built.entry_count
+            );
+            for (path, sha) in &built.checks.puts {
+                let e = rep
+                    .entries
+                    .iter()
+                    .find(|e| &e.path == path)
+                    .with_context(|| format!("{path} is missing after the edit"))?;
+                ensure!(
+                    e.sha256.as_deref() == Some(sha.as_str()),
+                    "{path} does not hold its source bytes"
+                );
+            }
+            for path in &built.checks.rms {
+                ensure!(
+                    !rep.entries.iter().any(|e| &e.path == path),
+                    "{path} is still there after the removal"
+                );
+            }
+        } else {
+            let want = built
+                .kept
+                .iter()
+                .find(|(n, _)| n == &s.name)
+                .map(|(_, b)| b.as_slice());
+            ensure!(want == Some(bytes), "{} changed", s.name);
+        }
+    }
+    Ok(())
+}
+
 /// Apply a Magisk-style init patch to a ramdisk boot image (v0-v2, uncompressed cpio):
 /// move `init` to `keep_original` (creating parent directories) and write `magisk_init` as `init`.
 /// Writes a NEW image and verifies it by reading it back; the input is never changed.
