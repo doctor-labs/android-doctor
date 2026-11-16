@@ -87,6 +87,8 @@ pub enum Compression {
     Zstd,
     Lz4Frame,
     Lz4Legacy,
+    /// LG legacy LZ4: a legacy stream with a trailing `u32` total of the decoded bytes.
+    Lz4Lg,
     /// Legacy LZMA (`.lzma` container, not `.xz`).
     Lzma,
     /// `lzop` (`.lzo`): LZO1X blocks in the lzop 1.x container.
@@ -103,6 +105,7 @@ impl Compression {
             Self::Zstd => "zstd",
             Self::Lz4Frame => "lz4",
             Self::Lz4Legacy => "lz4-legacy",
+            Self::Lz4Lg => "lz4_lg",
             Self::Lzma => "lzma",
             Self::Lzop => "lzop",
         }
@@ -213,6 +216,7 @@ struct LegacyLz4<R: Read> {
     pos: usize,
     started: bool,
     produced: u64,
+    lg: bool,
 }
 
 impl<R: Read> Read for LegacyLz4<R> {
@@ -257,6 +261,7 @@ impl<R: Read> Read for LegacyLz4<R> {
                 .take(size as u64)
                 .read_to_end(&mut block)?;
             if trailer && block.is_empty() {
+                self.lg = true;
                 return Ok(0);
             }
             if !valid {
@@ -318,12 +323,13 @@ pub(crate) fn decoder<'a, R: Read + 'a>(c: Compression, r: R) -> Result<Box<dyn 
             Box::new(ruzstd::decoding::StreamingDecoder::new(r).map_err(|e| anyhow!("zstd: {e}"))?)
         }
         Compression::Lz4Frame => Box::new(lz4_flex::frame::FrameDecoder::new(r)),
-        Compression::Lz4Legacy => Box::new(LegacyLz4 {
+        Compression::Lz4Legacy | Compression::Lz4Lg => Box::new(LegacyLz4 {
             inner: r,
             buf: Vec::new(),
             pos: 0,
             started: false,
             produced: 0,
+            lg: false,
         }),
         Compression::Lzop => Box::new(Lzop {
             inner: r,
@@ -644,6 +650,21 @@ impl<R: Read> Read for Lzop<R> {
         let n = out.len().min(self.buf.len() - self.pos);
         out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
         self.pos += n;
+        Ok(n)
+    }
+}
+
+struct Lz4Stream<R: Read> {
+    inner: LegacyLz4<R>,
+    lg_flag: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+impl<R: Read> Read for Lz4Stream<R> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(out)?;
+        if self.inner.lg {
+            self.lg_flag.set(true);
+        }
         Ok(n)
     }
 }
@@ -1098,6 +1119,30 @@ fn read_ramdisk_capped<R: Read>(mut source: R, out: Option<&Path>, cap: u64) -> 
     } else {
         Box::new(std::io::Cursor::new(head).chain(source))
     };
+    if matches!(c, Compression::Lz4Legacy | Compression::Lz4Lg) {
+        let lg_flag = std::rc::Rc::new(std::cell::Cell::new(false));
+        let lz4 = Lz4Stream {
+            inner: LegacyLz4 {
+                inner: chained,
+                buf: Vec::new(),
+                pos: 0,
+                started: false,
+                produced: 0,
+                lg: false,
+            },
+            lg_flag: lg_flag.clone(),
+        };
+        let plain = Capped {
+            inner: lz4,
+            left: cap,
+            cap,
+        };
+        let mut report = read_cpio(plain, c, out).with_context(|| format!("reading the {} ramdisk", c.id()))?;
+        if lg_flag.get() {
+            report.compression = Compression::Lz4Lg;
+        }
+        return Ok(report);
+    }
     let plain = Capped {
         inner: decoder(c, chained)?,
         left: cap,
@@ -1105,6 +1150,8 @@ fn read_ramdisk_capped<R: Read>(mut source: R, out: Option<&Path>, cap: u64) -> 
     };
     read_cpio(plain, c, out).with_context(|| format!("reading the {} ramdisk", c.id()))
 }
+
+
 
 impl Report {
     pub fn to_json(&self) -> Value {
