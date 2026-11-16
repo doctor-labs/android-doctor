@@ -67,12 +67,14 @@ fn fixture(tag: &str) -> PathBuf {
 }
 
 fn find(img: &Path, args: &[&str]) -> Output {
-    Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
-        .arg("find")
-        .arg(img)
-        .args(args)
-        .output()
-        .unwrap()
+    Command::new(
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+    )
+    .arg("find")
+    .arg(img)
+    .args(args)
+    .output()
+    .unwrap()
 }
 
 fn lines(o: &Output) -> Vec<String> {

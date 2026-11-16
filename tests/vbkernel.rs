@@ -144,10 +144,12 @@ fn tmp_dir(name: &str) -> PathBuf {
 }
 
 fn run(args: &[&str]) -> Output {
-    Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
-        .args(args)
-        .output()
-        .unwrap()
+    Command::new(
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+    )
+    .args(args)
+    .output()
+    .unwrap()
 }
 
 fn run_json(image: &Path, key: Option<&Path>) -> (Option<i32>, serde_json::Value) {

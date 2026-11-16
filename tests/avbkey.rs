@@ -32,15 +32,17 @@ fn avbkey_writes_the_avb_public_key_blob_and_prints_its_digest() {
         let pem_path = dir.join(name);
         let out_path = dir.join(format!("{name}.bin"));
         std::fs::write(&pem_path, pem).unwrap();
-        let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
-            .args([
-                "avbkey",
-                pem_path.to_str().unwrap(),
-                "-o",
-                out_path.to_str().unwrap(),
-            ])
-            .output()
-            .unwrap();
+        let out = Command::new(
+            std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+        )
+        .args([
+            "avbkey",
+            pem_path.to_str().unwrap(),
+            "-o",
+            out_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
         assert!(
             out.status.success(),
             "{}",
@@ -78,10 +80,12 @@ fn avbkey_writes_the_avb_public_key_blob_and_prints_its_digest() {
     // something that is not an RSA key is refused, exit 2
     let bad = dir.join("bad.pem");
     std::fs::write(&bad, "not a key").unwrap();
-    let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
-        .args(["avbkey", bad.to_str().unwrap()])
-        .output()
-        .unwrap();
+    let out = Command::new(
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+    )
+    .args(["avbkey", bad.to_str().unwrap()])
+    .output()
+    .unwrap();
     assert_eq!(
         out.status.code(),
         Some(2),

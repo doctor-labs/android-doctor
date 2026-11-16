@@ -11,10 +11,12 @@ fn apk_audit_reports_signers() {
     let apk_path = dir.join("test.apk");
     std::fs::write(&apk_path, apk).unwrap();
 
-    let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
-        .args(["apk", apk_path.to_str().unwrap(), "--json"])
-        .output()
-        .unwrap();
+    let out = Command::new(
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+    )
+    .args(["apk", apk_path.to_str().unwrap(), "--json"])
+    .output()
+    .unwrap();
 
     assert!(
         out.status.success(),
@@ -38,10 +40,12 @@ fn apk_audit_reports_verification() {
     let apk_path = dir.join("test.apk");
     std::fs::write(&apk_path, apk).unwrap();
 
-    let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
-        .args(["apk", apk_path.to_str().unwrap(), "--json"])
-        .output()
-        .unwrap();
+    let out = Command::new(
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+    )
+    .args(["apk", apk_path.to_str().unwrap(), "--json"])
+    .output()
+    .unwrap();
 
     assert!(
         out.status.success(),
@@ -62,10 +66,12 @@ fn apk_audit_refuses_directory_input() {
     let dir = std::env::temp_dir().join(format!("apk-dir-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
 
-    let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
-        .args(["apk", dir.to_str().unwrap()])
-        .output()
-        .unwrap();
+    let out = Command::new(
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+    )
+    .args(["apk", dir.to_str().unwrap()])
+    .output()
+    .unwrap();
 
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -79,10 +85,12 @@ fn apk_audit_handles_invalid_apk() {
     let apk_path = dir.join("not-an-apk.apk");
     std::fs::write(&apk_path, b"not a valid zip file").unwrap();
 
-    let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
-        .args(["apk", apk_path.to_str().unwrap(), "--json"])
-        .output()
-        .unwrap();
+    let out = Command::new(
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+    )
+    .args(["apk", apk_path.to_str().unwrap(), "--json"])
+    .output()
+    .unwrap();
 
     // The parser reports the error rather than panicking, and the tool exits 2 (doctor/1)
     assert_eq!(out.status.code(), Some(2));
@@ -91,10 +99,12 @@ fn apk_audit_handles_invalid_apk() {
     assert_eq!(json["schema"], "doctor/1");
     assert!(json["data"]["error"].is_string(), "output: {json}");
 
-    let text = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
-        .args(["apk", apk_path.to_str().unwrap()])
-        .output()
-        .unwrap();
+    let text = Command::new(
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+    )
+    .args(["apk", apk_path.to_str().unwrap()])
+    .output()
+    .unwrap();
     assert_eq!(text.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&text.stderr).contains("not-an-apk.apk"));
 }
@@ -107,10 +117,12 @@ fn apk_audit_text_output_shows_basic_info() {
     let apk_path = dir.join("test.apk");
     std::fs::write(&apk_path, apk).unwrap();
 
-    let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
-        .args(["apk", apk_path.to_str().unwrap()])
-        .output()
-        .unwrap();
+    let out = Command::new(
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+    )
+    .args(["apk", apk_path.to_str().unwrap()])
+    .output()
+    .unwrap();
 
     assert!(
         out.status.success(),
@@ -137,10 +149,12 @@ fn v1_fixture() -> std::path::PathBuf {
 
 #[test]
 fn apk_json_uses_the_doctor1_envelope() {
-    let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
-        .args(["apk", v1_fixture().to_str().unwrap(), "--json"])
-        .output()
-        .unwrap();
+    let out = Command::new(
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+    )
+    .args(["apk", v1_fixture().to_str().unwrap(), "--json"])
+    .output()
+    .unwrap();
     assert!(
         out.status.success(),
         "{}",
@@ -165,10 +179,12 @@ fn apk_json_uses_the_doctor1_envelope() {
 
 #[test]
 fn dex_flag_is_not_accepted_because_code_rules_always_run() {
-    let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
-        .args(["apk", v1_fixture().to_str().unwrap(), "--dex"])
-        .output()
-        .unwrap();
+    let out = Command::new(
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+    )
+    .args(["apk", v1_fixture().to_str().unwrap(), "--dex"])
+    .output()
+    .unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("--dex"));
 }
@@ -182,10 +198,12 @@ fn fixture_path(name: &str) -> std::path::PathBuf {
 #[test]
 fn apk_files_lists_each_entry_with_sizes_and_method() {
     let apk = fixture_path("v23.apk");
-    let text = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
-        .args(["apk", apk.to_str().unwrap(), "--files"])
-        .output()
-        .unwrap();
+    let text = Command::new(
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+    )
+    .args(["apk", apk.to_str().unwrap(), "--files"])
+    .output()
+    .unwrap();
     assert!(text.status.success());
     let stdout = String::from_utf8_lossy(&text.stdout);
     assert!(
@@ -195,10 +213,12 @@ fn apk_files_lists_each_entry_with_sizes_and_method() {
         "{stdout}"
     );
 
-    let json = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
-        .args(["apk", apk.to_str().unwrap(), "--files", "--json"])
-        .output()
-        .unwrap();
+    let json = Command::new(
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+    )
+    .args(["apk", apk.to_str().unwrap(), "--files", "--json"])
+    .output()
+    .unwrap();
     assert!(json.status.success());
     let env: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
     assert_eq!(env["schema"], "doctor/1");
@@ -216,10 +236,12 @@ fn apk_files_lists_each_entry_with_sizes_and_method() {
 #[test]
 fn apk_cat_prints_one_entry_byte_for_byte() {
     let apk = fixture_path("v23.apk");
-    let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
-        .args(["apk", apk.to_str().unwrap(), "--cat", "AndroidManifest.xml"])
-        .output()
-        .unwrap();
+    let out = Command::new(
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+    )
+    .args(["apk", apk.to_str().unwrap(), "--cat", "AndroidManifest.xml"])
+    .output()
+    .unwrap();
     assert!(
         out.status.success(),
         "{}",
@@ -233,10 +255,12 @@ fn apk_cat_prints_one_entry_byte_for_byte() {
 #[test]
 fn apk_cat_of_a_missing_entry_exits_2() {
     let apk = fixture_path("v23.apk");
-    let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
-        .args(["apk", apk.to_str().unwrap(), "--cat", "no/such/entry"])
-        .output()
-        .unwrap();
+    let out = Command::new(
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+    )
+    .args(["apk", apk.to_str().unwrap(), "--cat", "no/such/entry"])
+    .output()
+    .unwrap();
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("no entry"));
     assert!(out.stdout.is_empty());
@@ -246,11 +270,13 @@ fn apk_cat_of_a_missing_entry_exits_2() {
 fn apk_cat_refuses_json_and_files() {
     let apk = fixture_path("v23.apk");
     for extra in [["--json"], ["--files"]] {
-        let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
-            .args(["apk", apk.to_str().unwrap(), "--cat", "AndroidManifest.xml"])
-            .args(extra)
-            .output()
-            .unwrap();
+        let out = Command::new(
+            std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+        )
+        .args(["apk", apk.to_str().unwrap(), "--cat", "AndroidManifest.xml"])
+        .args(extra)
+        .output()
+        .unwrap();
         assert!(
             !out.status.success(),
             "{extra:?} should conflict with --cat"
@@ -261,10 +287,12 @@ fn apk_cat_refuses_json_and_files() {
 #[test]
 fn apk_json_lists_uses_permissions_under_data_manifest() {
     let apk = fixture_path("v1.apk");
-    let out = Command::new(std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"))
-        .args(["apk", apk.to_str().unwrap(), "--json"])
-        .output()
-        .unwrap();
+    let out = Command::new(
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
+    )
+    .args(["apk", apk.to_str().unwrap(), "--json"])
+    .output()
+    .unwrap();
     let env: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(
         env["data"]["manifest"]["uses_permissions"].is_array(),

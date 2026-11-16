@@ -34,7 +34,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn exe() -> &'static str {
+fn exe() -> String {
     std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor")
 }
 
