@@ -1095,7 +1095,14 @@ mod tests {
         );
         let with = run(CLEAN, 2);
         let rules: Vec<_> = with.iter().map(|i| i.rule).collect();
-        assert_eq!(rules, ["apk-code-tapjacking", "apk-code-screenshot"]);
+        assert_eq!(
+            rules,
+            [
+                "apk-code-behaviour-reflection",
+                "apk-code-tapjacking",
+                "apk-code-screenshot"
+            ]
+        );
     }
 
     #[test]
