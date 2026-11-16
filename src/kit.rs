@@ -207,6 +207,185 @@ fn props_view(text: &str) -> String {
         .join("\n")
 }
 
+/// Parse `-o <path>` and `--force` from session command args, returning (output, force, rest).
+fn take_output_flag(args: &[String]) -> Result<(Option<PathBuf>, bool, Vec<String>), String> {
+    let mut out = None;
+    let mut force = false;
+    let mut rest = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-o" | "--output" => {
+                i += 1;
+                let p = args
+                    .get(i)
+                    .ok_or_else(|| "expected a path after -o".to_string())?;
+                out = Some(PathBuf::from(p));
+            }
+            "--force" => force = true,
+            a => rest.push(a.to_string()),
+        }
+        i += 1;
+    }
+    Ok((out, force, rest))
+}
+
+/// `hexpatch <file> <from-hex> <to-hex> -o <output> [--force]`
+/// Binary hex patch (magiskboot-style): replace every occurrence of a hex pattern.
+fn hexpatch_command(
+    _s: &mut doctor_kit::session::Session<'_>,
+    args: &[String],
+) -> Result<doctor_kit::session::Reply, String> {
+    let (out, force, rest) = take_output_flag(args)?;
+    if rest.len() != 3 {
+        return Err("usage: hexpatch <file> <from-hex> <to-hex> -o <output> [--force]".into());
+    }
+    let output =
+        out.ok_or_else(|| "hexpatch needs -o <output> (never modifies the input)".to_string())?;
+    let count = crate::hexpatch::run(Path::new(&rest[0]), &rest[1], &rest[2], &output, force)
+        .map_err(|e| format!("hexpatch: {e:#}"))?;
+    let text = format!(
+        "patched {} occurrence(s) in {} -> {}",
+        count,
+        rest[0],
+        output.display()
+    );
+    Ok(doctor_kit::session::Reply::new(
+        text,
+        serde_json::json!({"ok": true, "replacements": count, "output": output.display().to_string()}),
+    ))
+}
+
+/// `cpio <boot.img> put <src> <dest> -o <output> [--force]`
+/// `cpio <boot.img> rm <path> -o <output> [--force]`
+/// Magiskboot-style cpio edit on an uncompressed ramdisk in a boot image (v0-2).
+/// Writes a NEW image; the input is never changed.
+fn cpio_command(
+    _s: &mut doctor_kit::session::Session<'_>,
+    args: &[String],
+) -> Result<doctor_kit::session::Reply, String> {
+    let (out, force, rest) = take_output_flag(args)?;
+    let output =
+        out.ok_or_else(|| "cpio needs -o <output> (never modifies the input)".to_string())?;
+    if rest.len() < 2 {
+        return Err(
+            "usage: cpio <boot.img> put <src> <dest> -o <out> | cpio <boot.img> rm <path> -o <out>"
+                .into(),
+        );
+    }
+    let image = Path::new(&rest[0]);
+    let op = rest[1].as_str();
+    let (puts, rms): (Vec<String>, Vec<String>) = match op {
+        "put" | "add" => {
+            if rest.len() != 4 {
+                return Err("usage: cpio <boot.img> put <src> <dest> -o <out>".into());
+            }
+            (vec![format!("{}={}", rest[2], rest[3])], vec![])
+        }
+        "rm" | "remove" | "del" => {
+            if rest.len() != 3 {
+                return Err("usage: cpio <boot.img> rm <path> -o <out>".into());
+            }
+            (vec![], vec![rest[2].clone()])
+        }
+        _ => {
+            return Err(format!(
+                "cpio: unknown operation {op:?} (supported: put, rm)"
+            ));
+        }
+    };
+    // Capture stdout from ramdisk_edit::run by running it; it prints plan on success.
+    // We call with yes=true to actually write.
+    crate::ramdisk_edit::run(image, &puts, &rms, &output, force, true)
+        .map_err(|e| format!("cpio: {e:#}"))?;
+    let action = if !puts.is_empty() {
+        format!("put {}", puts[0])
+    } else {
+        format!("rm {}", rms[0])
+    };
+    let text = format!(
+        "cpio {action} in {} -> {} (read back ok)",
+        image.display(),
+        output.display()
+    );
+    Ok(doctor_kit::session::Reply::new(
+        text,
+        serde_json::json!({
+            "ok": true,
+            "image": image.display().to_string(),
+            "output": output.display().to_string(),
+            "puts": puts,
+            "rms": rms,
+        }),
+    ))
+}
+
+/// `dtb <file> print`
+/// `dtb <file> patch [-o <output>] [--force] [--verity] [--encryption]`
+/// Magiskboot-style DTB operations: print or patch verity/encryption markers in an FDT blob.
+fn dtb_command(
+    _s: &mut doctor_kit::session::Session<'_>,
+    args: &[String],
+) -> Result<doctor_kit::session::Reply, String> {
+    if args.is_empty() {
+        return Err("usage: dtb <file> print | dtb <file> patch -o <out> [--force] [--verity] [--encryption]".into());
+    }
+    let file = Path::new(&args[0]);
+    let op = args.get(1).map(String::as_str).unwrap_or("print");
+    match op {
+        "print" => {
+            let text = crate::dtb_edit::print_dtb(file).map_err(|e| format!("dtb: {e:#}"))?;
+            Ok(doctor_kit::session::Reply::new(
+                text,
+                serde_json::json!({"file": file.display().to_string()}),
+            ))
+        }
+        "patch" => {
+            let (out, force, rest) = take_output_flag(&args[2..])?;
+            let output = out.ok_or_else(|| {
+                "dtb patch needs -o <output> (never modifies the input)".to_string()
+            })?;
+            let mut verity = false;
+            let mut encryption = false;
+            for r in &rest {
+                match r.as_str() {
+                    "--verity" => verity = true,
+                    "--encryption" | "--encrypt" => encryption = true,
+                    other => return Err(format!("dtb patch: unknown flag {other}")),
+                }
+            }
+            if !verity && !encryption {
+                verity = true;
+                encryption = true;
+            }
+            let changes = crate::dtb_edit::run_patch(file, &output, verity, encryption, force)
+                .map_err(|e| format!("dtb: {e:#}"))?;
+            let text = format!(
+                "dtb patch: blanked {} marker(s) in {} -> {} (verity={} encryption={})",
+                changes,
+                file.display(),
+                output.display(),
+                verity,
+                encryption
+            );
+            Ok(doctor_kit::session::Reply::new(
+                text,
+                serde_json::json!({
+                    "ok": true,
+                    "file": file.display().to_string(),
+                    "output": output.display().to_string(),
+                    "changes": changes,
+                    "verity": verity,
+                    "encryption": encryption,
+                }),
+            ))
+        }
+        _ => Err(format!(
+            "dtb: unknown operation {op:?} (supported: print, patch)"
+        )),
+    }
+}
+
 impl AndroidDoctor {
     /// The scan context of the interactive commands: nothing is walked, the root is the subject.
     #[cfg(any(feature = "shell", feature = "explore"))]
@@ -300,14 +479,34 @@ impl Doctor for AndroidDoctor {
     fn checks(&self) -> Vec<Box<dyn Check>> {
         vec![]
     }
-    /// `stat` in the shell: one entry of an opened image, read from the image's own listing.
+    /// `stat` in the shell, plus interactive ramdisk/boot/DTB editing commands (write to new outputs only).
     fn commands(&self) -> Vec<doctor_kit::session::Command> {
-        vec![doctor_kit::session::Command {
-            name: "stat",
-            help: "stat [sel]         one file or directory of an opened image: mode, owner, size, links, mtime",
-            flags: &[],
-            run: stat_command,
-        }]
+        vec![
+            doctor_kit::session::Command {
+                name: "stat",
+                help: "stat [sel]         one file or directory of an opened image: mode, owner, size, links, mtime",
+                flags: &[],
+                run: stat_command,
+            },
+            doctor_kit::session::Command {
+                name: "cpio",
+                help: "cpio <boot.img> put <src> <dest> -o <out> [--force] | cpio <boot.img> rm <path> -o <out>  edit ramdisk (v0-2, compressed or plain cpio) into a new image",
+                flags: &[],
+                run: cpio_command,
+            },
+            doctor_kit::session::Command {
+                name: "hexpatch",
+                help: "hexpatch <file> <from-hex> <to-hex> -o <out> [--force]  binary hex patch (magiskboot-style), writes a new file",
+                flags: &[],
+                run: hexpatch_command,
+            },
+            doctor_kit::session::Command {
+                name: "dtb",
+                help: "dtb <file> print | dtb <file> patch -o <out> [--force] [--verity] [--encryption]  print or patch a DTB (magiskboot-style)",
+                flags: &[],
+                run: dtb_command,
+            },
+        ]
     }
     /// The subject is an image, a directory of images or two builds, chosen by the command.
     fn target(&self) -> TargetKind {

@@ -1,9 +1,10 @@
-//! `ramdisk-edit`: put files into, or remove them from, the uncompressed cpio ramdisk of a boot
-//! image (header versions 0 to 2) and write the result to a NEW image. The input is never changed.
+//! `ramdisk-edit`: put files into, or remove them from, the cpio ramdisk of a boot image
+//! (header versions 0 to 2) and write the result to a NEW image. The input is never changed.
 //! Without `--yes` nothing is written; the output is verified by reading it back with `bootimg::read`
 //! and `ramdisk::read_ramdisk` before it is renamed into place.
-//! ponytail: uncompressed newc ramdisks only (gzip, lz4 and friends are refused), header versions 0 to 2,
-//! mtime 0 for new entries, whole source file read into memory (256 MiB cap), no vendor_ramdisk.
+//! Compressed ramdisks (gzip, bzip2, xz, zstd, lz4, lzma, lzop) are decompressed, edited as newc cpio,
+//! and recompressed in the same format. ponytail: header versions 0 to 2, mtime 0 for new entries,
+//! whole source file read into memory (256 MiB cap), no vendor_ramdisk.
 
 use crate::bootimg;
 use crate::detect::refuse_blocking_file;
@@ -320,6 +321,121 @@ fn apply(records: &mut Vec<Record>, ops: &[Op]) -> Result<Checks> {
         }
     }
     Ok(checks)
+}
+fn build(input: &Path, ops: &[Op]) -> Result<Built> {
+    refuse_blocking_file(input)?;
+    let image = bootimg::read(input)?;
+    let mut f = File::open(input)?;
+    let len = f.metadata()?.len();
+    let mut magic = [0u8; 8];
+    f.read_exact(&mut magic)
+        .context("file is shorter than a boot image header")?;
+    ensure!(
+        &magic == b"ANDROID!",
+        "not a boot image with an ANDROID! header (vendor boot images are not edited)"
+    );
+    let mut secs = image.sections.clone();
+    secs.sort_by_key(|s| s.offset);
+    for s in &secs {
+        ensure!(
+            matches!(s.name.as_str(), "kernel" | "ramdisk" | "second" | "dtb"),
+            "section {} is not supported (kernel, ramdisk, second and dtb only)",
+            s.name
+        );
+    }
+    ensure!(
+        secs.first().is_some_and(|s| s.name == "kernel"),
+        "the image does not start with a kernel section"
+    );
+    ensure!(
+        secs.iter().filter(|s| s.name == "ramdisk").count() == 1,
+        "the image needs exactly one ramdisk section"
+    );
+    let kernel_at = secs[0].offset;
+    ensure!(
+        kernel_at <= MAX_HEADER,
+        "the header is {kernel_at} bytes; that is too large"
+    );
+    let orig_head = read_at(&mut f, 0, kernel_at)?;
+    ensure!(orig_head.len() >= 44, "the header is shorter than 44 bytes");
+    let version = le32(&orig_head, 40);
+    ensure!(
+        version <= 2,
+        "header version {version} is not edited (versions 0 to 2 only)"
+    );
+    let page = le32(&orig_head, 36) as u64;
+    ensure!(
+        page >= 512 && page.is_power_of_two() && kernel_at % page == 0,
+        "page size {page} does not fit this header"
+    );
+
+    let rd = secs
+        .iter()
+        .find(|s| s.name == "ramdisk")
+        .context("no ramdisk")?;
+    let raw = read_at(&mut f, rd.offset, rd.size)?;
+    let comp = ramdisk::compression_of(&raw)
+        .context("the ramdisk is not a compressed or plain cpio (newc) archive")?;
+    let cpio_bytes = if comp == Compression::None {
+        raw
+    } else {
+        let mut dec = ramdisk::decoder(comp, Cursor::new(&raw))?;
+        let mut out = Vec::new();
+        dec.read_to_end(&mut out)
+            .with_context(|| format!("decompressing {} ramdisk", comp.id()))?;
+        ensure!(
+            (out.len() as u64) <= ramdisk::MAX_DECOMPRESSED,
+            "the decompressed ramdisk is larger than the {}-byte limit",
+            ramdisk::MAX_DECOMPRESSED
+        );
+        out
+    };
+    let mut records = parse_cpio(&cpio_bytes)?;
+    let checks = apply(&mut records, ops)?;
+    let new_cpio = emit_cpio(&records)?;
+    let new_rd = if comp == Compression::None {
+        new_cpio
+    } else {
+        ramdisk::compress(comp, &new_cpio)
+            .with_context(|| format!("recompressing ramdisk as {}", comp.id()))?
+    };
+    let mut head = orig_head.clone();
+    head[16..20].copy_from_slice(&u32::try_from(new_rd.len())?.to_le_bytes());
+
+    let page = page as usize;
+    let mut bytes = head.clone();
+    let mut order = Vec::new();
+    let mut kept = Vec::new();
+    for s in &secs {
+        let data = if s.name == "ramdisk" {
+            new_rd.clone()
+        } else {
+            let d = read_at(&mut f, s.offset, s.size)?;
+            kept.push((s.name.clone(), d.clone()));
+            d
+        };
+        bytes.extend_from_slice(&data);
+        bytes.resize(bytes.len().div_ceil(page) * page, 0);
+        order.push(s.name.clone());
+    }
+    let last = secs.last().context("no sections")?;
+    let end = (last.offset + last.size).div_ceil(page as u64) * page as u64;
+    if len > end {
+        ensure!(
+            tail_is_zero(&mut f, end)?,
+            "{} has data after its last section (an AVB footer, for example); that is not carried over",
+            input.display()
+        );
+    }
+    Ok(Built {
+        bytes,
+        orig_head,
+        head,
+        order,
+        kept,
+        entry_count: records.len(),
+        checks,
+    })
 }
 
 /// Read the written image back with the repo own readers and compare it with what was built.

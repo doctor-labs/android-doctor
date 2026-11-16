@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 const CPIO_HEADER_LEN: usize = 110;
@@ -1322,11 +1322,80 @@ pub fn read_input(input: &Path, out: Option<&Path>) -> Result<Vec<Found>> {
     Ok(found)
 }
 
+/// Compress `data` with `c` (the inverse of `decoder`). Used by ramdisk editing to rewrite a
+/// ramdisk in the same compression it was read in.
+pub(crate) fn compress(c: Compression, data: &[u8]) -> Result<Vec<u8>> {
+    Ok(match c {
+        Compression::None => data.to_vec(),
+        Compression::Gzip => {
+            let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(data)?;
+            e.finish()?
+        }
+        Compression::Bzip2 => {
+            let mut e = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::default());
+            e.write_all(data)?;
+            e.finish()?
+        }
+        Compression::Xz => {
+            let mut w =
+                lzma_rust2::XzWriter::new(Vec::new(), lzma_rust2::XzOptions::with_preset(1))
+                    .context("creating xz writer")?;
+            w.write_all(data)?;
+            w.finish().context("finishing xz stream")?
+        }
+        Compression::Zstd => {
+            ruzstd::encoding::compress_to_vec(data, ruzstd::encoding::CompressionLevel::Fastest)
+        }
+        Compression::Lz4Frame => {
+            let mut e = lz4_flex::frame::FrameEncoder::new(Vec::new());
+            e.write_all(data)?;
+            e.finish()?
+        }
+        Compression::Lz4Legacy => {
+            let mut out = LEGACY_LZ4_MAGIC.to_le_bytes().to_vec();
+            for chunk in data.chunks(1 << 16) {
+                let block = lz4_flex::block::compress(chunk);
+                out.extend((block.len() as u32).to_le_bytes());
+                out.extend(block);
+            }
+            out
+        }
+        Compression::Lzop => {
+            // Stored blocks only (there is no LZO encoder here); the header, block lengths
+            // and Adler-32 are the lzop 1.04 layout.
+            let mut out = LZOP_MAGIC.to_vec();
+            out.extend([0x10, 0x40, 0x20, 0xa0, 0x09, 0x40, 0x01, 0x05]);
+            out.extend(0x0000_0001u32.to_be_bytes());
+            out.extend([0u8; 12]);
+            out.push(0);
+            out.extend([0u8; 4]);
+            for chunk in data.chunks(1 << 16) {
+                out.extend((chunk.len() as u32).to_be_bytes());
+                out.extend((chunk.len() as u32).to_be_bytes());
+                out.extend(adler32(chunk).to_be_bytes());
+                out.extend(chunk);
+            }
+            out.extend([0u8; 4]);
+            out
+        }
+        Compression::Lzma => {
+            let mut w = lzma_rust2::LzmaWriter::new_use_header(
+                Vec::new(),
+                &lzma_rust2::LzmaOptions::default(),
+                Some(data.len() as u64),
+            )
+            .context("creating lzma writer")?;
+            w.write_all(data)?;
+            w.finish().context("finishing lzma stream")?
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::treeout::staging_path;
-    use std::io::Write;
     use std::path::PathBuf;
 
     /// One entry for the in-test cpio builder.
@@ -1434,77 +1503,7 @@ mod tests {
     }
 
     fn compress(c: Compression, data: &[u8]) -> Vec<u8> {
-        match c {
-            Compression::None => data.to_vec(),
-            Compression::Gzip => {
-                let mut e =
-                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-                e.write_all(data).unwrap();
-                e.finish().unwrap()
-            }
-            Compression::Bzip2 => {
-                let mut e = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::default());
-                e.write_all(data).unwrap();
-                e.finish().unwrap()
-            }
-            Compression::Xz => {
-                let mut w =
-                    lzma_rust2::XzWriter::new(Vec::new(), lzma_rust2::XzOptions::with_preset(1))
-                        .unwrap();
-                w.write_all(data).unwrap();
-                w.finish().unwrap()
-            }
-            Compression::Zstd => {
-                ruzstd::encoding::compress_to_vec(data, ruzstd::encoding::CompressionLevel::Fastest)
-            }
-            Compression::Lz4Frame => {
-                let mut e = lz4_flex::frame::FrameEncoder::new(Vec::new());
-                e.write_all(data).unwrap();
-                e.finish().unwrap()
-            }
-            Compression::Lz4Legacy => {
-                let mut out = LEGACY_LZ4_MAGIC.to_le_bytes().to_vec();
-                for chunk in data.chunks(1 << 16) {
-                    let block = lz4_flex::block::compress(chunk);
-                    out.extend((block.len() as u32).to_le_bytes());
-                    out.extend(block);
-                }
-                out
-            }
-            Compression::Lz4Lg => {
-                let mut out = compress(Compression::Lz4Legacy, data);
-                out.extend((data.len() as u32).to_le_bytes());
-                out
-            }
-            Compression::Lzop => {
-                // Stored blocks only (there is no LZO encoder here); the header, block lengths
-                // and Adler-32 are the lzop 1.04 layout.
-                let mut out = LZOP_MAGIC.to_vec();
-                out.extend([0x10, 0x40, 0x20, 0xa0, 0x09, 0x40, 0x01, 0x05]);
-                out.extend(0x0000_0001u32.to_be_bytes());
-                out.extend([0u8; 12]);
-                out.push(0);
-                out.extend([0u8; 4]);
-                for chunk in data.chunks(1 << 16) {
-                    out.extend((chunk.len() as u32).to_be_bytes());
-                    out.extend((chunk.len() as u32).to_be_bytes());
-                    out.extend(adler32(chunk).to_be_bytes());
-                    out.extend(chunk);
-                }
-                out.extend([0u8; 4]);
-                out
-            }
-            Compression::Lzma => {
-                let mut w = lzma_rust2::LzmaWriter::new_use_header(
-                    Vec::new(),
-                    &lzma_rust2::LzmaOptions::default(),
-                    Some(data.len() as u64),
-                )
-                .unwrap();
-                w.write_all(data).unwrap();
-                w.finish().unwrap()
-            }
-        }
+        super::compress(c, data).unwrap()
     }
 
     const ALL: [Compression; 10] = [
