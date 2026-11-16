@@ -115,8 +115,13 @@ impl Compression {
 fn is_lzma_header(head: &[u8]) -> bool {
     // Legacy `.lzma` container: properties byte, then 4-byte dictionary size and
     // 8-byte uncompressed size before the range-coded data. Parse with the same
-    // reader used for decompression so detection matches what we can actually read.
+    // reader used for decompression so detection matches what we can actually read,
+    // and require a realistic dictionary size to avoid misclassifying unrelated data.
     if head.len() < 13 {
+        return false;
+    }
+    let dict = u32::from_le_bytes([head[1], head[2], head[3], head[4]]);
+    if dict < 0x1000 {
         return false;
     }
     lzma_rust2::LzmaReader::new_mem_limit(std::io::Cursor::new(head), u32::MAX, None).is_ok()
