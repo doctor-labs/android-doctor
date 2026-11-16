@@ -66,7 +66,7 @@ fn read_dtb_file(input: &Path) -> Result<Vec<u8>> {
     let data = std::fs::read(input).with_context(|| format!("reading {}", input.display()))?;
     // Validate it is an FDT so we don't patch random files silently.
     ensure!(
-        data.len() >= 4 && &data[0..4] == &[0xd0, 0x0d, 0xfe, 0xed],
+        data.starts_with(&[0xd0, 0x0d, 0xfe, 0xed]),
         "{} is not a device tree blob (DTB/FDT)",
         input.display()
     );

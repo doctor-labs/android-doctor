@@ -13,7 +13,7 @@ pub fn decode_hex(s: &str) -> Result<Vec<u8>> {
     let s = s.trim();
     ensure!(!s.is_empty(), "hex pattern is empty");
     ensure!(
-        s.len() % 2 == 0,
+        s.len().is_multiple_of(2),
         "hex pattern has an odd number of digits ({})",
         s.len()
     );
