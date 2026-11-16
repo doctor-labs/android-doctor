@@ -23,9 +23,7 @@ use std::process::{Command, Stdio};
 /// replays the goldens against another build, to prove a refactor kept the behaviour.
 fn bin() -> String {
     std::env::var("AD_GOLDEN_BIN").unwrap_or_else(|_| {
-        std::env::var("CARGO_BIN_EXE_android-doctor")
-            .expect("CARGO_BIN_EXE_android-doctor")
-            .into()
+        std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor")
     })
 }
 
