@@ -1361,6 +1361,11 @@ pub(crate) fn compress(c: Compression, data: &[u8]) -> Result<Vec<u8>> {
             }
             out
         }
+        Compression::Lz4Lg => {
+            let mut out = compress(Compression::Lz4Legacy, data)?;
+            out.extend((data.len() as u32).to_le_bytes());
+            out
+        }
         Compression::Lzop => {
             // Stored blocks only (there is no LZO encoder here); the header, block lengths
             // and Adler-32 are the lzop 1.04 layout.
