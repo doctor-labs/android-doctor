@@ -182,9 +182,7 @@ fn parse_find_args(args: &[String]) -> Result<crate::find::Query, String> {
             "--setgid" => q.setgid = true,
             "--xattr" => {
                 i += 1;
-                let spec = args
-                    .get(i)
-                    .ok_or("find: --xattr needs NAME or NAME=GLOB")?;
+                let spec = args.get(i).ok_or("find: --xattr needs NAME or NAME=GLOB")?;
                 q.xattr = Some(match spec.split_once('=') {
                     Some((n, g)) => (n.to_string(), Some(g.to_string())),
                     None => (spec.clone(), None),
@@ -248,7 +246,11 @@ fn find_command(
         };
     }
     let found = crate::find::run(Path::new(image), &q).map_err(|e| format!("find: {e:#}"))?;
-    let mut lines: Vec<String> = found.matches.iter().map(|e| format!("/{}", e.path)).collect();
+    let mut lines: Vec<String> = found
+        .matches
+        .iter()
+        .map(|e| format!("/{}", e.path))
+        .collect();
     for (p, why) in &found.not_checked {
         lines.push(format!("(not checked: /{p}: {why})"));
     }
