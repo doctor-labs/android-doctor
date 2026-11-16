@@ -518,6 +518,43 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Write the AVB vbmeta block of an image to a file (the bytes a footer points to, or the image itself when it is a bare vbmeta image)
+    Avbextract {
+        /// The image to read (vbmeta.img or a partition image with an AVB footer)
+        image: PathBuf,
+        /// The vbmeta image to write; written to <OUTPUT>.part and renamed on success
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Replace the output if it exists
+        #[arg(long)]
+        force: bool,
+        /// Print JSON (the doctor/1 envelope) instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Append a vbmeta image to a partition image and write an AVB footer (avbtool append_vbmeta_image): the input is never modified and the result is unverified on a device
+    Avbappend {
+        /// The partition image to read (never modified)
+        image: PathBuf,
+        /// The vbmeta image to append
+        #[arg(long)]
+        vbmeta: PathBuf,
+        /// The new image; written to <OUTPUT>.part and renamed on success
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Partition size in bytes, a multiple of --block-size; the output is exactly this long
+        #[arg(long)]
+        partition_size: u64,
+        /// Block size the image and vbmeta are padded to
+        #[arg(long, default_value_t = 4096)]
+        block_size: u64,
+        /// Replace the output if it exists
+        #[arg(long)]
+        force: bool,
+        /// Print JSON (the doctor/1 envelope) instead of text
+        #[arg(long)]
+        json: bool,
+    },
     /// Compare two builds of one APK: requested permissions, new or newly exported components and the signing certificate; what got worse becomes findings
     ApkDiff {
         /// The old APK
@@ -1543,6 +1580,29 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             force,
             json,
         } => avberase_command(&image, &output, force, json),
+        Command::Avbextract {
+            image,
+            output,
+            force,
+            json,
+        } => avbextract_command(&image, &output, force, json),
+        Command::Avbappend {
+            image,
+            vbmeta,
+            output,
+            partition_size,
+            block_size,
+            force,
+            json,
+        } => avbappend_command(
+            &image,
+            &vbmeta,
+            &output,
+            partition_size,
+            block_size,
+            force,
+            json,
+        ),
         Command::ApkDiff {
             old,
             new,
@@ -2226,6 +2286,86 @@ fn avberase_command(
         }))?
     } else {
         format!("wrote {} bytes to {}", out.len(), output.display())
+    };
+    print_out(&text)
+}
+
+/// `avbextract`: write the vbmeta block of an image to a new path.
+fn avbextract_command(
+    image: &std::path::Path,
+    output: &std::path::Path,
+    force: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    refuse_blocking_file(image)?;
+    let data = std::fs::read(image).with_context(|| format!("reading {}", image.display()))?;
+    let out = avbwrite::extract_vbmeta(&data)?;
+    write_atomically(output, force, |f| {
+        f.write_all(&out)?;
+        Ok(())
+    })?;
+    let text = if json {
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema": "doctor/1",
+            "tool": "android-doctor",
+            "version": env!("CARGO_PKG_VERSION"),
+            "exit_code": 0,
+            "score": {"value": 100, "label": "good", "model": "android-doctor/1", "coverage_gaps": 0},
+            "findings": [],
+            "data": {
+                "output": output.display().to_string(),
+                "size": out.len(),
+                "sha256": avb::hex(&Sha256::digest(&out)),
+            },
+        }))?
+    } else {
+        format!("wrote {} vbmeta bytes to {}", out.len(), output.display())
+    };
+    print_out(&text)
+}
+
+/// `avbappend`: append a vbmeta image to a partition image and write an AVB footer to a new path.
+fn avbappend_command(
+    image: &std::path::Path,
+    vbmeta: &std::path::Path,
+    output: &std::path::Path,
+    partition_size: u64,
+    block_size: u64,
+    force: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    refuse_blocking_file(image)?;
+    refuse_blocking_file(vbmeta)?;
+    let data = std::fs::read(image).with_context(|| format!("reading {}", image.display()))?;
+    let vb = std::fs::read(vbmeta).with_context(|| format!("reading {}", vbmeta.display()))?;
+    let out = avbwrite::append_vbmeta(&data, &vb, partition_size, block_size)?;
+    write_atomically(output, force, |f| {
+        f.write_all(&out)?;
+        Ok(())
+    })?;
+    let text = if json {
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema": "doctor/1",
+            "tool": "android-doctor",
+            "version": env!("CARGO_PKG_VERSION"),
+            "exit_code": 0,
+            "score": {"value": 100, "label": "good", "model": "android-doctor/1", "coverage_gaps": 0},
+            "findings": [],
+            "data": {
+                "output": output.display().to_string(),
+                "partition_size": partition_size,
+                "original_size": data.len(),
+                "vbmeta_size": vb.len(),
+                "sha256": avb::hex(&Sha256::digest(&out)),
+            },
+        }))?
+    } else {
+        format!(
+            "wrote {} bytes (vbmeta {} bytes appended) to {}",
+            out.len(),
+            vb.len(),
+            output.display()
+        )
     };
     print_out(&text)
 }
@@ -3352,6 +3492,13 @@ mod tests {
 
     #[test]
     fn cli_definition_is_valid() {
-        Cli::command().debug_assert();
+        // The CLI tree is large enough that building it overflows the default test-thread
+        // stack; run it on a thread with room.
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| Cli::command().debug_assert())
+            .expect("spawn the CLI check")
+            .join()
+            .expect("the CLI definition is valid");
     }
 }
