@@ -238,9 +238,7 @@ fn hexpatch_command(
 ) -> Result<doctor_kit::session::Reply, String> {
     let (out, force, rest) = take_output_flag(args)?;
     if rest.len() != 3 {
-        return Err(
-            "usage: hexpatch <file> <from-hex> <to-hex> -o <output> [--force]".into(),
-        );
+        return Err("usage: hexpatch <file> <from-hex> <to-hex> -o <output> [--force]".into());
     }
     let output =
         out.ok_or_else(|| "hexpatch needs -o <output> (never modifies the input)".to_string())?;
