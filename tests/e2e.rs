@@ -420,7 +420,7 @@ fn journal_command_emits_json_or_text_and_lists_fields() {
     put_be(&mut img, jblk + 4, 4); // h_blocktype
     put_be(&mut img, jblk + 12, bs as u32); // s_blocksize
     put_be(&mut img, jblk + 16, 3); // s_maxlen
-    put_be(&mut img, jblk + 20, 0); // s_first
+    put_be(&mut img, jblk + 20, 1); // s_first
     put_be(&mut img, jblk + 24, 1); // s_sequence
     put_be(&mut img, jblk + 28, 1); // s_start (dirty)
     put_be(&mut img, jblk + 32, 0); // s_errno
@@ -604,7 +604,10 @@ fn fsck_command_reports_consistency() {
     let o = Command::new(&bin).arg("fsck").arg(&path).output().unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let text = String::from_utf8_lossy(&o.stdout);
-    assert!(text.contains("0 findings") || text.contains("No findings"), "{text}");
+    assert!(
+        text.contains("0 findings") || text.contains("No findings"),
+        "{text}"
+    );
 
     let o = Command::new(&bin)
         .arg("fsck")
