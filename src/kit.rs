@@ -162,6 +162,129 @@ fn stat_command(
     ))
 }
 
+/// Strip the surrounding quotes a `split_whitespace` tokenizer leaves on a token.
+fn unquote(s: &str) -> String {
+    if s.len() >= 2 {
+        let bytes = s.as_bytes();
+        let (first, last) = (bytes[0], bytes[s.len() - 1]);
+        if (first == b'\'' && last == b'\'') || (first == b'"' && last == b'"') {
+            return s[1..s.len() - 1].to_string();
+        }
+    }
+    s.to_string()
+}
+
+/// Parse `find` flags from a session command line.
+fn parse_find_args(args: &[String]) -> Result<crate::find::Query, String> {
+    let mut q = crate::find::Query::default();
+    let mut path: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        match a.as_str() {
+            "--name" => {
+                i += 1;
+                q.name = Some(unquote(args.get(i).ok_or("find: --name needs a glob")?));
+            }
+            "--selinux" => {
+                i += 1;
+                q.selinux = Some(unquote(args.get(i).ok_or("find: --selinux needs a glob")?));
+            }
+            "--setuid" => q.setuid = true,
+            "--setgid" => q.setgid = true,
+            "--xattr" => {
+                i += 1;
+                let spec = unquote(args.get(i).ok_or("find: --xattr needs NAME or NAME=GLOB")?);
+                q.xattr = Some(match spec.split_once('=') {
+                    Some((n, g)) => (n.to_string(), Some(g.to_string())),
+                    None => (spec, None),
+                });
+            }
+            "--grep" => {
+                i += 1;
+                q.grep = Some(unquote(args.get(i).ok_or("find: --grep needs text")?));
+            }
+            s if s.starts_with('-') => return Err(format!("find: unknown flag {s}")),
+            s => {
+                if path.is_some() {
+                    return Err("find: at most one path".into());
+                }
+                path = Some(unquote(s));
+            }
+        }
+        i += 1;
+    }
+    if !q.has_filter() {
+        return Err(
+            "find: give at least one filter (--name/--selinux/--setuid/--setgid/--xattr/--grep)"
+                .into(),
+        );
+    }
+    if let Some(p) = path {
+        q.under = p;
+    }
+    Ok(q)
+}
+
+/// `find` in the shell: search the opened image by name, label, bits, xattr or content.
+fn find_command(
+    s: &mut doctor_kit::session::Session<'_>,
+    args: &[String],
+) -> Result<doctor_kit::session::Reply, String> {
+    let mut q = parse_find_args(args)?;
+    // Resolve the current image context from cwd/selection.
+    let cwd = s.pwd().to_string();
+    let rest = cwd
+        .strip_prefix("/images/")
+        .ok_or_else(|| "find: not inside an opened image; `cd` into one first".to_string())?;
+    let in_base = match rest.split_once('/') {
+        Some((_, b)) => b.trim_matches('/').to_string(),
+        None => String::new(),
+    };
+    let node = s
+        .node(None)
+        .or_else(|_| s.node(Some(&cwd)))
+        .or_else(|_| s.node(Some(".")))
+        .or_else(|_| s.node(Some("")))?;
+    let image = node
+        .meta
+        .get("image")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "find: not inside an opened image; `cd` into one first".to_string())?;
+    let base = in_base.as_str();
+    if q.under.is_empty() {
+        q.under = base.to_string();
+    } else if q.under.starts_with('/') {
+        q.under = q.under.trim_matches('/').to_string();
+    } else {
+        let rel = q.under.trim_matches('/');
+        q.under = if base.is_empty() {
+            rel.to_string()
+        } else {
+            format!("{base}/{rel}")
+        };
+    }
+    let found = crate::find::run(Path::new(image), &q).map_err(|e| format!("find: {e:#}"))?;
+    let mut lines: Vec<String> = found
+        .matches
+        .iter()
+        .map(|e| format!("/{}", e.path))
+        .collect();
+    for (p, why) in &found.not_checked {
+        lines.push(format!("(not checked: /{p}: {why})"));
+    }
+    let text = if lines.is_empty() {
+        "no matches".to_string()
+    } else {
+        lines.join("\n")
+    };
+    let data = serde_json::json!({
+        "matches": found.matches.iter().map(crate::tree::entry_json).collect::<Vec<_>>(),
+        "not_checked": found.not_checked.iter().map(|(p,w)| serde_json::json!({"path": p, "reason": w})).collect::<Vec<_>>(),
+    });
+    Ok(doctor_kit::session::Reply::new(text, data))
+}
+
 /// `decode` of an init `.rc`: the counts, then one line per import, action and service.
 fn initrc_view(text: &str) -> String {
     let rc = crate::initrc::parse(text);
@@ -479,7 +602,7 @@ impl Doctor for AndroidDoctor {
     fn checks(&self) -> Vec<Box<dyn Check>> {
         vec![]
     }
-    /// `stat` in the shell, plus interactive ramdisk/boot/DTB editing commands (write to new outputs only).
+    /// `stat` and `find` in the shell, plus interactive ramdisk/boot/DTB editing commands (write to new outputs only).
     fn commands(&self) -> Vec<doctor_kit::session::Command> {
         vec![
             doctor_kit::session::Command {
@@ -506,7 +629,134 @@ impl Doctor for AndroidDoctor {
                 flags: &[],
                 run: dtb_command,
             },
+            doctor_kit::session::Command {
+                name: "find",
+                help: "find [path]        search the opened image: --name GLOB --selinux GLOB --setuid --setgid --xattr NAME[=GLOB] --grep TEXT",
+                flags: &[],
+                run: find_command,
+            },
         ]
+    }
+    /// The built-in `find` verb (doctor-kit 0.2.4 dispatches it before custom commands) searches
+    /// the materialized session tree; answer android-doctor's find flags here.
+    fn find_filter(
+        &self,
+        args: &[String],
+    ) -> Result<Option<doctor_kit::session::FindFilter>, String> {
+        let q = parse_find_args(args)?;
+        Ok(Some(Box::new(move |n: &doctor_kit::node::Node| {
+            // Only filesystem entries inside an opened image (not the image/container nodes).
+            if !matches!(n.kind.as_str(), "file" | "dir" | "symlink" | "special") {
+                return false;
+            }
+            let Some(path_meta) = n.meta.get("path").and_then(serde_json::Value::as_str) else {
+                return false;
+            };
+            // image-internal path, no leading slash (matches crate::find entry paths)
+            let ipath = path_meta.trim_matches('/');
+            if ipath.is_empty() {
+                return false;
+            }
+            let under_dir = q.under.trim_matches('/');
+            let in_scope = under_dir.is_empty()
+                || ipath == under_dir
+                || ipath
+                    .strip_prefix(under_dir)
+                    .is_some_and(|rest| rest.starts_with('/'));
+            if !in_scope {
+                return false;
+            }
+            let base = ipath.rsplit('/').next().unwrap_or(ipath);
+            if let Some(g) = q.name.as_deref()
+                && !crate::find::glob(g, base)
+            {
+                return false;
+            }
+            if let Some(g) = q.selinux.as_deref() {
+                let label = n
+                    .meta
+                    .get("selinux")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                if label.is_empty() || !crate::find::glob(g, label) {
+                    return false;
+                }
+            }
+            // mode stored as string "0755" in entry_node
+            let mode_bits = n
+                .meta
+                .get("mode")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|s| u32::from_str_radix(s, 8).ok())
+                .unwrap_or(0);
+            if q.setuid && mode_bits & 0o4000 == 0 {
+                return false;
+            }
+            if q.setgid && mode_bits & 0o2000 == 0 {
+                return false;
+            }
+            if let Some((ref name, ref value)) = q.xattr {
+                if name == "security.selinux" {
+                    let label = n
+                        .meta
+                        .get("selinux")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    if label.is_empty() {
+                        return false;
+                    }
+                    if let Some(g) = value.as_deref()
+                        && !crate::find::glob(g, label)
+                    {
+                        return false;
+                    }
+                } else {
+                    // other xattrs not stored in node meta; best-effort: do not match
+                    return false;
+                }
+            }
+            if let Some(ref needle) = q.grep {
+                if n.kind != "file" {
+                    return false;
+                }
+                let Some(image) = n.meta.get("image").and_then(serde_json::Value::as_str) else {
+                    return false;
+                };
+                // read content (bounded) via the image tree
+                let Ok(tree) = crate::tree::Tree::open(std::path::Path::new(image)) else {
+                    return false;
+                };
+                let mut buf = Vec::new();
+                struct Cap<'a> {
+                    data: &'a mut Vec<u8>,
+                    max: usize,
+                }
+                impl std::io::Write for Cap<'_> {
+                    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                        if self.data.len() + b.len() > self.max {
+                            return Err(std::io::Error::other("cap"));
+                        }
+                        self.data.extend_from_slice(b);
+                        Ok(b.len())
+                    }
+                    fn flush(&mut self) -> std::io::Result<()> {
+                        Ok(())
+                    }
+                }
+                let _ = tree.cat_path(
+                    path_meta,
+                    &mut Cap {
+                        data: &mut buf,
+                        max: 1 << 20,
+                    },
+                );
+                if !needle.is_empty() && buf.windows(needle.len()).any(|w| w == needle.as_bytes()) {
+                    return true;
+                }
+                return false;
+            }
+            true
+        })))
     }
     /// The subject is an image, a directory of images or two builds, chosen by the command.
     fn target(&self) -> TargetKind {
@@ -567,6 +817,32 @@ impl Doctor for AndroidDoctor {
                 sanitize(&format!("{e:#}")),
             )]
         };
+        fn expand_dir(image: &Path, dir: &str) -> Result<Vec<Node>, anyhow::Error> {
+            let tree = Tree::open(image)?;
+            let entries = tree.list_dir(dir)?;
+            let mut kids: Vec<Node> = Vec::new();
+            for e in entries.iter().take(MAX_CHILDREN) {
+                let mut n = entry_node(image, e);
+                if e.kind == Kind::Dir {
+                    // Load the whole image eagerly so kit 0.2.4's built-in `find`
+                    // (which walks the materialized tree) can search file contents.
+                    let path = format!("/{}", e.path);
+                    if let Ok(sub) = expand_dir(image, &path) {
+                        n.children = sub;
+                    }
+                }
+                kids.push(n);
+            }
+            if entries.len() > MAX_CHILDREN {
+                kids.push(Node::new(
+                    "(more)",
+                    "note",
+                    format!("{} more entries not listed", entries.len() - MAX_CHILDREN),
+                ));
+            }
+            Ok(kids)
+        }
+
         match node.kind.as_str() {
             "images" => {
                 let subject = self.subject.clone()?;
@@ -588,24 +864,7 @@ impl Doctor for AndroidDoctor {
             "image" | "dir" => {
                 let image = PathBuf::from(meta("image")?);
                 let dir = meta("path")?;
-                Some(match Tree::open(&image).and_then(|t| t.list_dir(&dir)) {
-                    Ok(entries) => {
-                        let mut kids: Vec<Node> = entries
-                            .iter()
-                            .take(MAX_CHILDREN)
-                            .map(|e| entry_node(&image, e))
-                            .collect();
-                        if entries.len() > MAX_CHILDREN {
-                            kids.push(Node::new(
-                                "(more)",
-                                "note",
-                                format!("{} more entries not listed", entries.len() - MAX_CHILDREN),
-                            ));
-                        }
-                        kids
-                    }
-                    Err(e) => failed(e),
-                })
+                Some(expand_dir(&image, &dir).unwrap_or_else(failed))
             }
             _ => None,
         }

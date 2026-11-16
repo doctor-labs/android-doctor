@@ -9,11 +9,8 @@ All notable changes to this project are documented here. The format follows
 - Coolpad `.cpb` is documented as refused by design: `identify` names it and `extract` refuses it with a clear unsupported message because the layout is not publicly documented (it changed after ~2015), bodies are commonly encrypted with vendor-specific keys, and the only known reference tool (scue/unpackcpb) is unmaintained, so decoding would be guesswork (#133, #175).
 
 ### Added
-<<<<<<< HEAD
 - `avbextract` writes the vbmeta block of an image (bare vbmeta or the block a footer points to) to a new file, and `avbappend` appends a vbmeta image to a partition image and writes an AVB footer (avbtool append_vbmeta_image); outputs are unverified on a device (part of #184).
-=======
 - `lp-pack --partition NAME=PATH... -o OUT [--device-size N] [--metadata-size N] [--metadata-slots N] [--force]` packs partition images into a logical-partition super image (LP metadata v10, linear extents, one block device) and writes a new image. `lp-repack <super.img> --partition NAME=PATH... -o OUT [--force]` writes a copy of a super image with named partitions replaced in their allocated extents. Both write to a new path (atomic `.part` rename), never modify the input, and the produced artefact is not vendor-signed and unverified on a device (#177).
->>>>>>> origin/agent/177-pack-write
 - `docs/benchmark.md`: evidence-based benchmark and parity gap list against reference firmware/OTA tools (avbtool, magiskboot, payload_dumper/avbroot applicability, MobSF rule comparison), with per-image observations on the sandbox corpus (#167).
 - `tests/vbkernel.rs`: regression coverage for verifying a ChromeOS kernel image in magiskboot `futility.rs`'s packed layout (64 KiB vblock, blob body at offset 65536), referencing the #176 gap.
 
@@ -63,6 +60,7 @@ All notable changes to this project are documented here. The format follows
 - MCP server exposes seven read-only browse tools, `ls`, `cat`, `info`, `vbmeta`, `ramdisk`, `files` and `unpack`, over the existing CLI commands. They take no output option (so they never write) and cap output at 1 MiB; `cat` returns raw text, the others the CLI's `--json` (#218).
 - `prop <image> <name>` prints every value a property is set to in the image's property files, with the file that sets it; `init <image> <service>` decodes one init service (path, args, class, user, groups, capabilities, seclabel, sockets, flags) from the `.rc` files. Both are read-only, bounded, and take `--json` (a plain array, no doctor/1 envelope) (#222).
 - `shell` gains a `stat [sel]` verb: the entry's inode, owner, mode, size, link count, mtime and SELinux label, read from the opened image's own directory listing (#223).
+- `shell` gains a `find [path]` verb on one opened image: search by name, SELinux label, setuid/setgid, xattr or file content, using the same filters as the `find` CLI command (part of #223).
 
 - EROFS: read ZSTD-compressed images (including 4 KiB blocks) and 48-bit addressing images from committed `mkfs.erofs` fixtures; metabox feature images are no longer refused as unimplemented (reader support attempted, not fixture-verified). Vendored `am-fs-erofs` updated for 48-bit/metabox superblock parsing (#228).
 - `deleted` command lists deleted (unlinked but not freed) inodes in an ext2/3/4 image — the same set `debugfs lsdel` scans (inodes with `i_links_count == 0` and `i_mode != 0`) — and optionally recovers their data blocks into a new directory (`-o <dir>`, with `--max-bytes` capping per-file output). Read-only: the image is never written to. erofs and f2fs are reported as unsupported (#225).
