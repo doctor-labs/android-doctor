@@ -237,16 +237,15 @@ fn find_command(
     let rest = cwd
         .strip_prefix("/images/")
         .ok_or_else(|| "find: not inside an opened image; `cd` into one first".to_string())?;
-    let (img_name, in_base) = match rest.split_once('/') {
-        Some((n, b)) => (n.to_string(), b.trim_matches('/').to_string()),
-        None => (rest.to_string(), String::new()),
+    let in_base = match rest.split_once('/') {
+        Some((_, b)) => b.trim_matches('/').to_string(),
+        None => String::new(),
     };
-    let img_node_path = format!("/images/{img_name}");
     let node = s
-        .node(Some(&img_node_path))
-        .or_else(|_| s.node(None))
+        .node(None)
         .or_else(|_| s.node(Some(&cwd)))
-        .or_else(|_| s.node(Some(".")))?;
+        .or_else(|_| s.node(Some(".")))
+        .or_else(|_| s.node(Some("")))?;
     let image = node
         .meta
         .get("image")
