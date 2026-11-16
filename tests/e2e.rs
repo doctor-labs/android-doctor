@@ -485,7 +485,7 @@ fn journal_command_emits_json_or_text_and_lists_fields() {
 
 #[test]
 fn journal_replay_outputs_overlay_plan() {
-    // Reuse the same tiny ext4+journal image as the listing test by rebuilding it inline.
+    // Tiny ext4 with a jbd2 journal holding one committed transaction that replays one block.
     let bs = 1024usize;
     let blocks = 24usize;
     let inodes = 64usize;
@@ -509,32 +509,43 @@ fn journal_replay_outputs_overlay_plan() {
     le32(&mut img, itable + 4, bs as u32);
     le16(&mut img, itable + 26, 2);
     le32(&mut img, itable + 40, 20);
+    // journal inode (8): 4 blocks at 20..23 (superblock, descriptor, data, commit)
     let jino = itable + 7 * 256;
     le16(&mut img, jino, 0o100644);
-    le32(&mut img, jino + 4, (3 * bs) as u32);
+    le32(&mut img, jino + 4, (4 * bs) as u32);
     le32(&mut img, jino + 40, 20);
     le32(&mut img, jino + 44, 21);
     le32(&mut img, jino + 48, 22);
+    le32(&mut img, jino + 52, 23);
     let jblk = bs * 20;
     fn put_be(img: &mut [u8], off: usize, v: u32) {
         img[off..off + 4].copy_from_slice(&v.to_be_bytes());
     }
+    // block 0: journal superblock v2 (dirty, log starts at 1)
     put_be(&mut img, jblk, 0xC03B3998);
     put_be(&mut img, jblk + 4, 4);
     put_be(&mut img, jblk + 12, bs as u32);
-    put_be(&mut img, jblk + 16, 3);
-    put_be(&mut img, jblk + 20, 0);
-    put_be(&mut img, jblk + 24, 1);
-    put_be(&mut img, jblk + 28, 1);
+    put_be(&mut img, jblk + 16, 4); // s_maxlen
+    put_be(&mut img, jblk + 20, 1); // s_first
+    put_be(&mut img, jblk + 24, 1); // s_sequence
+    put_be(&mut img, jblk + 28, 1); // s_start (dirty)
     put_be(&mut img, jblk + 48, 0x12345678);
     put_be(&mut img, jblk + 52, 0x12341234);
     put_be(&mut img, jblk + 56, 0x12345678);
     put_be(&mut img, jblk + 60, 0x9abcdef0);
     put_be(&mut img, jblk + 64, 2);
-    // commit block for seq 1 so replay sees a committed (empty-tag) transaction
+    // block 1: descriptor (seq 1) with one tag: replay journal data block 2 to fs block 5
     put_be(&mut img, jblk + bs, 0xC03B3998);
-    put_be(&mut img, jblk + bs + 4, 2);
+    put_be(&mut img, jblk + bs + 4, 1);
     put_be(&mut img, jblk + bs + 8, 1);
+    put_be(&mut img, jblk + bs + 12, 5); // target fs block
+    put_be(&mut img, jblk + bs + 16, 2 | 8); // SAME_UUID | LAST
+    // block 2: data (content to replay)
+    img[jblk + 2 * bs..jblk + 2 * bs + 4].copy_from_slice(b"DATA");
+    // block 3: commit (seq 1)
+    put_be(&mut img, jblk + 3 * bs, 0xC03B3998);
+    put_be(&mut img, jblk + 3 * bs + 4, 2);
+    put_be(&mut img, jblk + 3 * bs + 8, 1);
 
     let d = Scratch::new("journal-replay");
     let path = d.join("system.img");
@@ -552,7 +563,11 @@ fn journal_replay_outputs_overlay_plan() {
     let j: serde_json::Value = serde_json::from_str(&String::from_utf8(o.stdout).unwrap()).unwrap();
     assert!(j["replay"].is_object(), "replay plan missing: {j}");
     assert_eq!(j["replay"]["transactions"], 1);
-    assert!(j["replay"]["blocks"].is_array());
+    let blocks = j["replay"]["blocks"].as_array().unwrap();
+    assert_eq!(blocks.len(), 1, "replay plan: {j}");
+    assert_eq!(blocks[0]["fs_block"], 5);
+    assert_eq!(blocks[0]["journal_block"], 2);
+    assert_eq!(blocks[0]["sequence"], 1);
 
     let o = Command::new(
         std::env::var("CARGO_BIN_EXE_android-doctor").expect("CARGO_BIN_EXE_android-doctor"),
