@@ -144,6 +144,57 @@ impl Fs {
         SuperBlock::parse(&sb)
     }
 
+    /// A dumpe2fs-style text dump: superblock fields, group descriptors and inode-table ranges.
+    pub fn dump(&self) -> Result<String> {
+        let sb = self.super_block()?;
+        let mut out = sb.dump();
+        out.push_str("\nGroup descriptors:\n");
+        let groups = self.itables.len();
+        let raw = self
+            .read_exact(self.gdt, groups.saturating_mul(self.desc_size as usize))
+            .context("reading group descriptors")?;
+        for g in 0..groups {
+            let base = g * self.desc_size as usize;
+            if base + 32 > raw.len() {
+                break;
+            }
+            let d = &raw[base..];
+            let mut block_bitmap = le32(d, 0) as u64;
+            let mut inode_bitmap = le32(d, 4) as u64;
+            let mut inode_table = le32(d, 8) as u64;
+            let mut free_blocks = le16(d, 12) as u32;
+            let mut free_inodes = le16(d, 14) as u32;
+            let used_dirs = le16(d, 16) as u32;
+            if self.desc_size >= 64 && base + 64 <= raw.len() {
+                block_bitmap |= (le32(d, 0x20) as u64) << 32;
+                inode_bitmap |= (le32(d, 0x24) as u64) << 32;
+                inode_table |= (le32(d, 0x28) as u64) << 32;
+                free_blocks |= (le16(d, 0x2C) as u32) << 16;
+                free_inodes |= (le16(d, 0x2E) as u32) << 16;
+            }
+            let first_block = sb.first_data_block as u64 + g as u64 * sb.blocks_per_group as u64;
+            let last_block = (first_block + sb.blocks_per_group as u64)
+                .saturating_sub(1)
+                .min(sb.blocks_count.saturating_sub(1));
+            let first_ino = g as u64 * sb.inodes_per_group as u64 + 1;
+            let last_ino = first_ino + sb.inodes_per_group as u64 - 1;
+            let itable_blocks = (sb.inodes_per_group as u64 * self.inode_size).div_ceil(self.bs);
+            let end = if itable_blocks > 0 { inode_table + itable_blocks - 1 } else { inode_table };
+            out.push_str(&format!(
+                "Group {g}: block bitmap {block_bitmap}, inode bitmap {inode_bitmap}, inode table {inode_table}-{end}, {free_blocks} free blocks, {free_inodes} free inodes, {used_dirs} directories\n"
+            ));
+            out.push_str(&format!(
+                "         blocks {first_block}-{last_block}, inodes {first_ino}-{last_ino}\n"
+            ));
+        }
+        let raw_sb = self.read_exact(1024, 1024)?;
+        let journal_inum = le32(&raw_sb, 0xE0);
+        if journal_inum != 0 {
+            out.push_str(&format!("\nJournal inode: {journal_inum}\n"));
+        }
+        Ok(out)
+    }
+
     /// Read the ext4 journal (inode 8, `s_journal_inum`) as a flat byte vector,
     /// by resolving its block runs in order. This is read-only: the journal is
     /// never written back. Returns the raw journal image starting at the journal

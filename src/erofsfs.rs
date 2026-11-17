@@ -77,6 +77,72 @@ impl Fs {
         Ok(Fs { fs, len })
     }
 
+    /// Read-only superblock and basic NID information (identify-only), like `dump.erofs -s`.
+    pub fn dump(path: &Path) -> Result<String> {
+        use std::io::Read;
+        refuse_blocking_file(path)?;
+        ensure!(!path.is_dir(), "{} is a directory, not an image", path.display());
+        let mut f = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let len = f.metadata()?.len();
+        let mut sb = [0u8; 128];
+        f.seek(SeekFrom::Start(1024)).context("seeking to erofs superblock")?;
+        f.read_exact(&mut sb).context("reading erofs superblock")?;
+        let le32b = |o: usize| u32::from_le_bytes([sb[o], sb[o + 1], sb[o + 2], sb[o + 3]]);
+        let le64b = |o: usize| {
+            u64::from_le_bytes([
+                sb[o], sb[o + 1], sb[o + 2], sb[o + 3], sb[o + 4], sb[o + 5], sb[o + 6], sb[o + 7],
+            ])
+        };
+        let le16b = |o: usize| u16::from_le_bytes([sb[o], sb[o + 1]]);
+        let magic = le32b(0);
+        ensure!(magic == 0xe0f5_e1e2, "not an erofs image (bad magic {magic:#010x})");
+        let checksum = le32b(4);
+        let feature_compat = le32b(8);
+        let blkszbits = sb[12];
+        let sb_extslots = sb[13];
+        let root_nid = le16b(14) as u32;
+        let inos = le64b(16);
+        let build_time = le64b(24);
+        let build_time_nsec = le32b(28);
+        let blocks = le32b(32);
+        let meta_blkaddr = le32b(36);
+        let xattr_blkaddr = le32b(40);
+        let uuid = &sb[44..60];
+        let volume_name = String::from_utf8_lossy(&sb[60..76]).trim_end_matches('\0').to_string();
+        let feature_incompat = le32b(80);
+        let uuid_fmt = if uuid.iter().all(|&b| b == 0) {
+            "00000000-0000-0000-0000-000000000000".to_string()
+        } else {
+            format!(
+                "{}-{}-{}-{}-{}",
+                uuid.iter().take(4).map(|b| format!("{b:02x}")).collect::<String>(),
+                uuid.iter().skip(4).take(2).map(|b| format!("{b:02x}")).collect::<String>(),
+                uuid.iter().skip(6).take(2).map(|b| format!("{b:02x}")).collect::<String>(),
+                uuid.iter().skip(8).take(2).map(|b| format!("{b:02x}")).collect::<String>(),
+                uuid.iter().skip(10).map(|b| format!("{b:02x}")).collect::<String>(),
+            )
+        };
+        let mut out = String::new();
+        out.push_str("Filesystem: erofs\n");
+        out.push_str(&format!("Magic: {magic:#010x}\n"));
+        out.push_str(&format!("Checksum: {checksum:#010x}\n"));
+        out.push_str(&format!("Block size: {}\n", 1u64 << blkszbits));
+        out.push_str(&format!("Blocks: {blocks}\n"));
+        out.push_str(&format!("Image size: {len}\n"));
+        out.push_str(&format!("Inodes: {inos}\n"));
+        out.push_str(&format!("Root NID: {root_nid}\n"));
+        out.push_str(&format!("Metadata block address: {meta_blkaddr}\n"));
+        out.push_str(&format!("xattr block address: {xattr_blkaddr}\n"));
+        out.push_str(&format!("Superblock ext slots: {sb_extslots}\n"));
+        out.push_str(&format!("Feature compat: {feature_compat:#010x}\n"));
+        out.push_str(&format!("Feature incompat: {feature_incompat:#010x}\n"));
+        out.push_str(&format!("Build time: {build_time}.{build_time_nsec:09}\n"));
+        out.push_str(&format!("UUID: {uuid_fmt}\n"));
+        out.push_str(&format!("Volume name: {}\n", if volume_name.is_empty() { "<unset>" } else { &volume_name }));
+        out.push_str("\nNID dump: root NID reported above; per-file NIDs require traversal (identify-only)\n");
+        Ok(out)
+    }
+
     fn read_dir(&self, dir: &Inode, max_entries: usize) -> Result<Vec<(String, u64)>> {
         ensure!(
             dir.size <= MAX_DIR_BYTES,

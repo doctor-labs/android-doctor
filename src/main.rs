@@ -285,6 +285,22 @@ enum Command {
         #[command(flatten)]
         report: ReportArgs,
     },
+    /// Dump ext2/3/4 superblock, group descriptors and inode-table ranges (dumpe2fs-like), read-only
+    Dumpe2fs {
+        /// An ext2/3/4 image
+        image: PathBuf,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Dump erofs superblock and NID information (dump.erofs -s-like), read-only
+    DumpErofs {
+        /// An erofs image
+        image: PathBuf,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
     /// List a directory (or show one file) inside an ext2/3/4, erofs or f2fs image, without extracting it
     Ls {
         image: PathBuf,
@@ -1504,6 +1520,8 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             json,
             report,
         } => fsck_command(&image, json, &report, no_color),
+        Command::Dumpe2fs { image, json } => dumpe2fs_command(&image, json),
+        Command::DumpErofs { image, json } => dump_erofs_command(&image, json),
         Command::Ramdisk {
             input,
             output,
@@ -3426,6 +3444,52 @@ fn deleted_command(
         };
         print_out(&text)
     }
+}
+
+
+/// `dump-erofs`: identify-only superblock and NID dump for erofs images.
+fn dump_erofs_command(image: &std::path::Path, json: bool) -> anyhow::Result<()> {
+    let text = erofsfs::Fs::dump(image)?;
+    if json {
+        return print_out(&serde_json::to_string_pretty(&serde_json::json!({
+            "filesystem": "erofs",
+            "dump": text,
+        }))?);
+    }
+    print_out(&text)
+}
+
+/// `dumpe2fs`: identify-only superblock, group descriptor and inode-table dump for ext2/3/4.
+fn dumpe2fs_command(image: &std::path::Path, json: bool) -> anyhow::Result<()> {
+    let fs = ext4fs::Fs::open(image)?;
+    let sb = fs.super_block()?;
+    let text = fs.dump()?;
+    if json {
+        let v = serde_json::json!({
+            "filesystem": "ext",
+            "volume_name": sb.volume_name,
+            "uuid": sb.uuid,
+            "magic": format!("{:#06x}", sb.magic),
+            "block_size": sb.block_size,
+            "blocks_count": sb.blocks_count,
+            "free_blocks": sb.free_blocks,
+            "reserved_blocks": sb.reserved_blocks,
+            "inodes_count": sb.inodes_count,
+            "free_inodes": sb.free_inodes,
+            "blocks_per_group": sb.blocks_per_group,
+            "inodes_per_group": sb.inodes_per_group,
+            "first_data_block": sb.first_data_block,
+            "state": sb.state,
+            "errors": sb.errors,
+            "revision": sb.rev,
+            "feature_compat": sb.feature_compat,
+            "feature_incompat": sb.feature_incompat,
+            "feature_ro_compat": sb.feature_ro_compat,
+            "dump": text,
+        });
+        return print_out(&serde_json::to_string_pretty(&v)?);
+    }
+    print_out(&text)
 }
 
 /// `fsck`: read-only consistency check of an ext2/3/4 image (superblock, group descriptors, bitmaps)
