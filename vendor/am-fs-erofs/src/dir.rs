@@ -134,7 +134,9 @@ pub fn visit_block(block: &[u8], mut f: impl FnMut(u64, u8, &[u8])) -> Result<()
 
     for i in 0..n_dirents {
         let off = i * EROFS_DIRENT_SIZE;
-        let nid = u64::from_le_bytes(block[off..off + 8].try_into().unwrap());
+        // Metabox dirent NIDs set bit 63; mask it so lookups address the inode slot.
+        let nid = u64::from_le_bytes(block[off..off + 8].try_into().unwrap())
+            & crate::superblock::EROFS_DIRENT_NID_MASK;
         let nameoff = u16::from_le_bytes(block[off + 8..off + 10].try_into().unwrap()) as usize;
         let file_type = block[off + 10];
 
