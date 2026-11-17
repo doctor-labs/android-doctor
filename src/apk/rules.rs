@@ -126,7 +126,7 @@ fn names_target(calls: &[Call]) -> bool {
 
 fn judge(s: &Site, c: &mut Collector) {
     let at = &s.method;
-    let (mut sms, mut device_id) = (false, false);
+    let (mut sms, mut device_id, mut network) = (false, false, false);
     let explicit = names_target(&s.calls);
     for call in &s.calls {
         let f = call.callee.as_str();
@@ -429,6 +429,20 @@ fn judge(s: &Site, c: &mut Collector) {
                 at,
             );
         }
+        // Network operations (method-level signal for co-occurrence rules)
+        if f.contains("Ljava/net/HttpURLConnection;->connect(")
+            || f.contains("Ljava/net/HttpURLConnection;->getInputStream(")
+            || f.contains("Ljava/net/HttpURLConnection;->getOutputStream(")
+            || f.contains("Ljava/net/URLConnection;->connect(")
+            || f.contains("Ljava/net/URL;->openConnection(")
+            || f.contains("Ljava/net/URL;->openStream(")
+            || f.contains("Lokhttp3/Call;->execute(")
+            || f.contains("Lokhttp3/Call;->enqueue(")
+            || f.contains("Lorg/apache/http/client/HttpClient;->execute(")
+            || f.contains("Ljava/net/Socket;->connect(")
+        {
+            network = true;
+        }
         // Dynamic receivers: no permission guards them and they are not RECEIVER_NOT_EXPORTED.
         // Flags and permission are judged only when they are constants (null is const 0).
         let flags_open = |i: usize| int(a.get(i)).is_some_and(|v| v & RECEIVER_NOT_EXPORTED == 0);
@@ -506,12 +520,20 @@ fn judge(s: &Site, c: &mut Collector) {
             );
         }
     }
-    // Method-level co-occurrence only: no data flow is traced from the identifier to the SMS.
+    // Method-level co-occurrence only: no data flow is traced between the operations.
     if sms && device_id {
         c.add(
             "apk-code-device-id-sms",
             Severity::High,
             "reads a device identifier and sends an SMS in the same method",
+            at,
+        );
+    }
+    if network && device_id {
+        c.add(
+            "apk-code-device-id-network",
+            Severity::High,
+            "reads a device identifier and performs a network operation in the same method",
             at,
         );
     }

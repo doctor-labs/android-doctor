@@ -285,6 +285,33 @@ enum Command {
         #[command(flatten)]
         report: ReportArgs,
     },
+    /// Dump ext2/3/4 superblock, group descriptors and inode-table ranges (dumpe2fs-like), read-only
+    Dumpe2fs {
+        /// An ext2/3/4 image
+        image: PathBuf,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Dump erofs superblock and NID information (dump.erofs -s-like), read-only
+    DumpErofs {
+        /// An erofs image
+        image: PathBuf,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read-only session/REPL over one opened image (cd, ls, cat, stat, find), debugfs-like
+    Session {
+        /// Image file (ext2/3/4, erofs or f2fs)
+        image: PathBuf,
+        /// Read commands from this file, one per line (-f)
+        #[arg(short = 'f', long = "file")]
+        command_file: Option<PathBuf>,
+        /// Run this command and exit (-c)
+        #[arg(short = 'c', long)]
+        command: Option<String>,
+    },
     /// List a directory (or show one file) inside an ext2/3/4, erofs or f2fs image, without extracting it
     Ls {
         image: PathBuf,
@@ -1504,6 +1531,13 @@ fn run_command(cli: Cli) -> anyhow::Result<()> {
             json,
             report,
         } => fsck_command(&image, json, &report, no_color),
+        Command::Dumpe2fs { image, json } => dumpe2fs_command(&image, json),
+        Command::DumpErofs { image, json } => dump_erofs_command(&image, json),
+        Command::Session {
+            image,
+            command_file,
+            command,
+        } => session_command(&image, command_file.as_deref(), command.as_deref()),
         Command::Ramdisk {
             input,
             output,
@@ -3426,6 +3460,246 @@ fn deleted_command(
         };
         print_out(&text)
     }
+}
+
+
+/// `dump-erofs`: identify-only superblock and NID dump for erofs images.
+fn dump_erofs_command(image: &std::path::Path, json: bool) -> anyhow::Result<()> {
+    let text = erofsfs::Fs::dump(image)?;
+    if json {
+        return print_out(&serde_json::to_string_pretty(&serde_json::json!({
+            "filesystem": "erofs",
+            "dump": text,
+        }))?);
+    }
+    print_out(&text)
+}
+
+/// `dumpe2fs`: identify-only superblock, group descriptor and inode-table dump for ext2/3/4.
+fn dumpe2fs_command(image: &std::path::Path, json: bool) -> anyhow::Result<()> {
+    let fs = ext4fs::Fs::open(image)?;
+    let sb = fs.super_block()?;
+    let text = fs.dump()?;
+    if json {
+        let v = serde_json::json!({
+            "filesystem": "ext",
+            "volume_name": sb.volume_name,
+            "uuid": sb.uuid,
+            "magic": format!("{:#06x}", sb.magic),
+            "block_size": sb.block_size,
+            "blocks_count": sb.blocks_count,
+            "free_blocks": sb.free_blocks,
+            "reserved_blocks": sb.reserved_blocks,
+            "inodes_count": sb.inodes_count,
+            "free_inodes": sb.free_inodes,
+            "blocks_per_group": sb.blocks_per_group,
+            "inodes_per_group": sb.inodes_per_group,
+            "first_data_block": sb.first_data_block,
+            "state": sb.state,
+            "errors": sb.errors,
+            "revision": sb.rev,
+            "feature_compat": sb.feature_compat,
+            "feature_incompat": sb.feature_incompat,
+            "feature_ro_compat": sb.feature_ro_compat,
+            "dump": text,
+        });
+        return print_out(&serde_json::to_string_pretty(&v)?);
+    }
+    print_out(&text)
+}
+
+
+/// `session`: read-only REPL over one opened image (cd, ls, cat, stat, find), debugfs-like.
+fn session_command(
+    image: &std::path::Path,
+    command_file: Option<&std::path::Path>,
+    command: Option<&str>,
+) -> anyhow::Result<()> {
+    use std::io::{BufRead, Write};
+    let fs = tree::Tree::open(image)?;
+    let mut cwd = String::from("/");
+
+    fn norm(cwd: &str, p: &str) -> String {
+        let base = if p.starts_with('/') {
+            String::new()
+        } else if cwd == "/" {
+            String::new()
+        } else {
+            cwd.trim_matches('/').to_string()
+        };
+        let mut parts: Vec<String> = if base.is_empty() {
+            Vec::new()
+        } else {
+            base.split('/').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect()
+        };
+        let rest = if p.starts_with('/') { p.trim_start_matches('/') } else { p };
+        for part in rest.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => { parts.pop(); }
+                x => parts.push(x.to_string()),
+            }
+        }
+        if parts.is_empty() { "/".to_string() } else { format!("/{}", parts.join("/")) }
+    }
+    fn to_inner(p: &str) -> String {
+        let t = p.trim_matches('/').to_string();
+        if t.is_empty() { "/".to_string() } else { t }
+    }
+    fn under(path: &str, dir: &str) -> bool {
+        dir.is_empty() || path == dir || path.strip_prefix(dir).is_some_and(|r| r.starts_with('/'))
+    }
+
+    let mut run_line = |line: &str, cwd: &mut String| -> anyhow::Result<bool> {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            return Ok(true);
+        }
+        let mut parts = line.split_whitespace();
+        let cmd = parts.next().unwrap_or("");
+        match cmd {
+            "quit" | "exit" | "q" => return Ok(false),
+            "pwd" => println!("{cwd}"),
+            "cd" => {
+                let target = parts.next().unwrap_or("/");
+                let p = norm(cwd, target);
+                let inner = to_inner(&p);
+                if inner == "/" {
+                    *cwd = "/".to_string();
+                } else {
+                    let e = fs.stat(&inner)?;
+                    anyhow::ensure!(e.kind == crate::tree::Kind::Dir, "{target}: not a directory");
+                    *cwd = p;
+                }
+            }
+            "ls" => {
+                let target = parts.next().unwrap_or("");
+                let p = if target.is_empty() { cwd.clone() } else { norm(cwd, target) };
+                let inner = to_inner(&p);
+                if inner != "/" {
+                    if let Ok(e) = fs.stat(&inner) {
+                        if e.kind != crate::tree::Kind::Dir {
+                            let name = e.path.rsplit('/').next().unwrap_or(&e.path);
+                            let suffix = match e.kind {
+                                crate::tree::Kind::Dir => "/",
+                                crate::tree::Kind::Symlink => "@",
+                                _ => "",
+                            };
+                            println!("{name}{suffix}");
+                            return Ok(true);
+                        }
+                    }
+                }
+                let mut entries = fs.list_dir(&inner)?;
+                entries.sort_by(|a, b| a.path.cmp(&b.path));
+                for e in entries {
+                    let name = e.path.rsplit('/').next().unwrap_or(&e.path);
+                    let suffix = match e.kind {
+                        crate::tree::Kind::Dir => "/",
+                        crate::tree::Kind::Symlink => "@",
+                        _ => "",
+                    };
+                    println!("{name}{suffix}");
+                }
+            }
+            "cat" => {
+                let target = parts.next().ok_or_else(|| anyhow::anyhow!("cat: missing path"))?;
+                let p = norm(cwd, target);
+                let inner = to_inner(&p);
+                let mut out = std::io::stdout().lock();
+                if let Err(e) = fs.cat_path(&inner, &mut out) {
+                    if let Some(io) = e.downcast_ref::<std::io::Error>() {
+                        if io.kind() == std::io::ErrorKind::BrokenPipe {
+                            return Ok(true);
+                        }
+                    }
+                    return Err(e);
+                }
+                let _ = out.flush();
+            }
+            "stat" => {
+                let target = parts.next().ok_or_else(|| anyhow::anyhow!("stat: missing path"))?;
+                let p = norm(cwd, target);
+                let inner = to_inner(&p);
+                let e = fs.stat(&inner)?;
+                println!("path: /{}", e.path);
+                println!("type: {}", e.kind.name());
+                println!("inode: {}", e.ino);
+                println!("mode: {:04o}", e.mode);
+                println!("uid: {}", e.uid);
+                println!("gid: {}", e.gid);
+                println!("size: {}", e.size);
+                println!("nlink: {}", e.nlink);
+                println!("mtime: {}", e.mtime);
+                if let Some(l) = &e.link { println!("link: {l}"); }
+                if let Some((maj, min)) = e.rdev { println!("rdev: {maj}:{min}"); }
+                for (k, v) in &e.xattrs { println!("xattr {k}: {v}"); }
+            }
+            "find" => {
+                let mut path = cwd.clone();
+                let mut name: Option<String> = None;
+                let args: Vec<&str> = parts.collect();
+                let mut i = 0usize;
+                if args.first().is_some_and(|a| !a.starts_with('-')) {
+                    path = norm(cwd, args[0]);
+                    i = 1;
+                }
+                while i < args.len() {
+                    if args[i] == "-name" && i + 1 < args.len() {
+                        name = Some(args[i + 1].to_string());
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                let inner = to_inner(&path);
+                let base = if inner == "/" { String::new() } else { inner.trim_matches('/').to_string() };
+                let mut all = fs.entries()?;
+                all.sort_by(|a, b| a.path.cmp(&b.path));
+                if base.is_empty() {
+                    println!("/");
+                }
+                for e in all {
+                    if !under(&e.path, &base) { continue; }
+                    if let Some(n) = &name {
+                        let fname = e.path.rsplit('/').next().unwrap_or(&e.path);
+                        if !crate::find::glob(n, fname) { continue; }
+                    }
+                    println!("/{}", e.path);
+                }
+            }
+            _ => anyhow::bail!("unknown command: {cmd} (expected cd, ls, cat, stat, find, pwd, quit)"),
+        }
+        Ok(true)
+    };
+
+    if let Some(cmd) = command {
+        run_line(cmd, &mut cwd)?;
+        return Ok(());
+    }
+    if let Some(path) = command_file {
+        let f = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let reader = std::io::BufReader::new(f);
+        for line in reader.lines() {
+            let line = line?;
+            if !run_line(&line, &mut cwd)? { break; }
+        }
+        return Ok(());
+    }
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+    loop {
+        print!("android-doctor:{}$ ", cwd);
+        stdout.flush()?;
+        let mut line = String::new();
+        if stdin.lock().read_line(&mut line)? == 0 { break; }
+        match run_line(&line, &mut cwd) {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(e) => eprintln!("{e:#}"),
+        }
+    }
+    Ok(())
 }
 
 /// `fsck`: read-only consistency check of an ext2/3/4 image (superblock, group descriptors, bitmaps)

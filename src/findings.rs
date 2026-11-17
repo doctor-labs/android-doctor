@@ -743,6 +743,13 @@ pub fn help(rule: &str) -> Option<Help> {
             "Check that every SMS is sent for the user and that premium or hidden-recipient messages are not sent in the background",
             Medium,
         ),
+        "apk-code-device-id-network" => (
+            "Device identifier read and network use in the same method",
+            Severity::High,
+            "security",
+            "A device identifier (IMEI, device id, subscriber id, or SIM serial) and a network operation appear in the same method: exfiltration risk",
+            "Do not read hardware identifiers for tracking, and never send them off-device; use install-scoped identifiers if identity is needed",
+        ),
         "apk-code-device-id-sms" => (
             "An APK's code reads a device identifier and sends an SMS in the same method",
             "Treat as possible malware: a device identifier leaving the device by SMS is the usual shape of data theft; trace the flow before trusting the app",
@@ -1102,6 +1109,7 @@ const KNOWN_RULES: &[&str] = &[
     "apk-code-hardcoded-ip",
     "apk-code-cleartext-url",
     "apk-code-sms-send",
+    "apk-code-device-id-network",
     "apk-code-device-id-sms",
     "apk-packer",
     "apk-code-unscanned",
